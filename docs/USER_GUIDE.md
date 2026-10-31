@@ -210,6 +210,16 @@ The action box makes more of it, using the description and the main look (or the
 | **Put in a place** (characters) | a place, and "sitting on the bench, looking down the road" | start frames for scenes, with both as references (Files › Start images & frames) |
 | **Design it** / **More designs** | optional extra details | first designs from the description alone |
 
+**✨ Ask the assistant** (top of the action box): say what you want in your own words — "a cosy winter outfit like Ren's jacket but in red", "the same stop on a foggy morning". The assistant looks at the images that will be sent (image 1 and your references) and fills in **What changes**, the **Name of the new look** and **the prompt**, with a line on what it did; check it and press **Generate**. It follows what worked in testing: it names the character instead of repeating its old look, says what to take from each reference, and says what is gone when the weather or time changes ("no rain").
+
+**What each field is:**
+
+- **What changes** — the change in a few words; Clapper builds the prompt from it, the description and the references.
+- **Name of the new look** — only the label of the new images under Looks ("winter outfit"); empty = the start of *What changes*.
+- **The prompt that will be sent** — always shown, exactly what the image model gets. *Automatic* means Clapper builds it and it updates as you type (you never have to edit it); *Written by the assistant* or *Edited by you* means it is sent as it is. **Back to automatic** throws your version away. Below it, *Images sent* lists which picture is image 1, 2, 3.
+
+Descriptions work the same way: **✨ Tell the assistant about it** (New › Character / Place / Prop / Style, and on its page) turns your own words into the name and description, using the image too when there is one.
+
 **Start from** (new look, new angle, character sheet) picks which of its looks to start from instead of the main look — the reliable way to pose a character in one of its own outfits (tested: "sitting on a bench" from the winter look kept the winter outfit; the same outfit given as a reference only partly did).
 
 **＋ Reference image** adds up to three more images to take one thing from each — **its outfit, pose, hairstyle, accessories, colours, lighting & weather, background, materials, art style**, or a few words of your own ("the red scarf"). Any library image works, also another character's look: *Ren, New outfit, reference = Aoi's main look, take its outfit* gave Ren in Aoi's yellow raincoat. Image 1 stays the character itself; the references are images 2–4 and the prompt says what to take from each. With references, the text may stay empty.

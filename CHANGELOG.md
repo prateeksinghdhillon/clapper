@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **The assistant in the Studio**:
+  - **✨ Ask the assistant** in every action box: plain words in; the assistant looks at the images that will be sent and writes the change, the look's name and the prompt (with rules learned in testing).
+  - **✨ Tell the assistant about it** writes a new character's (place's …) name and description from your words, also on its page.
+  - **The prompt that will be sent** is always shown and kept up to date, marked *Automatic* / *Written by the assistant* / *Edited by you*, with *Back to automatic* and the list of images sent.
+  - A separate **Name of the new look**.
 - **Gallery viewer** in the Studio and the scene editor:
   - Open any picture or take large (⛶, a second click on the selected picture, or the panel's picture), then browse with next / previous (arrows, swipe, thumbnail strip).
   - Zoom with the wheel or a pinch toward the pointer, drag to move, Fit.

@@ -2086,6 +2086,124 @@ def describe_image(provider: dict, project: Project, asset_id: str, kind: str | 
     return out
 
 
+# How to write prompts for the image model (FLUX.2 Klein with reference images), from what was tested in Clapper.
+IMAGE_PROMPT_RULES = """Rules for the image model's prompt (FLUX.2 Klein, which edits and combines reference images):
+- The images are numbered in the order given: image 1 is the character / place / object itself; references follow. Refer to them as "image 1", "image 2" ….
+- Say what changes and what stays: "The same character as image 1, now wearing …. Keep the face, hair and body."
+- When the look changes, do NOT repeat the old description (old clothes, weather, time of day): the model then keeps the old look (a new outfit came out with the old raincoat on top; a "sunny morning" stayed rainy). Name the character, then describe only the new state.
+- To take clothes (or a pose, the lighting …) from a reference: "wearing the clothes from image 2 instead of their own", "in the pose of image 2", "with the light of image 2". Say what NOT to take from it ("not the face or hair").
+- When the weather, light or time of day changes, also say what is gone, because image 1 still shows it: "no rain, dry ground, no puddles", "no snow", "daylight, the street lamp off".
+- Concrete, visible words: garments with colours and materials, pose, camera angle, background. No feelings, no story, no "beautiful".
+- Characters and props: full body (props: whole object), plain light grey background, no text. Places: the same layout and buildings, no people unless asked, no text.
+- 40-110 words. One image description, not a list of options."""
+
+
+def write_image_prompt(provider: dict, project: Project, entity_id: str, request: str, *, action: str = "look",
+                       refs: list | None = None, source: str | None = None, place: str | None = None) -> dict:
+    """From the user's plain words, the assistant writes the generation for an entity action: the short change, a
+    name for the new look, and the final prompt — looking at the images that will be sent (image 1 and the
+    references), when the model can see. Returns {change, name, prompt, explain, images_seen}."""
+    from . import tools as studio_tools
+
+    e = project.entity(entity_id)
+    request = (request or "").strip()
+    if not request:
+        raise ProjectError("say in your own words what you want")
+    try:
+        draft, _ = studio_tools.entity_inputs(project, entity_id, action, request, place_id=place, source=source, refs=refs)
+    except ProjectError:
+        draft = {"prompt": "", "images": []}
+    images = draft.get("images") or []
+    parts, seen = [], False
+    if provider.get("vision"):
+        for n, aid in enumerate(images, 1):
+            a = project.assets.get(aid)
+            part = _image_part(project, a["file"]) if a else None
+            if part:
+                owner = project.entities.get(a.get("entity") or "", {}).get("name")
+                parts += [{"type": "text", "text": f"Image {n}" + (f" ({owner}" + (f", {a['look']}" if a.get("look") else "") + ")" if owner else "") + ":"}, part]
+                seen = True
+    what = {"look": "a new look (outfit, hair, accessories) or a variation", "angle": "a new angle or pose",
+            "place": f"the character in a place (image 2 is the place)", "sheet": "a turnaround sheet (front, three-quarter, side, back)",
+            "first": "first designs from the description alone (no image)"}.get(action, action)
+    refs_text = "\n".join(f"- image {images.index(r['asset']) + 1 if r.get('asset') in images else '?'}: take {r.get('use') or 'what fits'}" for r in (refs or []))
+    task = (f"{IMAGE_PROMPT_RULES}\n\nThe user is making {what} for the {e['kind']} \"{e['name']}\".\n"
+            f"Its description (what its MAIN look shows): {e.get('description') or '(none)'}\n"
+            + (f"References the user added:\n{refs_text}\n" if refs_text else "")
+            + f"Clapper's automatic prompt for this (a starting point; improve it):\n{draft.get('prompt') or '(none)'}\n\n"
+            f"The user's words: \"{request}\"\n\n"
+            + ("Look at the images above before writing.\n" if seen else "You cannot see the images; rely on the descriptions.\n")
+            + 'Answer with only this JSON: {"change": "the change in a few words, as it would complete \\"now …\\"", '
+              '"name": "a short name for the new look, 2-4 words, without the name of the character or place (e.g. red winter coat, foggy dawn)", "prompt": "the complete prompt for the image model", '
+              '"explain": "one short sentence for the user: what you did and anything to check"}')
+    client = Client(provider)
+    result = client.chat([{"role": "user", "content": [*parts, {"type": "text", "text": task}] if parts else task}], max_tokens=1500, thinking=False)
+    data = _json_answer(result["content"])
+    if not data.get("prompt"):
+        raise LLMError("the assistant did not write a prompt — try again, or say it differently")
+    change = re.sub(r"^(?:the same \w+ as image 1 \([^)]*\),?\s*)?(?:now\s+)?", "", " ".join(str(data.get("change") or "").split()), flags=re.I)
+    return {"change": change[:200], "name": _look_name(str(data.get("name") or ""), e["name"]),
+            "prompt": _clean_prompt(str(data["prompt"]), e["kind"]), "explain": " ".join(str(data.get("explain") or "").split())[:300],
+            "images_seen": seen and client.sees_images}
+
+
+# Small models copy pieces of their instructions into the answer: take those out again.
+_ECHO = re.compile(r"\s*\(?\b\d+\s*[-–]\s*\d+ words\b\.?\)?\.?|\s*\bno (?:visible )?distinctive marks\b[^.]*\.?", re.I)
+
+
+def _clean_prompt(text: str, kind: str) -> str:
+    text = _ECHO.sub("", " ".join(text.split()))
+    if kind == "place":   # a place keeps its own surroundings
+        text = re.sub(r"\s*,?\s*plain (?:light )?grey background,?", "", text, flags=re.I)
+    text = re.sub(r"\s+([.,])", r"\1", text)
+    return re.sub(r"([.,])[.,]+", r"\1", text).strip()
+
+
+def _look_name(name: str, owner: str) -> str:
+    """A look's name without the character's / place's own name ("foggy dawn", not "foggy dawn bus stop")."""
+    name = re.sub(re.escape(owner), "", " ".join(name.split()), flags=re.I) if owner else name
+    return " ".join(name.strip(" -–:,").split())[:48]
+
+
+def write_description(provider: dict, project: Project, kind: str, words: str, *, name: str = "", asset_id: str | None = None) -> dict:
+    """The user's own words about a character / place / prop / style → {name, description} written for the image
+    and video models (and checked against its image, when there is one and the model can see)."""
+    if kind not in _DESCRIBE_FOR:
+        raise ProjectError(f"kind must be one of {sorted(_DESCRIBE_FOR)}")
+    words = (words or "").strip()
+    if not words and not asset_id:
+        raise ProjectError("write a few words about it first")
+    what, how = _DESCRIBE_FOR[kind]
+    part = None
+    if asset_id and provider.get("vision"):
+        a = project.asset(asset_id)
+        part = _image_part(project, a["file"]) if a["kind"] == "image" else None
+    task = (f"Write the description of {what} for an AI video project: {how}. It is added to every image made of it and sent "
+            "to the video model, so: one dense paragraph of visual facts, 40-90 words, no story, no feelings, no names of "
+            "other characters. Keep everything the user said (it is right); add the visual details it needs (build, face, "
+            "hair, colours, clothes piece by piece); do not invent distinctive marks the user did not mention (scars, "
+            "tattoos, jewellery, accessories), and nothing that contradicts them." + (" Check it against the image and use what you see for what the user left out." if part else "")
+            + f"\n\nIts name: {name or '(none yet: suggest one)'}\nThe user's words: \"{words or '(none: describe the image)'}\"\n\n"
+            'Answer with only this JSON: {"name": "…", "description": "…"}')
+    client = Client(provider)
+    result = client.chat([{"role": "user", "content": [part, {"type": "text", "text": task}] if part else task}], max_tokens=1200, thinking=False)
+    data = _json_answer(result["content"])
+    if not data.get("description"):
+        raise LLMError("the assistant did not write a description — try again")
+    return {"name": " ".join(str(data.get("name") or name).split())[:60], "description": _ECHO.sub("", " ".join(str(data["description"]).split())).strip()}
+
+
+def _json_answer(text: str) -> dict:
+    """The JSON object in a model's answer (models add prose or code fences around it)."""
+    text = (text or "").strip()
+    m = re.search(r"\{.*\}", text, re.S)
+    try:
+        data = json.loads(m.group(0)) if m else {}
+    except ValueError:
+        data = {}
+    return data if isinstance(data, dict) else {}
+
+
 def describe_reference(provider: dict, project: Project, name: str) -> str:
     """One look at a reference image; returns a card the user reviews before saving."""
     item = project.data["library"]["items"].get(name)

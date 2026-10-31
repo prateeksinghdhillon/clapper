@@ -517,16 +517,20 @@ def _entity_inputs(project: Project, entity_id: str, action: str, text: str, *, 
 
 def queue_entity(project: Project, client: ComfyClient, entity_id: str, action: str, text: str = "", *,
                  place_id: str | None = None, count: int = 2, seed: int | None = None, aspect: str | None = None,
-                 prompt: str | None = None, source: str | None = None, refs: list[dict] | None = None) -> list[dict]:
+                 prompt: str | None = None, source: str | None = None, refs: list[dict] | None = None,
+                 look: str = "") -> list[dict]:
     """Generate from a character / place: its first design, a new look or angle, or it placed in a place.
     `prompt` replaces the built prompt (the references stay)."""
     inputs, extra = entity_inputs(project, entity_id, action, text, place_id=place_id, aspect=aspect, source=source, refs=refs)
     if prompt:
         inputs["prompt"] = prompt
+    if look.strip() and "look" in extra:   # the name the user (or the assistant) gave the new look
+        extra["look"] = _label(("sheet · " if action == "sheet" else "") + look.strip()) if not look.strip().lower().startswith("sheet") else _label(look.strip())
     role = extra.pop("role", None) or project.entity(entity_id)["kind"]
     e = project.entity(entity_id)
+    shown = look.strip() or text
     title = (f"{e['name']} — character sheet" if action == "sheet" else
-             (f"{e['name']} — {_label(text, 40)}" if text else e["name"]) if action != "place" else
+             (f"{e['name']} — {_label(shown, 40)}" if shown else e["name"]) if action != "place" else
              f"{e['name']} at {project.entity(place_id)['name']}")
     jobs = queue_tool(project, client, "image", inputs, count=count, role=role, seed=seed, title=title)
     for job in jobs:

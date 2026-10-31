@@ -218,7 +218,7 @@ function refsRow(e, changed) {
   const refs = entityAct.refs;
   const max = entityAct.action === "place" ? 2 : 3;   // the image model takes 4 in all
   const box = h("div", { class: "refs-row" });
-  const draw = () => box.replaceChildren(
+  const draw = () => box.replaceChildren(...[   // (replaceChildren would print a null: only real nodes)
     h("span", { class: "hint grow-0" }, "References"),
     ...refs.map((r, i) => {
       const a = assets()[r.asset]; if (!a) return null;
@@ -236,7 +236,7 @@ function refsRow(e, changed) {
     refs.length < max ? h("button", { class: "ghost", onclick: () => pickAssets({ kind: "image", title: "Choose reference images — another character's outfit, a pose, a lighting mood …", exclude: refs.map((r) => r.asset) },
       (ids) => { for (const id of ids.slice(0, max - refs.length)) refs.push({ asset: id, use: REF_DEFAULT_USE[e.kind] || "outfit" }); changed(); draw(); }) }, "＋ Reference image") : null,
     refs.length ? null : h("span", { class: "hint" }, e.kind === "character" ? "e.g. another character's jacket, or a pose to copy — for one of its own outfits, choose it in Start from (more reliable)" : e.kind === "place" ? "e.g. a photo with the light you want" : "optional"),
-    refs.some((r) => r.use === "outfit" && assets()[r.asset]?.entity === e.id) ? h("span", { class: "hint warn" }, `This outfit is one of ${e.name}'s own looks: choosing it in “Start from” keeps it more reliably than a reference.`) : null);
+    refs.some((r) => r.use === "outfit" && assets()[r.asset]?.entity === e.id) ? h("span", { class: "hint warn" }, `This outfit is one of ${e.name}'s own looks: choosing it in “Start from” keeps it more reliably than a reference.`) : null].filter(Boolean));
   draw();
   return box;
 }
@@ -282,6 +282,18 @@ function renderEntityPage(e) {
         name,
         h("div", { class: "row meta" }, h("span", { class: "at big" }, "@" + e.ref), h("span", { class: "hint" }, `${one} · ${looks.length} look${looks.length === 1 ? "" : "s"} · ${scenesUsing.length ? "in scene " + scenesUsing.map((x) => x.n).join(", ") : "not in a scene yet"}`)),
         h("label", {}, "Description — what makes it look like itself; added to every image made from it and sent to H3 in scenes that use it", desc),
+        h("div", { class: "assist-row" }, (() => {
+          const w = h("input", { placeholder: "✨ Tell the assistant what it is or what to change, e.g. “she is 17, always wears red sneakers”" });
+          const b = h("button", { ...busyAttr("write-desc"), onclick: () => once("write-desc", async () => {
+            if (!w.value.trim()) throw new Error("Say in your own words what to write");
+            const r = await call("/assistant/write_description", { path: state.path, kind, words: (desc.value.trim() ? `Current description: ${desc.value.trim()}\nChange or add: ` : "") + w.value, name: e.name, asset: main?.id || null });
+            if (desc.value.trim() && !confirm(`Use the assistant's description?\n\n${r.description}`)) return;
+            desc.value = r.description;
+            setProject(await call("/entity", { path: state.path, action: "update", id: e.id, description: r.description })); toast("Description written by the assistant");
+          }) }, "✨ Write it");
+          w.onkeydown = (ev) => { if (ev.key === "Enter") b.click(); };
+          return [h("label", { class: "grow" }, w), b];
+        })()),
         main ? h("div", { class: "row" }, h("button", { class: "ghost small", ...busyAttr("describe"), title: "The assistant looks at the main look and rewrites the description (you can still edit it)",
           onclick: () => once("describe", async () => {
             const r = await call("/assistant/describe_image", { path: state.path, asset: main.id, kind });
@@ -322,52 +334,99 @@ const DESC_PH = {
 const entityAct = { action: "look", text: "", place: "", count: 2, prompt: null, for: null };
 function entityActions(e) {
   const kind = e.kind;
-  // what was typed (and a hand-edited prompt) belongs to this character only
-  if (entityAct.for !== e.id) Object.assign(entityAct, { text: "", prompt: null, edited: false, for: e.id, source: null, refs: [] });
+  // what was typed, asked and written belongs to this character only
+  if (entityAct.for !== e.id) Object.assign(entityAct, { text: "", prompt: null, origin: "auto", for: e.id, source: null, refs: [], look: "", ask: "", explain: "" });
   entityAct.refs = entityAct.refs || [];
-  // start from another of its looks (an outfit) instead of the main look: for new looks, angles and the sheet
-  // outfits and looks only: not sheets, poses (angles) or start frames, which are not a look to start from
+  const isLook = ["look", "angle", "sheet", "first"].includes(entityAct.action);
+  // start from another of its looks (an outfit) instead of the main look: outfits and looks only (not sheets, poses or frames)
   const madeBy = (a) => (state.project.jobs || {})[a.origin?.job]?.entity_action;
   const ownImages = looksOf(e.id).filter((a) => a.kind === "image" && !a.sheet && !["angle", "place", "sheet"].includes(madeBy(a)));
   const seen = {};
   const sourceSel = ownImages.length > 1 ? h("select", {}, h("option", { value: "" }, "its main look"),
     ...ownImages.filter((a) => a.id !== e.main).map((a) => { const label = a.look || a.title; seen[label] = (seen[label] || 0) + 1;
       return h("option", { value: a.id, selected: a.id === entityAct.source }, seen[label] > 1 ? `${label} (${seen[label]})` : label); })) : null;
-  if (sourceSel) sourceSel.onchange = () => { entityAct.source = sourceSel.value || null; entityAct.prompt = entityAct.edited ? entityAct.prompt : null; };
+  if (sourceSel) sourceSel.onchange = () => { entityAct.source = sourceSel.value || null; changed(); };
   const acts = [["look", kind === "character" ? "New outfit / look" : kind === "place" ? "Variation (time, weather)" : "Variation"], ["angle", "New angle / pose"], ...(kind === "character" ? [["place", "Put in a place"]] : []),
     ...(kind === "character" || kind === "prop" ? [["sheet", "▦ Character sheet"]] : []), ["first", e.main ? "More designs" : "Design it"]];
   if (!e.main && entityAct.action !== "first") entityAct.action = "first";
-  const ph = { look: kind === "character" ? "wearing a winter coat and a red scarf (or only references below)" : "at night in the rain", angle: kind === "character" ? "from the side, walking" : "from above", place: "sitting on the bench, looking down the road", first: "anything to add to the description (optional)", sheet: "optional, e.g. without the umbrella, hands empty" };
+  const ph = { look: kind === "character" ? "wearing a winter coat and a red scarf" : "at night in the rain", angle: kind === "character" ? "from the side, walking" : "from above", place: "sitting on the bench, looking down the road", first: "anything to add to the description (optional)", sheet: "optional, e.g. without the umbrella, hands empty" };
+  const askPh = { look: kind === "character" ? "e.g. a cosy winter outfit like Ren's jacket but in red" : kind === "place" ? "e.g. the same stop on a foggy early morning" : "e.g. older and more worn", angle: "e.g. sitting on the steps, looking up at someone", place: "e.g. waiting under the shelter, a bit impatient", sheet: "e.g. a sheet of her winter outfit with empty hands", first: "e.g. a shy 18-year-old boy, school uniform, messy hair" };
+
+  // ✨ the assistant writes it from plain words, looking at image 1 and the references
+  const ask = h("input", { value: entityAct.ask, placeholder: askPh[entityAct.action] || "say what you want" });
+  ask.oninput = () => { entityAct.ask = ask.value; };
+  const explain = h("p", { class: "hint assist-out" }, entityAct.explain || "");
+  const askBtn = h("button", { ...busyAttr("img-prompt"), title: "The assistant looks at the images that will be sent and writes the change, a name and the prompt", onclick: () => once("img-prompt", async () => {
+    if (!ask.value.trim()) throw new Error("Say in your own words what you want");
+    explain.textContent = "✨ The assistant is looking at the images and writing…";
+    try {
+      const r = await call("/assistant/image_prompt", { path: state.path, id: e.id, request: ask.value, action: entityAct.action, refs: entityAct.refs, source: entityAct.source, place: entityAct.place });
+      Object.assign(entityAct, { text: r.change || entityAct.text, look: r.name || entityAct.look, prompt: r.prompt, origin: "assistant",
+        explain: "✨ " + (r.explain || "Written by the assistant.") + (r.images_seen ? "" : " (Its model cannot see images: it worked from the descriptions.)") });
+      renderStudio();
+    } catch (err) { explain.textContent = ""; throw err; }
+  }) }, "✨ Write it");
+  ask.onkeydown = (ev) => { if (ev.key === "Enter") askBtn.click(); };
+
   const text = h("input", { value: entityAct.text, placeholder: ph[entityAct.action] });
-  text.oninput = () => { entityAct.text = text.value; if (!entityAct.edited) entityAct.prompt = null; };   // a prompt edited by hand is kept
+  text.oninput = () => { entityAct.text = text.value; changed(); };
+  const look = h("input", { value: entityAct.look, placeholder: entityAct.text ? entityAct.text.slice(0, 40) : "from “What changes”" });
+  look.oninput = () => { entityAct.look = look.value; };
   const places = Object.values(entities()).filter((x) => x.kind === "place" && x.main);
   const placeSel = h("select", {}, places.length ? places.map((p) => h("option", { value: p.id, selected: p.id === entityAct.place }, p.name)) : [h("option", { value: "" }, "make a place first (Places)")]);
   if (!entityAct.place && places[0]) entityAct.place = places[0].id;
-  placeSel.onchange = () => { entityAct.place = placeSel.value; };
+  placeSel.onchange = () => { entityAct.place = placeSel.value; changed(); };
   const count = h("select", {}, [1, 2, 4].map((n) => h("option", { value: n, selected: n === entityAct.count }, `${n} result${n > 1 ? "s" : ""}`)));
   count.onchange = () => { entityAct.count = Number(count.value); };
-  const promptBox = h("textarea", { rows: 4 });
-  const preview = h("details", { class: "adv" }, h("summary", {}, "See / edit the prompt"), promptBox, h("p", { class: "hint" }, "Built from the description and what you typed; the main look is attached as image 1. Edit it to take full control."));
-  preview.addEventListener("toggle", () => {
-    if (!preview.open || entityAct.prompt) { promptBox.value = entityAct.prompt || promptBox.value; return; }
-    guard(async () => { const r = await call("/entity/preview", { path: state.path, id: e.id, action: entityAct.action, text: entityAct.text, place: entityAct.place, source: entityAct.source, refs: entityAct.refs }); promptBox.value = r.prompt; });
-  });
-  promptBox.oninput = () => { entityAct.prompt = promptBox.value; entityAct.edited = true; };
+
+  // the prompt that will be sent: always shown, kept up to date while it is automatic
+  const ORIGIN = { auto: ["Automatic", "built from the description, what changes and the references — updates as you type"],
+    assistant: ["Written by the assistant", "you can still change it"], you: ["Edited by you", "sent exactly as it is"] };
+  const promptBox = h("textarea", { rows: 5 });
+  promptBox.value = entityAct.prompt || "";
+  const originChip = h("span", { class: "chip on origin-" + entityAct.origin }, ORIGIN[entityAct.origin][0]);
+  const originHint = h("span", { class: "hint" }, ORIGIN[entityAct.origin][1]);
+  const imagesLine = h("p", { class: "hint" });
+  const backAuto = h("button", { class: "ghost small", hidden: entityAct.origin === "auto", onclick: () => { Object.assign(entityAct, { prompt: null, origin: "auto", explain: "" }); renderStudio(); } }, "Back to automatic");
+  promptBox.oninput = () => { entityAct.prompt = promptBox.value; if (entityAct.origin !== "you") { entityAct.origin = "you"; originChip.textContent = ORIGIN.you[0]; originChip.className = "chip on origin-you"; originHint.textContent = ORIGIN.you[1]; backAuto.hidden = false; } };
+  let previewTimer = null;
+  const refreshPreview = () => {
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(async () => {
+      try {
+        const r = await call("/entity/preview", { path: state.path, id: e.id, action: entityAct.action, text: entityAct.text, place: entityAct.place, source: entityAct.source, refs: entityAct.refs });
+        if (entityAct.origin === "auto") promptBox.value = r.prompt;
+        imagesLine.textContent = r.images.length ? "Images sent: " + r.images.map((id, i) => { const a = assets()[id] || {}; const owner = entities()[a.entity]?.name; return `image ${i + 1} = ${owner ? owner + (a.look ? ` (${a.look})` : "") : a.title || id}`; }).join(" · ")
+          : "No image is sent: the description and your words only.";
+      } catch (err) { imagesLine.textContent = "⚠ " + err.message; }
+    }, 350);
+  };
+  function changed() { refreshPreview(); }   // the automatic prompt (and the list of images sent) follow every change
+  refreshPreview();
+
   const go = h("button", { class: "primary", ...busyAttr("entity-gen"), onclick: () => once("entity-gen", async () => {
-    const d = await call("/entity/generate", { path: state.path, id: e.id, action: entityAct.action, text: entityAct.text, place: entityAct.place, count: entityAct.count, prompt: entityAct.prompt,
+    const d = await call("/entity/generate", { path: state.path, id: e.id, action: entityAct.action, text: entityAct.text, place: entityAct.place, count: entityAct.count,
+      prompt: entityAct.origin === "auto" ? null : promptBox.value, look: entityAct.look,
       source: entityAct.action === "first" || entityAct.action === "place" ? null : entityAct.source, refs: entityAct.refs });
-    entityAct.text = ""; entityAct.prompt = null; entityAct.edited = false; setProject(d.project);
+    Object.assign(entityAct, { text: "", prompt: null, origin: "auto", look: "", ask: "", explain: "" }); setProject(d.project);
     toast(entityAct.action === "place" ? "Making start frames — they appear in Start images & frames"
       : entityAct.action === "sheet" ? "Making the character sheet — it appears under Looks (▦)" : `Making ${d.jobs.length} — they appear under Looks`);
   }) }, "Generate");
   return h("section", { class: "card actions-card" },
-    h("div", { class: "seg act-tabs" }, acts.map(([v, l]) => h("button", { class: entityAct.action === v ? "on" : "", disabled: !e.main && v !== "first", onclick: () => { entityAct.action = v; entityAct.prompt = null; renderStudio(); } }, l))),
+    h("div", { class: "seg act-tabs" }, acts.map(([v, l]) => h("button", { class: entityAct.action === v ? "on" : "", disabled: !e.main && v !== "first",
+      onclick: () => { Object.assign(entityAct, { action: v, prompt: null, origin: "auto", explain: "" }); renderStudio(); } }, l))),
+    h("div", { class: "assist-row" }, h("label", { class: "grow" }, "✨ Ask the assistant — in your own words; it looks at the pictures and fills in everything below", ask), askBtn),
+    explain,
     h("div", { class: "act-row" }, entityAct.action === "place" ? h("label", { class: "grow-0" }, "Place", placeSel) : null,
       sourceSel && ["look", "angle", "sheet"].includes(entityAct.action) ? h("label", { class: "grow-0" }, "Start from", sourceSel) : null,
-      h("label", { class: "grow" }, entityAct.action === "first" || entityAct.action === "sheet" ? "Extra details" : entityAct.action === "place" ? "What happens there" : "What changes", text), h("label", { class: "grow-0" }, "Results", count), go),
-    refsRow(e, () => { entityAct.prompt = entityAct.edited ? entityAct.prompt : null; }),
-    preview,
-    h("p", { class: "hint" }, entityAct.action === "place" ? "Makes start frames for scenes (Files › Start images & frames), with this character and the place's main image as references." : `About 4–10 s per image. Results are filed under ${e.name}'s looks.`));
+      h("label", { class: "grow" }, entityAct.action === "first" || entityAct.action === "sheet" ? "Extra details" : entityAct.action === "place" ? "What happens there" : "What changes", text),
+      isLook ? h("label", { class: "grow-0 look-name", title: "The label of the new images under Looks (e.g. “winter outfit”). Empty: the start of “What changes”." }, "Name of the new look", look) : null),
+    refsRow(e, () => changed()),
+    h("div", { class: "prompt-box" },
+      h("div", { class: "row" }, h("b", {}, "The prompt that will be sent"), originChip, originHint, h("span", { class: "spacer" }), backAuto),
+      promptBox, imagesLine),
+    h("div", { class: "row go-row" }, h("label", { class: "grow-0" }, "Results", count), go,
+      h("span", { class: "hint" }, entityAct.action === "place" ? "Start frames for scenes (Files › Start images & frames), with the character and the place as references." : `About 4–10 s per image; filed under ${e.name}'s looks.`)));
 }
 
 // ------------------------------------------------------------------ the panel (one item, in detail)
@@ -675,8 +734,25 @@ function newEntityForm(kind) {
     }
     openEntity(d.entity);
   }) }, `Create ${one.toLowerCase()}`);
+  const words = h("textarea", { rows: 2, placeholder: kind === "character" ? "e.g. a shy 18-year-old boy who always carries a camera, school uniform, messy dark hair, glasses"
+    : kind === "place" ? "e.g. a small ramen shop at night, steamy windows, red lanterns, narrow counter" : kind === "prop" ? "e.g. her grandmother's old film camera, brass and black leather" : "e.g. soft watercolour anime, pastel colours" });
+  words.value = f.words || ""; words.oninput = () => { f.words = words.value; };
+  const wordsOut = h("span", { class: "hint" });
+  const write = h("button", { class: "primary", ...busyAttr("write-desc"), title: "The assistant writes the name and the description from your words (and from the image, if you chose one)",
+    onclick: () => once("write-desc", async () => {
+      if (!words.value.trim() && !(mode.v === "image" && picked)) throw new Error("Say in your own words what it is");
+      wordsOut.textContent = "✨ Writing…";
+      try {
+        const r = await call("/assistant/write_description", { path: state.path, kind, words: words.value, name: name.value, asset: mode.v === "image" ? picked : null });
+        if (r.name && !name.value.trim()) { name.value = r.name; f.name = r.name; }
+        desc.value = r.description; f.desc = r.description;
+        wordsOut.textContent = "✨ Written by the assistant — change anything you like, then create it.";
+      } catch (err) { wordsOut.textContent = ""; throw err; }
+    }) }, "✨ Write it");
   return h("section", { class: "card new-form" }, h("h3", {}, `New ${one.toLowerCase()}`),
-    h("div", { class: "form-grid" }, h("label", {}, "Name — becomes its @name in scenes", name), h("label", { class: "wide" }, "Description", desc)),
+    h("div", { class: "assist-row" }, h("label", { class: "grow" }, `✨ Tell the assistant about it, in your own words — it writes the name and the description`, words), write),
+    wordsOut,
+    h("div", { class: "form-grid" }, h("label", {}, "Name — becomes its @name in scenes", name), h("label", { class: "wide" }, "Description — what the image and video models get (written by the assistant, or by you)", desc)),
     modeSeg, designRow, pickBox, h("div", { class: "row" }, go));
 }
 

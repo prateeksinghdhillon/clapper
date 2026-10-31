@@ -477,6 +477,48 @@ async def describe_image(request):
         return _err(exc)
 
 
+def _studio_help(fn):
+    """Run one Studio helper call on the active assistant model (loading the local one if needed)."""
+    provider = _provider()
+
+    def work():
+        with _turn_lock:
+            if provider.get("kind") == "local":
+                G.ensure_llm()
+            return fn(provider)
+    return work
+
+
+@routes.post("/clapper/api/assistant/image_prompt")
+async def image_prompt(request):
+    """{path, id, request, action, refs, source, place}: the assistant writes an image generation from plain words —
+    {change, name, prompt, explain, images_seen}."""
+    body = await _body(request)
+    loop = asyncio.get_running_loop()
+    try:
+        project = _open(body["path"], request)
+        out = await loop.run_in_executor(None, _studio_help(lambda prov: assistant.write_image_prompt(
+            prov, project, body["id"], body.get("request", ""), action=body.get("action") or "look",
+            refs=body.get("refs") or None, source=body.get("source") or None, place=body.get("place") or None)))
+        return _ok(out)
+    except ERRORS as exc:
+        return _err(exc)
+
+
+@routes.post("/clapper/api/assistant/write_description")
+async def write_description(request):
+    """{path, kind, words, name, asset?}: the user's own words → {name, description} for the image and video models."""
+    body = await _body(request)
+    loop = asyncio.get_running_loop()
+    try:
+        project = _open(body["path"], request)
+        out = await loop.run_in_executor(None, _studio_help(lambda prov: assistant.write_description(
+            prov, project, body.get("kind") or "character", body.get("words", ""), name=body.get("name", ""), asset_id=body.get("asset") or None)))
+        return _ok(out)
+    except ERRORS as exc:
+        return _err(exc)
+
+
 @routes.post("/clapper/api/assistant/describe_ref")
 async def describe_ref(request):
     """{path, name}: the model looks at a reference image once; returns a card for the user to review."""

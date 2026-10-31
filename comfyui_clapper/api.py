@@ -774,7 +774,8 @@ async def entity_generate(request):
             jobs = await loop.run_in_executor(None, lambda: _guarded(tools.queue_entity)(
                 project, _client(), body["id"], body["action"], body.get("text", ""), place_id=body.get("place"),
                 count=int(body.get("count") or 2), seed=body.get("seed"), aspect=body.get("aspect"),
-                prompt=body.get("prompt") or None, source=body.get("source") or None, refs=body.get("refs") or None))
+                prompt=body.get("prompt") or None, source=body.get("source") or None, refs=body.get("refs") or None,
+                look=body.get("look") or ""))
         return _ok({"jobs": [j["id"] for j in jobs], "project": _view(project)})
     except (KeyError, ProjectError, OSError, ValueError, RuntimeError) as exc:
         return _err(exc)

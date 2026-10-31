@@ -143,3 +143,52 @@ def test_the_description_goes_in_only_when_it_matches_the_picture(project):
     assert "(Aoi, winter coat)" in sheet["prompt"] and "raincoat" not in sheet["prompt"]   # another look: name and label
     swap, _ = tools.entity_inputs(project, project.aoi["id"], "angle", "sitting", refs=[{"asset": project.coat["id"], "use": "outfit"}])
     assert "raincoat" not in swap["prompt"]                                            # its clothes come from the reference
+
+
+def test_the_assistant_writes_a_generation_from_plain_words(project, monkeypatch):
+    seen = {}
+
+    class Fake:
+        sees_images = True
+
+        def __init__(self, provider):
+            pass
+
+        def chat(self, messages, **kw):
+            seen["content"] = messages[0]["content"]
+            return {"content": 'Here: {"change": "wearing a red wool jacket", "name": "red jacket", '
+                               '"prompt": "The same character as image 1 (Aoi), now wearing the jacket from image 2 in red wool.  Keep the face.", '
+                               '"explain": "Took the jacket shape from image 2 and made it red."}'}
+    monkeypatch.setattr(assistant, "Client", Fake)
+    from PIL import Image
+    for a in (project.aoi["main"], project.coat["id"]):
+        Image.new("RGB", (32, 32), "red").save(project.root / project.assets[a]["file"], format="PNG")
+    out = assistant.write_image_prompt({"vision": True}, project, project.aoi["id"], "a jacket like that one but red",
+                                       refs=[{"asset": project.coat["id"], "use": "outfit"}])
+    assert out == {"change": "wearing a red wool jacket", "name": "red jacket", "explain": "Took the jacket shape from image 2 and made it red.",
+                   "prompt": "The same character as image 1 (Aoi), now wearing the jacket from image 2 in red wool. Keep the face.", "images_seen": True}
+    texts = [p["text"] for p in seen["content"] if p["type"] == "text"]
+    assert texts[0] == "Image 1 (Aoi, default):" and texts[1] == "Image 2 (Aoi, winter coat):"   # it sees the images, numbered as sent
+    assert "do NOT repeat the old description" in texts[-1] and "a jacket like that one but red" in texts[-1]
+    with pytest.raises(ProjectError, match="own words"):
+        assistant.write_image_prompt({"vision": True}, project, project.aoi["id"], "  ")
+
+
+def test_the_assistant_writes_a_description_from_plain_words(project, monkeypatch):
+    class Fake:
+        sees_images = True
+
+        def __init__(self, provider):
+            pass
+
+        def chat(self, messages, **kw):
+            assert "a shy boy with a camera" in messages[0]["content"]
+            return {"content": '{"name": "Kenta", "description": "An 18-year-old boy,  slim, messy dark hair, round glasses, a vintage film camera on a strap."}'}
+    monkeypatch.setattr(assistant, "Client", Fake)
+    assert assistant.write_description({"vision": False}, project, "character", "a shy boy with a camera") == {
+        "name": "Kenta", "description": "An 18-year-old boy, slim, messy dark hair, round glasses, a vintage film camera on a strap."}
+
+
+def test_echoed_rules_are_taken_out_of_answers():
+    assert assistant._clean_prompt("Same layout. No rain, no puddles. Plain light grey background. 40-110 words.", "place") == "Same layout. No rain, no puddles."
+    assert assistant._look_name("foggy dawn bus stop", "Bus stop") == "foggy dawn"
