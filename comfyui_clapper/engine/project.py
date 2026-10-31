@@ -1,0 +1,397 @@
+"""Project store: scenes, takes, references, lineage. Pure Python (no torch).
+
+A project is a folder:
+    project.json            the single source of truth (atomic writes)
+    history/                previous project.json versions (undo)
+    refs/                   copies of every reference file
+    takes/<scene>/<take>/   one folder per take (latent, mp4, wav, meta.json)
+    exports/
+"""
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import os
+import re
+import secrets
+import shutil
+import time
+from pathlib import Path
+
+SCHEMA = 1
+HISTORY_KEEP = 50
+REF_KINDS = ("image", "audio", "video")
+JOIN_MODES = ("continue", "cut", "bridge")
+TAKE_STATUSES = ("queued", "rendering", "done", "failed", "interrupted")
+_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+_TAG_RE = re.compile(r"@([a-z][a-z0-9_]{0,31})\b")
+
+
+class ProjectError(ValueError):
+    pass
+
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _new_id(prefix: str) -> str:
+    return f"{prefix}_{secrets.token_hex(4)}"
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _atomic_write_json(path: Path, data: dict) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2, ensure_ascii=False)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+
+
+def folder_name(name: str) -> str:
+    """A safe folder name from a project name: 'Café promo 2!' -> 'cafe-promo-2'."""
+    import unicodedata
+
+    text = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return slug[:60].strip("-") or "project"
+
+
+def disk_usage(root: str | Path) -> dict:
+    """Bytes used by a project folder, by part. Symlinks are not followed."""
+    root = Path(root)
+    parts = {"takes": 0, "exports": 0, "refs": 0, "history": 0, "other": 0}
+    files = 0
+
+    def walk(path: Path) -> int:
+        nonlocal files
+        size = 0
+        try:
+            with os.scandir(path) as it:
+                for entry in it:
+                    if entry.is_dir(follow_symlinks=False):
+                        size += walk(Path(entry.path))
+                    elif entry.is_file(follow_symlinks=False):
+                        size += entry.stat(follow_symlinks=False).st_size
+                        files += 1
+        except OSError:
+            pass
+        return size
+
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        entries = []
+    for entry in entries:
+        key = entry.name if entry.name in parts else "other"
+        if entry.is_dir(follow_symlinks=False):
+            parts[key] += walk(Path(entry.path))
+        elif entry.is_file(follow_symlinks=False):
+            parts[key] += entry.stat(follow_symlinks=False).st_size
+            files += 1
+    return {"total": sum(parts.values()), "parts": parts, "files": files}
+
+
+def delete_project_folder(root: str | Path, *, home: str | Path | None = None) -> None:
+    """Permanently delete a project folder after safety checks."""
+    root = Path(root).resolve()
+    home = Path(home or Path.home()).resolve()
+    if not (root / "project.json").is_file():
+        raise ProjectError("not a project folder (no project.json)")
+    if home not in root.parents or root == home or len(root.relative_to(home).parts) < 2:
+        raise ProjectError("refusing to delete a folder this close to the home folder")
+    shutil.rmtree(root)
+
+
+class Project:
+    def __init__(self, root: str | Path, data: dict):
+        self.root = Path(root)
+        self.data = data
+
+    # ------------------------------------------------------------ create / open / save
+
+    @classmethod
+    def create(cls, root: str | Path, name: str, settings: dict | None = None) -> "Project":
+        root = Path(root)
+        if (root / "project.json").exists():
+            raise ProjectError(f"a project already exists at {root}")
+        for sub in ("history", "refs", "takes", "exports"):
+            (root / sub).mkdir(parents=True, exist_ok=True)
+        data = {
+            "schema": SCHEMA, "name": name, "created": _now(), "updated": _now(),
+            "settings": settings or {},       # overrides on top of DEFAULT_SETTINGS
+            "style": "",                      # shared text sent with every scene
+            "start_image": None,              # library name pinned as frame 0 of the first scene
+            "library": {"items": {}, "defaults": []},
+            "scenes": [],
+            "takes": {},
+        }
+        project = cls(root, data)
+        project.save(snapshot=False)
+        return project
+
+    @classmethod
+    def open(cls, root: str | Path) -> "Project":
+        root = Path(root)
+        data = json.loads((root / "project.json").read_text(encoding="utf-8"))
+        if data.get("schema") != SCHEMA:
+            raise ProjectError(f"unsupported project schema {data.get('schema')}")
+        return cls(root, data)
+
+    def save(self, *, snapshot: bool = True) -> None:
+        path = self.root / "project.json"
+        if snapshot and path.exists():
+            hist = self.root / "history"
+            hist.mkdir(exist_ok=True)
+            shutil.copy2(path, hist / f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}.json")
+            for old in sorted(hist.glob("*.json"))[:-HISTORY_KEEP]:
+                old.unlink()
+        self.data["updated"] = _now()
+        _atomic_write_json(path, self.data)
+
+    # ------------------------------------------------------------ library
+
+    def add_reference(self, name: str, source: str | Path, kind: str, *, description: str = "",
+                      definition: str = "", default: bool = False) -> dict:
+        if not _NAME_RE.match(name):
+            raise ProjectError("reference names are lowercase letters, digits and _, starting with a letter")
+        if kind not in REF_KINDS:
+            raise ProjectError(f"kind must be one of {REF_KINDS}")
+        source = Path(source)
+        digest = _sha256(source)
+        dest = self.root / "refs" / f"{name}{source.suffix.lower()}"
+        shutil.copy2(source, dest)
+        item = {"kind": kind, "file": str(dest.relative_to(self.root)), "sha256": digest,
+                "description": description, "definition": definition, "source": str(source)}
+        self.data["library"]["items"][name] = item
+        defaults = self.data["library"]["defaults"]
+        if default and name not in defaults:
+            defaults.append(name)
+        self.save()
+        return item
+
+    def update_reference(self, name: str, **fields) -> dict:
+        """description (for people), definition (sent to H3 in every scene that uses the reference),
+        card + card_status (what it looks like, for the assistant; "model" until the user confirms it)."""
+        item = self.data["library"]["items"].get(name)
+        if item is None:
+            raise ProjectError(f"unknown reference @{name}")
+        unknown = set(fields) - {"description", "definition", "card", "card_status"}
+        if unknown:
+            raise ProjectError(f"cannot update {sorted(unknown)}")
+        item.update(fields)
+        self.save()
+        return item
+
+    def ref_path(self, name: str) -> Path:
+        try:
+            return self.root / self.data["library"]["items"][name]["file"]
+        except KeyError:
+            raise ProjectError(f"unknown reference @{name}") from None
+
+    # ------------------------------------------------------------ scenes
+
+    @property
+    def scenes(self) -> list[dict]:
+        return self.data["scenes"]
+
+    def scene(self, scene_id: str) -> dict:
+        for scene in self.scenes:
+            if scene["id"] == scene_id:
+                return scene
+        raise ProjectError(f"unknown scene {scene_id}")
+
+    def scene_index(self, scene_id: str) -> int:
+        return next(i for i, s in enumerate(self.scenes) if s["id"] == scene_id)
+
+    def add_scene(self, *, text: str = "", seconds: float | None = None, after: str | None = None,
+                  join: str = "continue", refs: list[str] | None = None, title: str = "") -> dict:
+        if join not in JOIN_MODES:
+            raise ProjectError(f"join must be one of {JOIN_MODES}")
+        scene = {"id": _new_id("s"), "title": title, "text": text, "seconds": seconds, "join": join,
+                 "refs": refs, "selected_take": None, "created": _now()}
+        position = len(self.scenes) if after is None else self.scene_index(after) + 1
+        self.scenes.insert(position, scene)
+        self.save()
+        return scene
+
+    def update_scene(self, scene_id: str, **fields) -> dict:
+        allowed = {"title", "text", "seconds", "join", "refs"}
+        unknown = set(fields) - allowed
+        if unknown:
+            raise ProjectError(f"cannot update {sorted(unknown)}")
+        if "join" in fields and fields["join"] not in JOIN_MODES:
+            raise ProjectError(f"join must be one of {JOIN_MODES}")
+        self.scene(scene_id).update(fields)
+        self.save()
+        return self.scene(scene_id)
+
+    def move_scene(self, scene_id: str, new_index: int) -> None:
+        scene = self.scenes.pop(self.scene_index(scene_id))
+        self.scenes.insert(max(0, min(new_index, len(self.scenes))), scene)
+        self.save()
+
+    def remove_scene(self, scene_id: str) -> None:
+        """Removes the scene from the timeline; its takes stay on disk and in `takes`."""
+        self.scenes.pop(self.scene_index(scene_id))
+        self.save()
+
+    # ------------------------------------------------------------ references + prompt compile
+
+    def scene_refs(self, scene: dict) -> list[str]:
+        """The scene's own reference list, or the project defaults when it has none."""
+        refs = scene.get("refs")
+        return list(self.data["library"]["defaults"] if refs is None else refs)
+
+    def compile_prompt(self, scene: dict) -> dict:
+        """Resolve @names into <Picture N>/<Audio N> for this scene and join the shared style text.
+
+        Numbering follows what the conditioning node presents: the start image (if presented)
+        is Picture 1, then this scene's image references in list order; audio references are
+        numbered separately. Names used in the text but not active in the scene are errors.
+        """
+        refs = self.scene_refs(scene)
+        items = self.data["library"]["items"]
+        missing = [r for r in refs if r not in items]
+        if missing:
+            raise ProjectError(f"scene uses unknown references: {', '.join('@' + m for m in missing)}")
+        start = self.data.get("start_image")
+        labels: dict[str, str] = {}
+        picture = 0
+        if start:
+            picture += 1
+            labels[start] = f"<Picture {picture}>"
+        audio = 0
+        images, audios = [], []
+        for name in refs:
+            kind = items[name]["kind"]
+            if kind == "image" and name != start:
+                picture += 1
+                labels[name] = f"<Picture {picture}>"
+                images.append(name)
+            elif kind == "audio":
+                audio += 1
+                labels[name] = f"<Audio {audio}>"
+                audios.append(name)
+            elif kind == "video":
+                raise ProjectError("video references are not supported yet")
+        if audio > 3:
+            raise ProjectError("at most 3 audio references per scene")
+        if len(images) > 9:
+            raise ProjectError("at most 9 image references per scene")
+
+        errors: list[str] = []
+
+        def sub(match: re.Match) -> str:
+            name = match.group(1)
+            if name in labels:
+                return labels[name]
+            errors.append(name)
+            return match.group(0)
+
+        scene_text = scene.get("text", "").strip()
+        index = self.scene_index(scene["id"]) if any(s["id"] == scene["id"] for s in self.scenes) else 0
+        if index > 0 and scene.get("join") in ("continue", "bridge") and self.data.get("continuation_sentence", True):
+            # The Continuum author's recommended boundary opener, numbered from the current timeline order.
+            scene_text = f"Continuation of Chunk {index}. {scene_text}".strip()
+        # Definitions of the references active in this scene, in <Picture N>/<Audio N> order.
+        definitions = [items[n].get("definition", "").strip() for n in labels if items[n].get("definition", "").strip()]
+        style = self.data.get("style", "").strip()
+        if definitions:
+            lines = style.split("\n")
+            anchor = next((i for i, line in enumerate(lines) if line.strip().lower() == "subject_definitions:"), None)
+            if anchor is None:
+                style = "\n".join(["subject_definitions:", *definitions]) + ("\n\n" + style if style else "")
+            else:
+                style = "\n".join(lines[: anchor + 1] + definitions + lines[anchor + 1:])
+        body = "\n\n".join(part for part in (style, scene_text) if part)
+        text = _TAG_RE.sub(sub, body)
+        if errors:
+            raise ProjectError("not active in this scene: " + ", ".join(sorted({"@" + e for e in errors})))
+        return {"prompt": text, "labels": labels, "images": images, "audios": audios,
+                "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()}
+
+    # ------------------------------------------------------------ takes
+
+    def new_take(self, scene_id: str, **fields) -> dict:
+        take_id = _new_id("t")
+        number = 1 + max((t.get("number", 0) for t in self.data["takes"].values() if t["scene"] == scene_id), default=0)
+        take = {"id": take_id, "scene": scene_id, "number": number, "status": "queued", "created": _now(),
+                "dir": f"takes/{scene_id}/{take_id}", **fields}
+        self.data["takes"][take_id] = take
+        self.save()
+        return take
+
+    def update_take(self, take_id: str, **fields) -> dict:
+        take = self.data["takes"][take_id]
+        take.update(fields)
+        self.save()
+        return take
+
+    def select_take(self, scene_id: str, take_id: str) -> None:
+        if self.data["takes"].get(take_id, {}).get("scene") != scene_id:
+            raise ProjectError(f"take {take_id} does not belong to scene {scene_id}")
+        self.scene(scene_id)["selected_take"] = take_id
+        self.save()
+
+    def restore_take_prompt(self, take_id: str) -> dict:
+        """Put a take's own scene text/refs/length/join back into its scene (to redo or vary that version)."""
+        take = self.data["takes"][take_id]
+        if "scene_text" not in take:
+            raise ProjectError("this take does not have its scene text saved (made before this feature)")
+        fields = {"text": take["scene_text"], "refs": take.get("scene_refs"), "seconds": take.get("scene_seconds")}
+        if take.get("scene_join"):
+            fields["join"] = take["scene_join"]
+        return self.update_scene(take["scene"], **fields)
+
+    def takes_for(self, scene_id: str) -> list[dict]:
+        return sorted((t for t in self.data["takes"].values() if t["scene"] == scene_id),
+                      key=lambda t: (t.get("number", 0), t["created"]))
+
+    def previous_selected_take(self, scene_id: str) -> dict | None:
+        index = self.scene_index(scene_id)
+        if index == 0:
+            return None
+        prev = self.scenes[index - 1]
+        take_id = prev.get("selected_take")
+        return self.data["takes"].get(take_id) if take_id else None
+
+    # ------------------------------------------------------------ status badges
+
+    def scene_status(self, scene_id: str) -> list[str]:
+        """Badges: no_take, rendering, prompt_changed, refs_changed, continuity_changed, parent_missing."""
+        scene = self.scene(scene_id)
+        badges: list[str] = []
+        if any(t["status"] in ("queued", "rendering") for t in self.takes_for(scene_id)):
+            badges.append("rendering")
+        take = self.data["takes"].get(scene.get("selected_take") or "")
+        if not take or take.get("status") != "done":
+            badges.append("no_take")
+            return badges
+        try:
+            compiled = self.compile_prompt(scene)
+            if compiled["sha256"] != take.get("prompt_sha256"):
+                badges.append("prompt_changed")
+            if self.scene_refs(scene) != take.get("refs"):
+                badges.append("refs_changed")
+        except ProjectError:
+            badges.append("prompt_error")
+        if scene["join"] in ("continue", "bridge") and self.scene_index(scene_id) > 0:
+            prev = self.previous_selected_take(scene_id)
+            if prev is None:
+                badges.append("parent_missing")
+            elif take.get("parent_take") != prev["id"]:
+                badges.append("continuity_changed")
+        return badges
+
+    def snapshot(self) -> dict:
+        return copy.deepcopy(self.data)

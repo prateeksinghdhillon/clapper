@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Clapper — scene &amp; take director for MiniMax H3</title>
+<link rel="stylesheet" href="/clapper/static/style.css">
+</head>
+<body>
+<div class="sticky-top" id="stickyTop">
+<header class="topbar">
+  <button class="brand" id="homeBtn" title="All projects">
+    <span class="logo">▶</span><span class="brand-name">Clapper</span>
+  </button>
+  <div class="project-title" id="projectTitle"></div>
+  <div class="spacer"></div>
+  <button class="status-pill" id="statusPill" hidden title="Machine, queue and GPU — tap for details">
+    <span class="dot"></span><span class="status-text" id="statusText">…</span><span class="status-mini" id="statusMini"></span>
+  </button>
+  <nav class="top-actions" id="topActions" hidden>
+    <button class="ghost ai-btn" id="assistantBtn" title="Plan and write scenes with the assistant" aria-label="Assistant"><span class="ico">✨</span><span class="lbl">Assistant</span></button>
+    <button class="ghost wide-only" id="libraryBtn">References</button>
+    <button class="ghost wide-only" id="settingsBtn">Settings</button>
+    <button class="primary" id="exportBtn" title="Join the selected takes into one video" aria-label="Export"><span class="ico">⤓</span><span class="lbl">Export</span></button>
+  </nav>
+  <button class="menu-btn" id="menuBtn" hidden title="Menu" aria-label="Menu"><span class="avatar" id="avatar"></span><span class="caret">▾</span></button>
+</header>
+
+<div class="pop status-menu" id="statusMenu" hidden>
+  <div class="pop-title">Machine</div>
+  <div class="sys" id="sysStats"></div>
+  <div class="queue-line" id="queueLine"></div>
+  <div class="pop-title">GPU</div>
+  <div class="gpu-state" id="gpuState"></div>
+  <div class="seg" id="gpuMode">
+    <button data-v="auto" title="The assistant loads when you ask it something and is ejected when a render is queued">Auto</button>
+    <button data-v="manual" title="Only these buttons load or eject the assistant">Manual</button>
+  </div>
+  <div class="gpu-actions">
+    <button id="gpuLoad">Load assistant</button>
+    <button id="gpuEject">Eject assistant</button>
+    <button id="gpuFree" title="Unload ComfyUI's models from the GPU (only while nothing is rendering)">Free ComfyUI memory</button>
+  </div>
+  <div class="pop-foot"><button class="ghost" id="logsBtn">ComfyUI log</button><button class="ghost" id="aiSettingsBtn">Assistant settings…</button></div>
+</div>
+
+<div class="pop app-menu" id="appMenu" hidden>
+  <div class="menu-who"><b id="whoName"></b><span class="hint" id="whoId"></span></div>
+  <button class="project-only narrow-only" id="mLibrary">References</button>
+  <button class="project-only narrow-only" id="mSettings">Settings</button>
+  <button class="project-only" id="mStorage">Storage</button>
+  <button id="mLogs">ComfyUI log</button>
+  <button id="mAiSettings">Assistant settings…</button>
+  <button id="mPassword">Change password…</button>
+  <button class="danger" id="logoutBtn" title="Ends this profile's session on every device, so someone else can use Clapper">Log out</button>
+</div>
+
+<div class="livebar" id="liveBar" hidden>
+  <div class="live-row">
+    <div class="live-text"><span class="live-dot"></span><span id="liveText"></span></div>
+    <div class="live-actions">
+      <button class="stop" id="stopBtn" title="Stop this take (and queued scenes that continue from it)">■ Stop</button>
+      <button class="stop ghost" id="stopAllBtn" hidden title="Stop every take of this project that is rendering or waiting">Stop all</button>
+    </div>
+  </div>
+  <div class="live-track"><div class="live-fill" id="liveFill"></div></div>
+</div>
+</div>
+
+<main id="main">
+  <!-- Login: choose a profile -->
+  <section id="loginView" class="view login-view" hidden>
+    <form class="card login-card" id="loginForm">
+      <h1>Log in</h1>
+      <p class="muted">Each profile has its own projects. One profile can use Clapper at a time; the same profile may be open on several devices.</p>
+      <label>Profile id<input id="loginId" autocomplete="username" autocapitalize="none" spellcheck="false"></label>
+      <label>Password<input id="loginPass" type="password" autocomplete="current-password"></label>
+      <p class="target" id="loginMsg"></p>
+      <button class="primary" type="submit" id="loginBtn">Log in</button>
+    </form>
+    <form class="card login-card" id="setupForm" hidden>
+      <h1>Create the first profile</h1>
+      <p class="muted">No profiles exist yet. The first profile gets every project already on the list. More profiles are added on the machine running ComfyUI with <code>python cli/clapper.py profile add ID</code>.</p>
+      <label>Profile id (used to log in)<input id="setupId" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="studio"></label>
+      <label>Display name<input id="setupName" placeholder="Studio"></label>
+      <label>Password<input id="setupPass" type="password" autocomplete="new-password"></label>
+      <label>Password again<input id="setupPass2" type="password" autocomplete="new-password"></label>
+      <p class="target" id="setupMsg"></p>
+      <button class="primary" type="submit">Create profile and log in</button>
+    </form>
+  </section>
+
+  <!-- Home: project list -->
+  <section id="homeView" class="view" hidden>
+    <div class="home-head">
+      <h1>Projects</h1>
+      <p class="muted">Each project is one video: scenes, their takes, and references. Everything is saved automatically.</p>
+    </div>
+    <div class="home-grid">
+      <div class="card new-project">
+        <h2>New project</h2>
+        <label>Name<input id="newName" placeholder="Product launch video" autocomplete="off"></label>
+        <label>Save in<select id="newLocation"></select></label>
+        <p class="target" id="newTarget"></p>
+        <button class="primary" id="createBtn">Create project</button>
+        <details class="alt-path">
+          <summary>Type a folder path instead</summary>
+          <input id="newPath" placeholder="~/Documents/My-Videos/my-project" autocomplete="off">
+          <p class="hint">An existing project folder is opened instead of created.</p>
+        </details>
+      </div>
+      <div id="projectList" class="project-list"></div>
+    </div>
+  </section>
+
+  <!-- Project: storyboard + scene editor -->
+  <section id="projectView" class="view" hidden>
+    <div class="board-head">
+      <div>
+        <div class="board-stats" id="boardStats"></div>
+      </div>
+      <div class="board-actions"><button class="ghost" id="storageBtn" title="Disk space used by this project, and delete">Storage</button><button class="primary" id="renderRestBtn" hidden></button></div>
+    </div>
+    <div class="board" id="board"></div>
+  </section>
+</main>
+
+<!-- Assistant chat -->
+<aside class="chat" id="chatPanel" hidden>
+  <div class="chat-head">
+    <select id="chatSelect" title="Chats of this project"></select>
+    <button class="icon" id="chatNew" title="New chat">＋</button>
+    <button class="icon" id="chatClose" title="Close">✕</button>
+  </div>
+  <div class="chat-sub">
+    <span id="chatProvider"></span>
+    <span class="ctx" id="chatCtx" title="How full the model's context window is. At 60% older messages are summarised automatically."><i></i><b></b></span>
+    <span class="spacer"></span>
+    <button class="ghost" id="chatCompact" title="Summarise older messages now (they stay visible here)">Compact</button>
+    <button class="ghost" id="chatRename">Rename</button>
+    <button class="ghost danger" id="chatDelete">Delete</button>
+  </div>
+  <div class="chat-msgs" id="chatMsgs"></div>
+  <div class="chat-status" id="chatStatus" hidden></div>
+  <div class="chat-compose">
+    <div class="chips" id="chatRefs"></div>
+    <textarea id="chatInput" rows="3" placeholder="Describe what you want. Enter sends, Shift+Enter adds a line."></textarea>
+    <div class="row">
+      <label class="switch" title="Let the model reason before answering: better plans, slower"><input type="checkbox" id="chatThink"> think harder</label>
+      <span class="spacer"></span>
+      <button class="danger" id="chatStop" hidden>Stop</button>
+      <button class="primary" id="chatSend">Send</button>
+    </div>
+  </div>
+</aside>
+
+<!-- Scene editor drawer -->
+<aside class="drawer" id="drawer" hidden>
+  <div class="drawer-head">
+    <div>
+      <div class="eyebrow" id="edEyebrow">Scene</div>
+      <input class="title-input" id="edTitle" placeholder="Scene title (optional)">
+    </div>
+    <button class="icon" id="drawerClose" title="Close">✕</button>
+  </div>
+  <div class="drawer-body">
+    <div class="badges" id="edBadges"></div>
+
+    <section class="block">
+      <div class="block-head"><h3>What happens</h3><span class="hint">Type @ to insert a reference</span></div>
+      <textarea id="edText" rows="10" placeholder="integrated_multimodal_description: [Shot 1] …&#10;overall_soundscape: …&#10;non_diegetic_music: N/A"></textarea>
+      <div class="chips" id="edInsertChips"></div>
+    </section>
+
+    <section class="block grid2">
+      <label>Length (seconds)<input id="edSeconds" type="number" min="1" max="15" step="0.5"></label>
+      <div>
+        <div class="label">Joins the previous scene by</div>
+        <div class="seg" id="edJoin">
+          <button data-v="continue" title="Starts from the last moment of the previous scene's selected take">Continue</button>
+          <button data-v="bridge" title="Continues from the previous scene AND lands on the start of the next scene">Bridge</button>
+          <button data-v="cut" title="Fresh start, no carried motion or sound">Cut</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="block">
+      <div class="block-head"><h3>References in this scene</h3>
+        <label class="switch"><input type="checkbox" id="edUseDefaults"> use project defaults</label></div>
+      <div class="chips selectable" id="edRefs"></div>
+      <p class="hint" id="edRefsHint"></p>
+    </section>
+
+    <details class="block" id="edCompiledBox">
+      <summary>Prompt sent to H3</summary>
+      <pre id="edCompiled"></pre>
+    </details>
+
+    <section class="block actions-row">
+      <button class="primary big" id="edRender">Render take</button>
+      <button class="ai-btn" id="edAsk" title="Ask the assistant to write or change this scene">✨ Ask the assistant</button>
+      <details class="adv">
+        <summary>Options</summary>
+        <label>Seed (empty = random)<input id="edSeed" type="number"></label>
+        <label>Steps (empty = project setting)<input id="edSteps" type="number" min="1" max="60"></label>
+        <label>Continue from take (empty = previous scene's selected)<select id="edParent"></select></label>
+      </details>
+    </section>
+
+    <section class="block">
+      <div class="block-head"><h3>Takes</h3><span class="hint" id="edTakesHint"></span></div>
+      <div class="takes" id="edTakes"></div>
+    </section>
+
+    <section class="block danger-zone">
+      <button class="ghost danger" id="edRemove">Remove scene from timeline</button>
+      <span class="hint">Its takes stay saved on disk.</span>
+    </section>
+  </div>
+</aside>
+
+<!-- Modal dialogs -->
+<dialog id="libraryDlg" class="dlg">
+  <div class="dlg-head"><h2>References</h2><button class="icon" data-close>✕</button></div>
+  <div class="dlg-body">
+    <section class="block">
+      <div class="block-head"><h3>Shared style text</h3><span class="hint">Sent with every scene. Changing it changes every scene's prompt.</span></div>
+      <textarea id="styleText" rows="5"></textarea>
+      <button class="ghost" id="saveStyle">Save style text</button>
+    </section>
+    <section class="block">
+      <div class="block-head"><h3>Story notes</h3><span class="hint">The assistant's lasting memory for this project: story, characters, tone, decisions. Not sent to H3.</span></div>
+      <textarea id="notesText" rows="4"></textarea>
+      <button class="ghost" id="saveNotes">Save story notes</button>
+    </section>
+    <section class="block">
+      <div class="block-head"><h3>Library</h3><span class="hint">★ = used by scenes that have no own list · ▶ = start image (&lt;Picture 1&gt;)</span></div>
+      <div class="ref-grid" id="refGrid"></div>
+    </section>
+    <section class="block add-ref">
+      <h3>Add reference</h3>
+      <div class="grid3">
+        <label>File<input type="file" id="refFile" accept="image/*,audio/*"></label>
+        <label>Name (used as @name)<input id="refName" placeholder="hero"></label>
+        <label>Description<input id="refDesc" placeholder="Main character, front view"></label>
+      </div>
+      <div class="row">
+        <label class="switch"><input type="checkbox" id="refDefault" checked> use in every scene by default</label>
+        <label class="switch"><input type="checkbox" id="refStart"> start image</label>
+        <button class="primary" id="refAdd">Add</button>
+      </div>
+    </section>
+  </div>
+</dialog>
+
+<dialog id="settingsDlg" class="dlg">
+  <div class="dlg-head"><h2>Generation settings</h2><button class="icon" data-close>✕</button></div>
+  <div class="dlg-body" id="settingsBody"></div>
+  <div class="dlg-foot"><button class="ghost" id="settingsReset">Reset to Continuum defaults</button><button class="primary" id="settingsSave">Save settings</button></div>
+</dialog>
+
+<dialog id="pwDlg" class="dlg pw-dlg">
+  <div class="dlg-head"><h2>Change password</h2><button class="icon" data-close>✕</button></div>
+  <form class="dlg-body" id="pwForm">
+    <label>Current password<input id="pwCurrent" type="password" autocomplete="current-password"></label>
+    <label>New password<input id="pwNew" type="password" autocomplete="new-password"></label>
+    <label>New password again<input id="pwNew2" type="password" autocomplete="new-password"></label>
+    <p class="hint">Your other devices are logged out; this one stays logged in.</p>
+    <p class="target" id="pwMsg"></p>
+    <button class="primary" type="submit">Change password</button>
+  </form>
+</dialog>
+
+<dialog id="aiDlg" class="dlg">
+  <div class="dlg-head"><h2>Assistant settings</h2><button class="icon" data-close>✕</button></div>
+  <div class="dlg-body" id="aiBody"></div>
+  <div class="dlg-foot"><button class="ghost" id="aiAdd">+ Add an online provider</button><button class="primary" id="aiSave">Save</button></div>
+</dialog>
+
+<dialog id="exportDlg" class="dlg">
+  <div class="dlg-head"><h2>Export video</h2><button class="icon" data-close>✕</button></div>
+  <div class="dlg-body" id="exportBody"></div>
+  <div class="dlg-foot"><button class="ghost" data-close>Cancel</button><button class="primary" id="exportGo">Export</button></div>
+</dialog>
+
+<dialog id="projectDlg" class="dlg">
+  <div class="dlg-head"><h2 id="pdTitle">Project storage</h2><button class="icon" data-close>✕</button></div>
+  <div class="dlg-body">
+    <section class="block">
+      <div class="block-head"><h3>Disk space</h3><span class="hint" id="pdPath"></span></div>
+      <div class="usage-bar" id="pdBar"></div>
+      <div class="usage-legend" id="pdLegend"></div>
+    </section>
+    <section class="block danger-box">
+      <h3>Delete this project</h3>
+      <label class="radio"><input type="radio" name="pdMode" value="files" checked> <span><b>Delete the project and all its files</b> — every take, export, reference copy and its history. Frees <b id="pdFree"></b>. <b>This cannot be undone.</b></span></label>
+      <label class="radio"><input type="radio" name="pdMode" value="list"> <span><b>Only remove it from the project list</b> — the folder stays on disk and can be opened again later.</span></label>
+      <label>Type the project name <b id="pdName"></b> to confirm<input id="pdConfirm" autocomplete="off"></label>
+      <p class="hint" id="pdBusy"></p>
+    </section>
+  </div>
+  <div class="dlg-foot"><button class="ghost" data-close>Cancel</button><button class="danger-btn" id="pdDelete" disabled>Delete for good</button></div>
+</dialog>
+
+<dialog id="folderDlg" class="dlg folder-dlg">
+  <div class="dlg-head"><h2>Choose a folder</h2><button class="icon" data-close>✕</button></div>
+  <div class="dlg-body">
+    <div class="crumb" id="fdPath"></div>
+    <div class="row"><button id="fdUp">↑ Up</button><button id="fdNew">+ New folder</button></div>
+    <div class="folder-list" id="fdList"></div>
+  </div>
+  <div class="dlg-foot">
+    <label class="switch"><input type="checkbox" id="fdDefault"> make this the default</label>
+    <div class="row"><button class="ghost" data-close>Cancel</button><button class="primary" id="fdUse">Use this folder</button></div>
+  </div>
+</dialog>
+
+<dialog id="playerDlg" class="dlg player">
+  <div class="dlg-head"><h2 id="playerTitle">Preview</h2><button class="icon" data-close>✕</button></div>
+  <div class="dlg-body"><video id="playerVideo" controls playsinline></video><p class="hint" id="playerInfo"></p></div>
+</dialog>
+
+<section class="logs" id="logsPanel" hidden>
+  <div class="logs-head">
+    <b>ComfyUI log</b>
+    <select id="logsFilter"><option value="all">Everything</option><option value="warn">Warnings &amp; errors</option><option value="progress">Progress only</option></select>
+    <input id="logsSearch" placeholder="Filter text…">
+    <label class="switch"><input type="checkbox" id="logsFollow" checked> follow</label>
+    <button class="ghost" id="logsCopy">Copy</button>
+    <button class="icon" id="logsClose" title="Close">✕</button>
+  </div>
+  <pre id="logsText"></pre>
+</section>
+
+<div class="toast" id="toast" hidden></div>
+<script src="/clapper/static/app.js"></script>
+<script src="/clapper/static/assistant.js"></script>
+</body>
+</html>

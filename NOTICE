@@ -1,0 +1,5 @@
+Clapper includes code adapted from ComfyUI-H3-Continuum
+(https://github.com/ukr8b3g-cmyk/ComfyUI-H3-Continuum), MIT License,
+Copyright (c) 2026 ukr8b3g-cmyk: frame-grid helpers (temporal.py, in
+comfyui_clapper/h3_temporal.py) and the masked AV prefix continuation
+(v3/masked_continuation.py and v2/h3_builder.py, in comfyui_clapper/nodes.py).
