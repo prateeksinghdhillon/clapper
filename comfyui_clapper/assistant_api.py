@@ -370,6 +370,7 @@ async def proposal_action(request):
                         prop["result"] = assistant.apply_proposal(project, prop, force=bool(body.get("force")))
                 except (ProjectError, RuntimeError) as exc:
                     prop["error"] = str(exc)
+                    assistant.save_chat(project, chat)   # the card shows why it was not applied, also after a reload
                     raise
                 prop.pop("error", None)
                 prop["status"] = "applied"

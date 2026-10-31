@@ -110,7 +110,18 @@ def _view(project: Project) -> dict:
     data["asset_roles"] = list(ASSET_ROLES)
     data["video_model_modes"] = list(VIDEO_MODEL_MODES)
     data["video_aspect"] = director.video_aspect(project)
+    # takes made outside a scene (adopted) have no scene_text: the text they were made from, from their prompt
+    for tid, t in data["takes"].items():
+        if t.get("scene_text") is None and t.get("status") == "done":
+            key = (str(project.root), tid)
+            if key not in _TAKE_TEXT:
+                from .engine.assistant import take_text
+                _TAKE_TEXT[key] = take_text(project, t)
+            t["prompt_text"] = _TAKE_TEXT[key]
     return data
+
+
+_TAKE_TEXT: dict = {}   # (project, take) → recovered text (a take's prompt never changes)
 
 
 def _ok(payload: dict | list) -> web.Response:
@@ -396,6 +407,15 @@ async def update_project(request):
                     project.data[key] = body[key]
             if "defaults" in body:
                 project.data["library"]["defaults"] = list(body["defaults"])
+            if "settings_changes" in body:   # only what the user changed, on top of the project's current settings
+                from .engine.settings import merge
+                project.data["settings"] = merge(project.data.get("settings") or {}, body["settings_changes"] or {})
+            if body.get("default_toggle"):   # one name on or off: the rest of the list as it is now, not as the page last saw it
+                name, defaults = body["default_toggle"], project.data["library"]["defaults"]
+                if body.get("on") and name not in defaults:
+                    defaults.append(name)
+                elif not body.get("on") and name in defaults:
+                    defaults.remove(name)
             project.save()
         return _ok(_view(project))
     except (KeyError, ProjectError, OSError) as exc:
@@ -542,7 +562,7 @@ async def remove_ref(request):
     try:
         async with _lock:
             project = _open(body["path"], request)
-            project.remove_reference(body["name"])
+            project.remove_reference(body["name"], force=bool(body.get("force")))
         return _ok(_view(project))
     except (KeyError, ProjectError, OSError) as exc:
         return _err(exc)
@@ -724,7 +744,8 @@ async def entity_action(request):
             elif action == "add":
                 project.add_to_entity(body["asset"], body.get("id"), look=body.get("look", ""))
             elif action == "remove":
-                project.remove_entity(body["id"])
+                note = project.remove_entity(body["id"], force=bool(body.get("force")))
+                return _ok({**_view(project), "note": note})
             else:
                 raise ProjectError(f"unknown entity action {action!r}")
         return _ok(_view(project))

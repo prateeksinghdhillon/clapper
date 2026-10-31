@@ -134,6 +134,21 @@ def queue_take(project: Project, scene_id: str, client: ComfyClient, **kwargs) -
     return project.update_take(take["id"], prompt_id=prompt_id)
 
 
+def history_outcome(entry: dict | None) -> tuple[str, str | None]:
+    """What ComfyUI's history says about a finished prompt: ("ok" | "error" | "stopped" | "lost", error message).
+    "stopped" = cancelled (Stop here or in ComfyUI); "lost" = no history (e.g. ComfyUI restarted)."""
+    if not entry:
+        return "lost", None
+    status = entry.get("status") or {}
+    if status.get("status_str") != "error":
+        return "ok", None
+    kinds = [m[0] for m in status.get("messages", [])]
+    if "execution_interrupted" in kinds and "execution_error" not in kinds:
+        return "stopped", None
+    msgs = [m[1] for m in status.get("messages", []) if m[0] == "execution_error"]
+    return "error", str(msgs[-1].get("exception_message") if msgs else "execution error")[:2000]
+
+
 def queue_rest(project: Project, client: ComfyClient, *, from_scene: str | None = None, **kwargs) -> list[dict]:
     """Queue every scene from the first one without a finished selected take (or from `from_scene`) to the end.
 
@@ -151,9 +166,16 @@ def queue_rest(project: Project, client: ComfyClient, *, from_scene: str | None 
     if any(t["status"] in ("queued", "rendering") and project.scene_index(t["scene"]) >= start
            for t in project.data["takes"].values() if any(s["id"] == t["scene"] for s in scenes)):
         raise ProjectError("some of these scenes are already rendering — wait for them or re-queue later")
+    for i, scene in enumerate(scenes[start:], start + 1):   # all or nothing: a broken scene later must not leave half a chain
+        try:
+            project.compile_prompt(scene)
+        except ProjectError as exc:
+            raise ProjectError(f"scene {i} cannot render ({exc}); nothing was queued") from None
     queued, parent_id = [], None
     for scene in scenes[start:]:
         take = queue_take(project, scene["id"], client, parent_take_id=parent_id, allow_pending_parent=True, **kwargs)
+        # each scene of the chain continues from the new take before it, so the new takes replace the old ones
+        project.update_take(take["id"], select_when_done=True)
         queued.append(take)
         parent_id = take["id"]
     return queued
@@ -183,7 +205,7 @@ def refresh(project: Project, client: ComfyClient) -> list[str]:
             project.update_take(take["id"], status="done", width=meta["width"], height=meta["height"],
                                 frames=meta["frames"], finished=meta.get("saved_utc"), **extra)
             scene = next((s for s in project.scenes if s["id"] == take["scene"]), None)
-            if scene is not None and not scene.get("selected_take"):
+            if scene is not None and (not scene.get("selected_take") or take.get("select_when_done")):
                 project.select_take(scene["id"], take["id"])
             changed.append(take["id"])
             continue
@@ -194,11 +216,11 @@ def refresh(project: Project, client: ComfyClient) -> list[str]:
             continue
         if pid in pending:
             continue
-        entry = client.history(pid) if pid else None
-        if entry and entry.get("status", {}).get("status_str") == "error":
-            msgs = [m[1] for m in entry["status"].get("messages", []) if m[0] == "execution_error"]
-            error = (msgs[-1].get("exception_message") if msgs else "execution error")
-            project.update_take(take["id"], status="failed", error=str(error)[:2000])
+        outcome, error = history_outcome(client.history(pid) if pid else None)
+        if outcome == "error":
+            project.update_take(take["id"], status="failed", error=error)
+        elif outcome == "stopped":
+            project.update_take(take["id"], status="interrupted", error="stopped before it finished")
         else:  # not queued, not running, no result: lost to a restart/shutdown
             project.update_take(take["id"], status="interrupted")
         changed.append(take["id"])
@@ -206,9 +228,30 @@ def refresh(project: Project, client: ComfyClient) -> list[str]:
 
 
 def requeue(project: Project, take_id: str, client: ComfyClient) -> dict:
-    """Queue a new take with the same scene, seed and parent as an interrupted/failed one."""
+    """Queue a new take with the same scene, seed and step count as an interrupted/failed one. It continues from
+    the same take as before while that is still the previous scene's take; otherwise (it was interrupted too, and
+    has been re-rendered since) from the previous scene's newest take — its selected one, or one still rendering."""
     old = project.data["takes"][take_id]
-    return queue_take(project, old["scene"], client, seed=old["seed"], parent_take_id=old.get("parent_take"))
+    sid = old["scene"]
+    if not any(s["id"] == sid for s in project.scenes):
+        raise ProjectError("this take's scene was removed from the timeline")
+    parent_id, pending_ok = old.get("parent_take"), False
+    index = project.scene_index(sid)
+    if parent_id and index > 0:
+        prev = project.scenes[index - 1]
+        before = project.data["takes"].get(parent_id) or {}
+        selected = project.data["takes"].get(prev.get("selected_take") or "") or {}
+        active = [t for t in project.takes_for(prev["id"]) if t["status"] in ("queued", "rendering")]
+        if active:                                   # the scene before is being re-rendered: follow that take
+            parent_id, pending_ok = active[-1]["id"], True
+        elif before.get("status") != "done" or (selected and selected["id"] != parent_id):
+            parent_id = None                         # its old parent is gone or replaced: the selected take
+    overrides = {"sampling": {"steps": old["steps"]}} if old.get("steps") else None
+    take = queue_take(project, sid, client, seed=old["seed"], parent_take_id=parent_id, allow_pending_parent=pending_ok,
+                      overrides=overrides)
+    if old.get("select_when_done"):
+        project.update_take(take["id"], select_when_done=True)
+    return take
 
 
 __all__ = ["plan_take", "queue_take", "refresh", "requeue", "project_settings"]

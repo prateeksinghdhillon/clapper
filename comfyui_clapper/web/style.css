@@ -598,3 +598,8 @@ label.mini.slider input { width: 150px; padding: 0; }
 .ov-thumb { width: 44px; height: 32px; object-fit: contain; background: repeating-conic-gradient(#8883 0 25%, transparent 0 50%) 0 0 / 10px 10px; border-radius: 4px; }
 .card h4 { margin: 12px 0 6px; font-size: 14px; }
 .test-out.ok { color: var(--ok); } .test-out.bad { color: var(--bad); }
+
+/* what a take was made from */
+.made-from { margin-top: 6px; }
+.made-from summary { cursor: pointer; font-size: 0.85em; color: var(--muted, #888); }
+.made-text { white-space: pre-wrap; word-break: break-word; font-size: 0.8em; max-height: 240px; overflow: auto; background: var(--panel-2); padding: 8px; border-radius: 6px; margin: 4px 0 0; }

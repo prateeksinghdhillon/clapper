@@ -29,6 +29,7 @@ function wsSignature(ws) {
   const p = state.project;
   const jobsSig = Object.values(p.jobs || {}).map((j) => j.id + j.status).join();
   if (ws === "studio") return JSON.stringify([Object.keys(p.assets || {}).length, p.entities, p.library, jobsSig,
+    p.scenes.map((s) => [s.refs, s.start_image, s.selected_take, (s.text || "").length]), Object.values(p.takes).map((t) => t.status + (t.upscaled || "")),
     Object.values(p.assets || {}).map((a) => [a.title, a.role, a.entity, a.look, a.transcript])]);
   return JSON.stringify([p.scenes.map((s) => s.selected_take), Object.values(p.takes).map((t) => [t.status, t.upscaled, Object.keys(t.upscales || {})]), jobsSig,
     mixBusy ? "" : p.finish || {}]);   // the finish too: a change made elsewhere is shown (not while this page is saving its own)
@@ -78,7 +79,10 @@ const assetText = (a) => [a.title, a.look, a.role, ...(assetNames(a.id) || []), 
 function usedIn(name) {
   if (!name) return [];
   const re = new RegExp("@" + name + "\\b");
-  return scenes().map((s, i) => ({ s, n: i + 1 })).filter(({ s }) => re.test(s.text || "") || (s.refs || []).includes(name) || s.start_image === name);
+  const lib = state.project.library;
+  // the scene's own references, or the project's defaults when it uses them; scene 1 opens on the project start image
+  return scenes().map((s, i) => ({ s, n: i + 1 })).filter(({ s, n }) => re.test(s.text || "") || (s.refs ?? lib.defaults).includes(name)
+    || s.start_image === name || (n === 1 && s.start_image == null && state.project.start_image === name));
 }
 function clipsUsing(aid) { return scenes().map((s, i) => ({ s, n: i + 1 })).filter(({ s }) => (s.audio_clips || []).some((c) => c.asset === aid)); }
 
@@ -158,7 +162,7 @@ function tileThumb(a) {
 // Jobs still running, as tiles (scope: files | entity id | made).
 function jobTiles(scope, entityId) {
   const list = activeJobs().filter((j) => j.kind !== "upscale" && (scope === "entity" ? j.entity === entityId || (j.uses || [])[0] === entityId : scope === "made" ? studio.made.has(j.id) : !j.entity));
-  const failed = jobs().filter((j) => j.kind !== "upscale" && (j.status === "failed" || j.status === "interrupted") && (scope === "entity" ? j.entity === entityId : scope === "made" ? studio.made.has(j.id) : !j.entity)).slice(0, 3);
+  const failed = jobs().filter((j) => j.kind !== "upscale" && (j.status === "failed" || j.status === "interrupted") && (scope === "entity" ? j.entity === entityId || (j.uses || [])[0] === entityId : scope === "made" ? studio.made.has(j.id) : !j.entity)).slice(0, 3);
   const cur = state.live?.current;
   const box = h("div", { class: "grid jobs-grid", "data-live": "jobs", "data-scope": scope, "data-entity": entityId || "" },
     ...list.map((j) => h("div", { class: "tile pending" },
@@ -226,7 +230,8 @@ function renderEntityPage(e) {
           h("span", { class: "spacer" }),
           h("button", { class: "ghost danger", onclick: () => guard(async () => {
             if (!confirm(`Remove ${e.name}? Its images stay in the library (Files).`)) return;
-            setProject(await call("/entity", { path: state.path, action: "remove", id: e.id })); studio.page = null; renderStudio();
+            const d = await callRemoving("/entity", { path: state.path, action: "remove", id: e.id }); if (!d) return;
+            setProject(d); studio.page = null; renderStudio(); if (d.note) toast(d.note);
           }) }, `Remove ${one.toLowerCase()}`)))),
     entityActions(e),
     h("div", { class: "coll-head" }, h("h3", {}, "Looks"), h("span", { class: "hint" }, "★ = the main look, used in scenes as @" + e.ref)),
@@ -246,14 +251,16 @@ const DESC_PH = {
 };
 
 // The action box on an entity page: one place to make more of it.
-const entityAct = { action: "look", text: "", place: "", count: 2, prompt: null };
+const entityAct = { action: "look", text: "", place: "", count: 2, prompt: null, for: null };
 function entityActions(e) {
   const kind = e.kind;
+  // what was typed (and a hand-edited prompt) belongs to this character only
+  if (entityAct.for !== e.id) Object.assign(entityAct, { text: "", prompt: null, edited: false, for: e.id });
   const acts = [["look", kind === "character" ? "New outfit / look" : kind === "place" ? "Variation (time, weather)" : "Variation"], ["angle", "New angle / pose"], ...(kind === "character" ? [["place", "Put in a place"]] : []), ["first", e.main ? "More designs" : "Design it"]];
   if (!e.main && entityAct.action !== "first") entityAct.action = "first";
   const ph = { look: kind === "character" ? "wearing a winter coat and a red scarf" : "at night in the rain", angle: kind === "character" ? "from the side, walking" : "from above", place: "sitting on the bench, looking down the road", first: "anything to add to the description (optional)" };
   const text = h("input", { value: entityAct.text, placeholder: ph[entityAct.action] });
-  text.oninput = () => { entityAct.text = text.value; entityAct.prompt = null; };
+  text.oninput = () => { entityAct.text = text.value; if (!entityAct.edited) entityAct.prompt = null; };   // a prompt edited by hand is kept
   const places = Object.values(entities()).filter((x) => x.kind === "place" && x.main);
   const placeSel = h("select", {}, places.length ? places.map((p) => h("option", { value: p.id, selected: p.id === entityAct.place }, p.name)) : [h("option", { value: "" }, "make a place first (Places)")]);
   if (!entityAct.place && places[0]) entityAct.place = places[0].id;
@@ -266,10 +273,10 @@ function entityActions(e) {
     if (!preview.open || entityAct.prompt) { promptBox.value = entityAct.prompt || promptBox.value; return; }
     guard(async () => { const r = await call("/entity/preview", { path: state.path, id: e.id, action: entityAct.action, text: entityAct.text, place: entityAct.place }); promptBox.value = r.prompt; });
   });
-  promptBox.oninput = () => { entityAct.prompt = promptBox.value; };
+  promptBox.oninput = () => { entityAct.prompt = promptBox.value; entityAct.edited = true; };
   const go = h("button", { class: "primary", ...busyAttr("entity-gen"), onclick: () => once("entity-gen", async () => {
     const d = await call("/entity/generate", { path: state.path, id: e.id, action: entityAct.action, text: entityAct.text, place: entityAct.place, count: entityAct.count, prompt: entityAct.prompt });
-    entityAct.text = ""; entityAct.prompt = null; setProject(d.project);
+    entityAct.text = ""; entityAct.prompt = null; entityAct.edited = false; setProject(d.project);
     toast(entityAct.action === "place" ? "Making start frames — they appear in Start images & frames" : `Making ${d.jobs.length} — they appear under Looks`);
   }) }, "Generate");
   return h("section", { class: "card actions-card" },
@@ -379,11 +386,14 @@ function makeMore(a, e) {
   const o = a.origin || {};
   if (o.type === "tool" && o.inputs && o.tool && !o.tool.startsWith("upscale")) {
     const values = recipeEdits[a.id] || (recipeEdits[a.id] = { ...o.inputs });
+    const edited = JSON.stringify(values) !== JSON.stringify(o.inputs);
     const tool = (toolState.list || []).find((t) => t.id === o.tool);
     if (!toolState.list) loadTools().then(() => renderPanel()).catch(() => {});
     const count = h("select", {}, [1, 2, 4].map((n) => h("option", { value: n }, `${n}`)));
     sections.push(h("section", { class: "psec recipe" }, h("h4", {}, "Recipe"),
       h("p", { class: "hint" }, `${(o.tool_title || o.tool).replace(/ \(.*\)$/, "")} · seed ${o.seed}. Change anything and make a new version — the original stays.`),
+      edited ? h("p", { class: "hint warn" }, "Shown with your changes (not made yet) — not what made this image. ",
+        h("button", { class: "ghost small", onclick: () => { delete recipeEdits[a.id]; renderPanel(); } }, "Show the original")) : null,
       ...(tool ? tool.fields.filter((f) => !f.advanced).map((f) => toolField(f, values)) : [h("p", { class: "hint" }, "Loading the tool…")]),
       h("div", { class: "row" }, h("label", { class: "grow-0" }, "Results", count),
         h("button", { class: "primary", ...busyAttr("again"), onclick: () => once("again", async () => {
@@ -395,7 +405,7 @@ function makeMore(a, e) {
     sections.push(h("section", { class: "psec" }, h("h4", {}, "Change it"),
       h("div", { class: "row" }, text, h("button", { class: "primary", ...busyAttr("change"), onclick: () => once("change", async () => {
         if (!text.value.trim()) throw new Error("Describe the change");
-        const d = await call("/tool/run", { path: state.path, tool: "image", inputs: { prompt: `The same picture as image 1, ${text.value.trim()}. Keep everything else the same.`, images: [a.id], aspect: "9:16" }, count: 2, role: a.role, title: a.title, version_of: a.id });
+        const d = await call("/tool/run", { path: state.path, tool: "image", inputs: { prompt: `The same picture as image 1, ${text.value.trim()}. Keep everything else the same.`, images: [a.id], aspect: aspectOf(a) }, count: 2, role: a.role, title: a.title, version_of: a.id });
         setProject(d.project); toast("Making 2 versions");
       }) }, "Make 2"))));
   }
@@ -429,6 +439,13 @@ function takesCollection() {
       : [h("div", { class: "empty-state" }, h("p", {}, "No finished takes yet — render scenes in Scenes."))]));
 }
 
+function aspectOf(a) {   // keep an image's shape when making versions of it
+  if (!a.width || !a.height) return "9:16";
+  const shapes = { "1:1": 1, "9:16": 9 / 16, "16:9": 16 / 9, "3:4": 3 / 4, "4:3": 4 / 3, "2:3": 2 / 3, "3:2": 3 / 2 };
+  const r = a.width / a.height;
+  return Object.keys(shapes).reduce((best, k) => (Math.abs(shapes[k] - r) < Math.abs(shapes[best] - r) ? k : best), "1:1");
+}
+
 function takeDetail(t) {
   const sc = sceneById(t.scene); const n = scenes().indexOf(sc) + 1;
   const v = h("video", { src: takeVideo(t), controls: true, playsinline: true, preload: "metadata" });
@@ -443,6 +460,7 @@ function takeDetail(t) {
       }) }, "Save this frame"),
       h("button", { onclick: () => openUpscale([t.id], `Upscale scene ${n} · ${takeLabel(t)}`) }, "⤢ Upscale…"),
       h("button", { onclick: () => { showWs("scenes"); openEditor(t.scene); } }, "Open scene")),
+    takeMadeFrom(t, sc),
     upscaleRow(t) || h("p", { class: "hint" }, "No upscaled versions yet.")];
 }
 
@@ -524,11 +542,17 @@ function newEntityForm(kind) {
     if (mode.v === "image" && !picked) throw new Error("Choose an image, or design it now");
     const d = await call("/entity", { path: state.path, action: "create", kind, name: name.value.trim(), description: desc.value.trim(), from_asset: mode.v === "image" ? picked : null });
     setProject(d.project);
+    studio.newOpts = {}; delete newForms[kind];
     if (mode.v === "design") {
-      const g = await call("/entity/generate", { path: state.path, id: d.entity, action: "first", count: Number(count.value) });
-      setProject(g.project);
+      try {
+        const g = await call("/entity/generate", { path: state.path, id: d.entity, action: "first", count: Number(count.value) });
+        setProject(g.project);
+      } catch (err) {   // it exists now: open it (creating it again would make a second one)
+        openEntity(d.entity);
+        throw new Error(`${name.value.trim()} was created, but designing failed: ${err.message}. Try "Design it" on its page.`);
+      }
     }
-    studio.newOpts = {}; delete newForms[kind]; openEntity(d.entity);
+    openEntity(d.entity);
   }) }, `Create ${one.toLowerCase()}`);
   return h("section", { class: "card new-form" }, h("h3", {}, `New ${one.toLowerCase()}`),
     h("div", { class: "form-grid" }, h("label", {}, "Name — becomes its @name in scenes", name), h("label", { class: "wide" }, "Description", desc)),

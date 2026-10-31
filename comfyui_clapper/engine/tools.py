@@ -299,6 +299,9 @@ def queue_tool(project: Project, client: ComfyClient, tool_id: str, inputs: dict
                "dir": f"jobs/{job_id}", "outputs": []}
         if version_of:
             job["version_of"] = version_of
+            src = project.assets.get(version_of) or {}
+            if src.get("entity") in project.entities:   # a version of a character's look is filed under that character
+                job["entity"], job["look"] = src["entity"], (src.get("look") or "look") + " (version)"
         try:
             job["prompt_id"] = client.submit(graph)
         except Exception as exc:
@@ -424,17 +427,21 @@ def collect(project: Project, client: ComfyClient) -> list[str]:
             continue
         entry = client.history(pid) if pid else None
         status = (entry or {}).get("status", {})
+        from .director import history_outcome
+        outcome, error = history_outcome(entry)
         if job.get("kind") == "upscale":
             from . import upscale
-            ok = entry and status.get("status_str") != "error" and upscale.finish_job(project, job)
+            # the result file counts even without ComfyUI's history (lost when ComfyUI restarts)
+            ok = outcome in ("ok", "lost") and upscale.finish_job(project, job)
             if ok:
                 stamps = {m[0]: m[1].get("timestamp") for m in status.get("messages", [])}
                 if stamps.get("execution_start") and stamps.get("execution_success"):
                     job["seconds"] = round((stamps["execution_success"] - stamps["execution_start"]) / 1000, 1)
                 job.update(status="done", finished=_now())
-            elif entry and status.get("status_str") == "error":
-                msgs = [m[1] for m in status.get("messages", []) if m[0] == "execution_error"]
-                job.update(status="failed", error=str(msgs[-1].get("exception_message") if msgs else "execution error")[:2000])
+            elif outcome == "error":
+                job.update(status="failed", error=error)
+            elif outcome == "stopped":
+                job.update(status="interrupted", error="stopped before it finished")
             elif entry:
                 job.update(status="failed", error="the upscale finished without writing a video")
             else:
@@ -443,7 +450,7 @@ def collect(project: Project, client: ComfyClient) -> list[str]:
             continue
         folder = project.root / job["dir"]
         files = sorted(p for p in folder.iterdir() if p.is_file() and not p.name.endswith(".tmp")) if folder.is_dir() else []
-        if entry and status.get("status_str") != "error" and files:
+        if outcome in ("ok", "lost") and files:   # files on disk are the result, also when ComfyUI's history is gone
             refs = job["inputs"].get("images") or ([job["inputs"]["voice"]] if job["inputs"].get("voice") else [])
             parent = job.get("version_of") or (refs[0] if job["kind"] == "image" and refs else None)
             for n, path in enumerate(files, 1):
@@ -464,9 +471,10 @@ def collect(project: Project, client: ComfyClient) -> list[str]:
             if stamps.get("execution_start") and stamps.get("execution_success"):
                 job["seconds"] = round((stamps["execution_success"] - stamps["execution_start"]) / 1000, 1)
             job.update(status="done", finished=_now())
-        elif entry and status.get("status_str") == "error":
-            msgs = [m[1] for m in status.get("messages", []) if m[0] == "execution_error"]
-            job.update(status="failed", error=str(msgs[-1].get("exception_message") if msgs else "execution error")[:2000])
+        elif outcome == "error":
+            job.update(status="failed", error=error)
+        elif outcome == "stopped":
+            job.update(status="interrupted", error="stopped before it finished")
         elif entry:
             job.update(status="failed", error="the workflow finished without writing a file")
         else:
@@ -484,7 +492,10 @@ def dismiss(project: Project, job_id: str) -> None:
         raise ProjectError(f"unknown job {job_id}")
     if job["status"] in ("queued", "running"):
         raise ProjectError("cancel the job first")
+    folder = project.root / job["dir"]
+    if job.get("kind") != "upscale" and folder.is_dir() and any(p.is_file() and not p.name.endswith(".tmp") for p in folder.iterdir()):
+        raise ProjectError("this job has results on disk that are not in the library yet; refresh to collect them")
     if job.get("kind") != "upscale":  # an upscale's folder holds the result next to its take
-        shutil.rmtree(project.root / job["dir"], ignore_errors=True)
+        shutil.rmtree(folder, ignore_errors=True)
     del project.data["jobs"][job_id]
     project.save()

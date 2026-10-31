@@ -223,6 +223,7 @@ def cmd_render(args) -> int:
         started = time.time()
         while pending:
             time.sleep(5)
+            p = _open(args)   # fresh each time: the app may have changed the project meanwhile
             director.refresh(p, client)
             pending = {t for t in pending if p.data["takes"][t]["status"] in ("queued", "rendering")}
             print(f"  … {time.time() - started:.0f}s, {len(pending)} pending", end="\r", flush=True)

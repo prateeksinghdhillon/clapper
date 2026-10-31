@@ -63,6 +63,15 @@ function toast(msg, error = false) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), error ? 7000 : 3000);
 }
 async function guard(fn) { try { return await fn(); } catch (e) { if (!e.silent) { toast(e.message, true); console.error(e); } } }
+// A removal that would also take an @name out of scenes, the defaults or a start image: the server says where,
+// the user decides. Returns null when they keep it.
+async function callRemoving(path, body) {
+  try { return await call(path, body); } catch (e) {
+    if (!/takes it out of them/.test(e.message)) throw e;
+    if (!confirm(e.message.replace(/; removing it takes it out of them$/, "") + ".\n\nRemove it anyway? It is taken out of all of these.")) return null;
+    return call(path, { ...body, force: true });
+  }
+}
 
 // Actions that queue GPU work or are not idempotent run once at a time per key: a second click (double
 // click, Enter held down) is ignored until the server has answered. Buttons tagged with data-once=key stay
@@ -601,19 +610,45 @@ function takeCard(scene, take) {
       take.status === "done" ? h("button", { title: "Make a sharper 720p / 1080p version of this take for the export", onclick: () => openUpscale([take.id], `Upscale scene ${scenes().indexOf(scene) + 1} · ${takeLabel(take)}`) }, "⤢ Upscale…") : null,
       take.status === "done" ? h("button", { title: "The assistant looks at frames of this take and compares them with the scene", onclick: () =>
         askAssistant(`Review scene ${scenes().indexOf(scene) + 1} ${takeLabel(take)}: does it match the scene? What should change?`, true, { take: take.id }) }, "✨ Review") : null,
-      take.scene_text !== undefined && (take.scene_text !== scene.text || JSON.stringify(take.scene_refs ?? null) !== JSON.stringify(scene.refs ?? null))
+      (take.prompt_text != null && (take.prompt_text !== scene.text || (take.refs && JSON.stringify(take.refs) !== JSON.stringify(activeRefs(scene)))))
+      || take.scene_text !== undefined && (take.scene_text !== scene.text || JSON.stringify(take.scene_refs ?? null) !== JSON.stringify(scene.refs ?? null)
+        || (take.scene_seconds ?? null) !== (scene.seconds ?? null) || ("scene_join" in take && take.scene_join && take.scene_join !== scene.join)
+        || ("scene_start_image" in take && (take.scene_start_image ?? null) !== (scene.start_image ?? null))
+        || ("scene_audio_clips" in take && JSON.stringify(take.scene_audio_clips || []) !== JSON.stringify(scene.audio_clips || [])))
         ? h("button", { title: "Put this take's text and references back into the scene editor", onclick: () => restorePrompt(take.id) }, "Restore its prompt") : null,
       take.status === "interrupted" || take.status === "failed" ? h("button", { ...busyAttr(`requeue:${take.id}`), onclick: () => requeue(take.id) }, "Re-queue") : null,
       take.status === "queued" || take.status === "rendering" ? h("button", { class: "danger", ...busyAttr("stop"), onclick: () => stopTake(take.id) }, take.status === "queued" ? "Cancel" : "Stop") : null));
+  const made = take.status !== "queued" ? takeMadeFrom(take, scene) : null;
+  if (made) info.append(made);
   const up = take.status === "done" ? upscaleRow(take) : null;
   if (up) info.append(up);
   return h("div", { class: "take" + (selected ? " selected" : "") }, thumbFor(take), info);
 }
 
+// What a take was made from: its own text and setup, and how that differs from the scene now.
+function takeMadeFrom(take, scene) {
+  const text = take.scene_text ?? take.prompt_text;
+  if (text == null) return null;
+  const diffs = [];
+  if (scene) {
+    if (text !== (scene.text || "")) diffs.push("text");
+    if (take.refs && JSON.stringify(take.refs) !== JSON.stringify(activeRefs(scene))) diffs.push("references");
+    if ("scene_seconds" in take && (take.scene_seconds ?? null) !== (scene.seconds ?? null)) diffs.push("length");
+    if ("scene_start_image" in take && (take.scene_start_image || null) !== (scene.start_image || null)) diffs.push("start image");
+    if ("scene_audio_clips" in take && JSON.stringify(take.scene_audio_clips || []) !== JSON.stringify(scene.audio_clips || [])) diffs.push("sound clips");
+  }
+  const facts = [take.refs ? "refs " + (take.refs.map((r) => "@" + r).join(", ") || "none") : null, take.seconds ? `${take.seconds} s` : null,
+    take.steps ? `${take.steps} steps` : null, take.model ? take.model.split("/").pop() : null].filter(Boolean).join(" · ");
+  return h("details", { class: "made-from" },
+    h("summary", {}, diffs.length ? `What it was made from — differs from the scene now (${diffs.join(", ")})` : "What it was made from — same as the scene now"),
+    facts ? h("p", { class: "hint" }, facts) : null,
+    h("pre", { class: "made-text" }, text || "(empty)"));
+}
+
 function parentLabel(tid) {
   const p = state.project.takes[tid]; if (!p) return tid;
   const idx = scenes().findIndex((s) => s.id === p.scene);
-  return `scene ${idx + 1} ${takeLabel(p)}`;
+  return idx < 0 ? `${takeLabel(p)} of a removed scene` : `scene ${idx + 1} ${takeLabel(p)}`;
 }
 
 function insertAtCursor(ta, text) {
@@ -960,7 +995,7 @@ function namedBox(name, item) {
       item.kind === "image" ? h("button", { onclick: () => setStart(name === start ? null : name) }, name === start ? "Unset ▶" : "Set ▶") : null,
       h("button", { class: "ghost danger", title: "The item stays in the library", onclick: () => guard(async () => {
         if (!confirm(`Remove the name @${name}? The file stays in the library.`)) return;
-        setProject(await call("/ref/remove", { path: state.path, name })); renderLibrary();
+        const d = await callRemoving("/ref/remove", { path: state.path, name }); if (d) { setProject(d); renderLibrary(); }
       }) }, "Remove @name")));
 }
 
@@ -1037,7 +1072,7 @@ function toolField(f, values) {
 const JOB_CLS = { queued: "info", running: "info", done: "ok", failed: "bad", interrupted: "warn", cancelled: "muted" };
 
 async function projectUpdate(fields) { const d = await guard(() => call("/project/update", { path: state.path, ...fields })); if (d) { setProject(d); renderLibrary(); } return d; }
-const toggleDefault = (name) => { const d = state.project.library.defaults; projectUpdate({ defaults: d.includes(name) ? d.filter((n) => n !== name) : [...d, name] }); };
+const toggleDefault = (name) => projectUpdate({ default_toggle: name, on: !state.project.library.defaults.includes(name) });
 const setStart = (name) => projectUpdate({ start_image: name });
 $("saveStyle").onclick = async () => { if (await projectUpdate({ style: $("styleText").value })) toast("Style text saved"); };
 $("saveNotes").onclick = async () => { if (await projectUpdate({ notes: $("notesText").value })) toast("Story notes saved"); };
@@ -1048,9 +1083,20 @@ const SAMPLERS = ["res_multistep", "euler", "euler_ancestral", "dpmpp_2m", "dpmp
 const SCHEDULERS = ["simple", "sgm_uniform", "karras", "exponential", "normal", "beta", "linear_quadratic"];
 let draft = null;
 
-$("settingsBtn").onclick = () => { draft = structuredClone(effective()); renderSettings(); $("settingsDlg").showModal(); };
+let draftBase = null;   // the settings as the dialog opened: only what differs from it is saved
+$("settingsBtn").onclick = () => { draft = structuredClone(effective()); draftBase = structuredClone(draft); renderSettings(); $("settingsDlg").showModal(); };
+function settingsChanges(now, base) {
+  const out = {};
+  for (const [k, v] of Object.entries(now || {})) {
+    const b = base ? base[k] : undefined;
+    if (v && typeof v === "object" && !Array.isArray(v) && b && typeof b === "object" && !Array.isArray(b)) {
+      const sub = settingsChanges(v, b); if (Object.keys(sub).length) out[k] = sub;
+    } else if (JSON.stringify(v) !== JSON.stringify(b)) out[k] = v;
+  }
+  return out;
+}
 $("settingsReset").onclick = () => { draft = structuredClone(state.defaults); renderSettings(); };
-$("settingsSave").onclick = async () => { if (await projectUpdate({ settings: draft })) { $("settingsDlg").close(); toast("Settings saved — used by the next takes"); } };
+$("settingsSave").onclick = async () => { if (await projectUpdate({ settings_changes: settingsChanges(draft, draftBase) })) { $("settingsDlg").close(); toast("Settings saved — used by the next takes"); } };
 
 function field(label, value, onchange, opts = {}) {
   let input;

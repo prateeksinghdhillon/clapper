@@ -148,6 +148,14 @@ class Project:
     def __init__(self, root: str | Path, data: dict):
         self.root = Path(root)
         self.data = data
+        self._stamp = self._file_stamp()   # project.json as this copy knows it (to notice other programs' saves)
+
+    def _file_stamp(self):
+        try:
+            st = (self.root / "project.json").stat()
+            return (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return None
 
     # ------------------------------------------------------------ create / open / save
 
@@ -191,8 +199,15 @@ class Project:
             shutil.copy2(path, hist / f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}.json")
             for old in sorted(hist.glob("*.json"))[:-HISTORY_KEEP]:
                 old.unlink()
+        current = self._file_stamp()
+        if self._stamp is not None and current is not None and current != self._stamp:
+            # another program (the app, the CLI, a second ComfyUI) saved since this copy was read: writing now
+            # would silently undo its changes
+            raise ProjectError("the project was changed elsewhere after it was opened here (another window, the assistant "
+                               "or the command line); nothing was saved — open it again and repeat the change")
         self.data["updated"] = _now()
         _atomic_write_json(path, self.data)
+        self._stamp = self._file_stamp()
 
     # ------------------------------------------------------------ library
 
@@ -229,11 +244,31 @@ class Project:
         if unknown:
             raise ProjectError(f"cannot update {sorted(unknown)}")
         item.update(fields)
+        if "definition" in fields and item.get("entity") in self.entities:
+            # a character's @name: a definition written by hand stays (empty = written from its description again)
+            item["definition_custom"] = bool((fields["definition"] or "").strip())
+            self._sync_entity_ref(self.entities[item["entity"]])
         self.save()
         return item
 
-    def remove_reference(self, name: str) -> None:
-        """Remove an @name (its asset and file stay in the library). Refused while text still mentions it."""
+    def reference_uses(self, name: str) -> list[str]:
+        """Where an @name is used besides scene texts: what removing it would take it out of."""
+        lib, uses = self.data["library"], []
+        if self.data.get("start_image") == name:
+            uses.append("the project's start image")
+        n = sum(1 for s in self.scenes if s.get("refs") is None)
+        if name in lib["defaults"] and n:
+            uses.append(f"the default references ({n} scene{'s' if n != 1 else ''} use{'s' if n == 1 else ''} the defaults)")
+        for i, s in enumerate(self.scenes, 1):
+            if s.get("refs") is not None and name in s["refs"]:
+                uses.append(f"scene {i}'s references")
+            if s.get("start_image") == name:
+                uses.append(f"scene {i}'s start image")
+        return uses
+
+    def remove_reference(self, name: str, *, force: bool = False) -> None:
+        """Remove an @name (its asset and file stay in the library). Refused while text still mentions it, and,
+        unless force, while scenes, the defaults or a start image use it (removing takes it out of them)."""
         if name not in self.data["library"]["items"]:
             raise ProjectError(f"unknown reference @{name}")
         mention = re.compile(r"@" + re.escape(name) + r"\b")
@@ -243,6 +278,9 @@ class Project:
         if users:
             raise ProjectError(f"@{name} is still mentioned in " + ", ".join(
                 u if u == "the style text" else f"scene {u}" for u in users) + "; remove the mentions first")
+        uses = self.reference_uses(name)
+        if uses and not force:
+            raise ProjectError(f"@{name} is used as {', '.join(uses)}; removing it takes it out of them")
         del self.data["library"]["items"][name]
         lib = self.data["library"]
         lib["defaults"] = [n for n in lib["defaults"] if n != name]
@@ -391,6 +429,8 @@ class Project:
         entity = {"id": eid, "kind": kind, "name": name.strip(), "description": description.strip(), "main": None,
                   "ref": adopted[0] if adopted else self._free_name(name), "voice": None, "default": bool(default), "created": _now()}
         self.entities[eid] = entity
+        if adopted and (self.data["library"]["items"][adopted[0]].get("definition") or "").strip():
+            self.data["library"]["items"][adopted[0]]["definition_custom"] = True   # its own definition stays
         if from_asset:
             self.add_to_entity(from_asset, eid, look="default", save=False)
             self.set_entity_main(eid, from_asset, save=False)
@@ -408,6 +448,8 @@ class Project:
             if self.asset(fields["voice"])["kind"] != "audio":
                 raise ProjectError("a voice must be a sound from the library")
         entity.update(fields)
+        if fields.get("default") is False and entity.get("ref") in self.data["library"]["defaults"]:
+            self.data["library"]["defaults"].remove(entity["ref"])   # no longer in every scene that uses the defaults
         self._sync_entity_ref(entity)
         self.save()
         return entity
@@ -415,14 +457,21 @@ class Project:
     def add_to_entity(self, asset_id: str, entity_id: str | None, *, look: str = "", save: bool = True) -> dict:
         """Put a library item into an entity (or take it out with None) with a look label."""
         asset = self.asset(asset_id)
+        old = asset.get("entity")
+        if old and old != entity_id and self.entities.get(old, {}).get("main") == asset_id:
+            rest = [a for a in self.entity_looks(old) if a["kind"] == "image" and a["id"] != asset_id]
+            if not rest:   # its @name would be left on an image that no longer belongs to it
+                raise ProjectError(f"this is {self.entities[old]['name']}'s only image and its main look; "
+                                   "add another look first, or remove the character")
+            self.entities[old]["main"] = rest[-1]["id"]   # the newest other look
         if entity_id is None:
-            old = asset.pop("entity", None)
+            asset.pop("entity", None)
             asset.pop("look", None)
-            if old and self.entities.get(old, {}).get("main") == asset_id:
-                rest = [a for a in self.entity_looks(old) if a["kind"] == "image"]
-                self.entities[old]["main"] = rest[0]["id"] if rest else None
+            if old in self.entities:
                 self._sync_entity_ref(self.entities[old])
         else:
+            if old in self.entities and old != entity_id:
+                self._sync_entity_ref(self.entities[old])
             entity = self.entity(entity_id)
             asset["entity"], asset["look"] = entity_id, look.strip() or asset.get("look") or "look"
             if not entity.get("main") and asset["kind"] == "image":
@@ -467,20 +516,30 @@ class Project:
         if entity.get("default", True) and entity["kind"] in ("character", "style") and name not in defaults:
             defaults.append(name)
 
-    def remove_entity(self, entity_id: str) -> None:
-        """Remove the character / place; its images stay in the library, its @name is removed when unused."""
+    def remove_entity(self, entity_id: str, *, force: bool = False) -> str:
+        """Remove the character / place; its images stay in the library. Its @name is removed too, unless scene
+        texts still mention it (then it stays, as a plain reference). Unless force, refused while scenes, the
+        defaults or a start image use the @name. Returns a note on what happened to the @name."""
         entity = self.entity(entity_id)
+        ref = entity.get("ref") if entity.get("ref") in self.data["library"]["items"] else None
+        uses = self.reference_uses(ref) if ref else []
+        if uses and not force:
+            raise ProjectError(f"@{ref} is used as {', '.join(uses)}; removing it takes it out of them")
         for a in self.entity_looks(entity_id):
             a.pop("entity", None)
             a.pop("look", None)
         del self.entities[entity_id]
-        if entity.get("ref") in self.data["library"]["items"]:
+        note = ""
+        if ref:
             try:
-                self.remove_reference(entity["ref"])
-                return
-            except ProjectError:
-                self.data["library"]["items"][entity["ref"]].pop("entity", None)
+                self.remove_reference(ref, force=True)
+                note = f"@{ref} was removed" + (f" (taken out of {', '.join(uses)})" if uses else "")
+            except ProjectError as exc:
+                self.data["library"]["items"][ref].pop("entity", None)
+                self.data["library"]["items"][ref].pop("definition_custom", None)
+                note = f"@{ref} stays as a plain reference: {exc}"
         self.save()
+        return note
 
     def remove_asset(self, asset_id: str) -> None:
         """Move a library file to trash/. Refused while an @name or a scene's audio clip uses it."""
@@ -590,7 +649,10 @@ class Project:
         self.save()
 
     def remove_scene(self, scene_id: str) -> None:
-        """Removes the scene from the timeline; its takes stay on disk and in `takes`."""
+        """Removes the scene from the timeline; its takes stay on disk and in `takes`. Refused while one renders
+        (its result would have nowhere to show)."""
+        if any(t["scene"] == scene_id and t["status"] in ("queued", "rendering") for t in self.data["takes"].values()):
+            raise ProjectError("a take of this scene is rendering — stop it first, then remove the scene")
         self.scenes.pop(self.scene_index(scene_id))
         self.save()
 
@@ -715,8 +777,15 @@ class Project:
     def restore_take_prompt(self, take_id: str) -> dict:
         """Put a take's own scene text/refs/length/join back into its scene (to redo or vary that version)."""
         take = self.data["takes"][take_id]
-        if "scene_text" not in take:
-            raise ProjectError("this take does not have its scene text saved (made before this feature)")
+        if "scene_text" not in take:   # made outside a scene: its text from its prompt, with the references it used
+            from .assistant import take_text
+            text = take_text(self, take)
+            if text is None:
+                raise ProjectError("this take's prompt is not recorded")
+            fields = {"text": text}
+            if take.get("refs") is not None:
+                fields["refs"] = list(take["refs"])
+            return self.update_scene(take["scene"], **fields)
         fields = {"text": take["scene_text"], "refs": take.get("scene_refs"), "seconds": take.get("scene_seconds")}
         if fields["refs"] is None and take.get("refs") is not None and take["refs"] != self.data["library"]["defaults"]:
             fields["refs"] = list(take["refs"])   # it used the defaults of then, which have changed since: its own list
