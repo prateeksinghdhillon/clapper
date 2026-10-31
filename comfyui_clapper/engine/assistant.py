@@ -162,6 +162,7 @@ BADGE_WORDS = {
     "no_take": "no take yet", "rendering": "a take is rendering now",
     "prompt_changed": "its selected take was rendered from an EARLIER version of this text (the video shows the old version; get_scene shows that text)",
     "refs_changed": "its selected take was rendered with other references",
+    "pictures_changed": "a reference picture changed after its selected take (e.g. a new main look); the video shows the old one",
     "continuity_changed": "the scene before it now has another selected take, so the join may jump",
     "parent_missing": "the scene before it has no take", "prompt_error": "its text does not compile",
 }

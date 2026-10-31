@@ -123,3 +123,18 @@ def test_list_and_delete_exports(project):
         export.delete_export(project, "../project.json")
     export.delete_export(project, "exports/short-1.mp4")
     assert export.list_exports(project) == [] and not (folder / "short-1.json").exists()
+
+
+def test_a_second_run_is_a_new_version_and_the_choice_stays(project, monkeypatch):
+    import types
+    t = next(iter(project.data["takes"].values()))
+    client = types.SimpleNamespace(submit=lambda g: "pid")
+    j1 = upscale.queue_upscale(project, client, t["id"], method="sharpen", size="720p")
+    project.data["jobs"][j1["id"]]["status"] = "done"
+    j2 = upscale.queue_upscale(project, client, t["id"], method="sharpen", size="720p")
+    assert j1["out"] != j2["out"] and j2["out"].endswith("sharpen-720p-2.mp4")
+    for j in (j1, j2):
+        (project.root / j["out"]).parent.mkdir(parents=True, exist_ok=True); (project.root / j["out"]).write_bytes(b"x")
+    upscale.finish_job(project, j1); upscale.finish_job(project, j2)
+    assert t["upscaled"] == "sharpen-720p"           # the first one stays in use; the new one waits to be chosen
+    assert upscale.delete_version(project, t["id"], "sharpen-720p") == "sharpen-720p-2"   # falls back to the other version

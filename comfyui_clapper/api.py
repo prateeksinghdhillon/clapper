@@ -636,6 +636,7 @@ async def upscale_use(request):
             if version is not None and version not in (take.get("upscales") or {}):
                 raise ProjectError("unknown upscaled version")
             take["upscaled"] = version
+            take["upscale_original"] = version is None   # chosen on purpose: a later upscale does not replace it
             project.save()
         return _ok(_view(project))
     except (KeyError, ProjectError, OSError) as exc:

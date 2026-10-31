@@ -37,6 +37,9 @@ _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _TAG_RE = re.compile(r"@([a-z][a-z0-9_]{0,31})\b")
 
 
+_CHUNK_RE = re.compile(r"Continuation of Chunk \d+\.")
+
+
 class ProjectError(ValueError):
     pass
 
@@ -488,6 +491,9 @@ class Project:
         users = [str(i + 1) for i, s in enumerate(self.scenes) if any(c.get("asset") == asset_id for c in s.get("audio_clips") or [])]
         if users:
             raise ProjectError("used as an audio clip in scene " + ", ".join(users))
+        fin = self.data.get("finish") or {}
+        if any(t.get("asset") == asset_id for t in fin.get("tracks") or []) or any(o.get("asset") == asset_id for o in fin.get("overlays") or []):
+            raise ProjectError("used in the Finish (a sound track or overlay): remove it there first")
         del self.assets[asset_id]
         path = self.root / asset["file"]
         if path.exists() and not any(a["file"] == asset["file"] for a in self.assets.values()) \
@@ -670,7 +676,18 @@ class Project:
             fingerprint += "\n" + json.dumps({"start": scene.get("start_image"), "start_sha": items.get(start, {}).get("sha256") if start else None,
                                                "clips": [(c["asset"], c["at"]) for c in clips]}, sort_keys=True)
         return {"prompt": text, "labels": labels, "images": images, "audios": audios, "start": start, "clips": clips,
-                "sha256": hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()}
+                "sha256": hashlib.sha256(fingerprint.encode("utf-8")).hexdigest(), "fingerprint": fingerprint,
+                "pictures": {n: items[n].get("sha256") for n in labels}}
+
+    @staticmethod
+    def renumbered(compiled: dict, take_sha: str | None, count: int) -> bool:
+        """True when the only difference from a take is the automatic "Continuation of Chunk N." number
+        (the scene moved because scenes were added, removed or moved before it)."""
+        fp = compiled.get("fingerprint") or ""
+        if not take_sha or not _CHUNK_RE.search(fp):
+            return False
+        return any(hashlib.sha256(_CHUNK_RE.sub(f"Continuation of Chunk {k}.", fp, count=1).encode("utf-8")).hexdigest() == take_sha
+                   for k in range(1, count + 2))
 
     # ------------------------------------------------------------ takes
 
@@ -701,6 +718,8 @@ class Project:
         if "scene_text" not in take:
             raise ProjectError("this take does not have its scene text saved (made before this feature)")
         fields = {"text": take["scene_text"], "refs": take.get("scene_refs"), "seconds": take.get("scene_seconds")}
+        if fields["refs"] is None and take.get("refs") is not None and take["refs"] != self.data["library"]["defaults"]:
+            fields["refs"] = list(take["refs"])   # it used the defaults of then, which have changed since: its own list
         if take.get("scene_join"):
             fields["join"] = take["scene_join"]
         for key in ("start_image", "audio_clips"):
@@ -734,10 +753,12 @@ class Project:
             return badges
         try:
             compiled = self.compile_prompt(scene)
-            if compiled["sha256"] != take.get("prompt_sha256"):
+            if compiled["sha256"] != take.get("prompt_sha256") and not self.renumbered(compiled, take.get("prompt_sha256"), len(self.scenes)):
                 badges.append("prompt_changed")
             if self.scene_refs(scene) != take.get("refs"):
                 badges.append("refs_changed")
+            elif take.get("pictures") and any(take["pictures"].get(n) != sha for n, sha in compiled["pictures"].items() if n in take["pictures"]):
+                badges.append("pictures_changed")   # same @names, other images (a new main look, a replaced file)
         except ProjectError:
             badges.append("prompt_error")
         if scene["join"] in ("continue", "bridge") and self.scene_index(scene_id) > 0:

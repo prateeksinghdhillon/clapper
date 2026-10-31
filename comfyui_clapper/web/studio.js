@@ -30,7 +30,8 @@ function wsSignature(ws) {
   const jobsSig = Object.values(p.jobs || {}).map((j) => j.id + j.status).join();
   if (ws === "studio") return JSON.stringify([Object.keys(p.assets || {}).length, p.entities, p.library, jobsSig,
     Object.values(p.assets || {}).map((a) => [a.title, a.role, a.entity, a.look, a.transcript])]);
-  return JSON.stringify([p.scenes.map((s) => s.selected_take), Object.values(p.takes).map((t) => [t.status, t.upscaled, Object.keys(t.upscales || {})]), jobsSig]);
+  return JSON.stringify([p.scenes.map((s) => s.selected_take), Object.values(p.takes).map((t) => [t.status, t.upscaled, Object.keys(t.upscales || {})]), jobsSig,
+    mixBusy ? "" : p.finish || {}]);   // the finish too: a change made elsewhere is shown (not while this page is saving its own)
 }
 function renderWorkspace(force) {
   if (!state.project) return;
@@ -662,7 +663,7 @@ async function renderFinish() {
         c.upscaled.length ? ` · upscaled: ${c.upscaled.join(", ")}` : " · none upscaled",
         c.upscaled.length && c.not_upscaled.length ? h("span", { class: "hint" }, ` (scene${c.not_upscaled.length > 1 ? "s" : ""} ${c.not_upscaled.join(", ")} resized to match, softer)`) : null) : h("p", { class: "hint" }, "Scene 1 has no finished take yet."),
       !c.complete && c.ready ? h("p", { class: "hint warn" }, `Scene${c.missing.length > 1 ? "s" : ""} ${c.missing.join(", ")} ${c.missing.length > 1 ? "have" : "has"} no finished take — the export stops before ${c.missing.length > 1 ? "them" : "it"}.`) : null,
-      c.warnings.length ? h("ul", { class: "warn-list" }, c.warnings.map((w) => h("li", {}, `${w.message} (at ${w.at_seconds.toFixed(1)} s).`))) : null,
+      c.warnings.length ? h("ul", { class: "warn-list" }, c.warnings.map((w) => h("li", {}, w.at_seconds == null ? `${w.message}.` : `${w.message} (at ${w.at_seconds.toFixed(1)} s).`))) : null,
       h("div", { class: "row" }, h("label", {}, "Video size", size), h("label", { class: "switch" }, useMix, "With sound & overlays"), go),
       result),
     h("section", { class: "card" },
@@ -679,20 +680,31 @@ async function renderFinish() {
 // ------------------------------------------------------------------ Finish: sound & overlays
 
 let mix = null;          // the editable copy of project.finish
-let mixTimer = null;
+let mixTimer = null, mixRev = 0, mixBusy = false;   // edits made / a save waiting or in flight
 const POS_LABEL = { "top-left": "Top left", top: "Top", "top-right": "Top right", left: "Left", center: "Centre", right: "Right",
   "bottom-left": "Bottom left", bottom: "Bottom", "bottom-right": "Bottom right", custom: "Custom (x, y)" };
 function mixState() {
   const f = state.project.finish || {};
-  if (!mix || mix.path !== state.path) mix = { path: state.path, scene_volume: f.scene_volume ?? 1, tracks: structuredClone(f.tracks || []), overlays: structuredClone(f.overlays || []) };
+  const base = JSON.stringify(f);
+  // reload when the project's finish changed elsewhere (another device, the CLI) and nothing here is waiting to be saved
+  if (!mix || mix.path !== state.path || (!mixBusy && base !== mix.base))
+    mix = { path: state.path, base, scene_volume: f.scene_volume ?? 1, tracks: structuredClone(f.tracks || []), overlays: structuredClone(f.overlays || []) };
   return mix;
 }
 function saveMix(redraw) {
   clearTimeout(mixTimer);
+  mixRev++; mixBusy = true;
   mixTimer = setTimeout(() => guard(async () => {
-    const { scene_volume, tracks, overlays } = mix;
-    const d = await call("/finish", { path: state.path, finish: { scene_volume, tracks, overlays } });
-    state.project = d; mix.tracks = structuredClone(d.finish.tracks); mix.overlays = structuredClone(d.finish.overlays);
+    const { scene_volume, tracks, overlays } = mix, rev = mixRev, m = mix;
+    try {
+      const d = await call("/finish", { path: state.path, finish: { scene_volume, tracks, overlays } });
+      state.project = d;
+      // update the rows' own objects in place (the controls on screen keep pointing at them): the ids the server gave,
+      // and its cleaned values only if nothing was edited while saving
+      const merge = (mine, saved) => saved.forEach((x, i) => { if (!mine[i]) return; if (mixRev === rev) Object.assign(mine[i], x); else mine[i].id ||= x.id; });
+      merge(m.tracks, d.finish.tracks); merge(m.overlays, d.finish.overlays);
+      if (mixRev === rev) { m.base = JSON.stringify(d.finish); mixBusy = false; }
+    } catch (e) { if (mixRev === rev) mixBusy = false; throw e; }
     if (redraw) renderFinish();
   }), 500);
   if (redraw) drawTimeline();

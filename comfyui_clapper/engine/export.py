@@ -39,15 +39,16 @@ def export_plan(project: Project, *, partial: bool = True, use_upscaled: bool = 
         from .upscale import best_upscale
 
         up = best_upscale(take) if use_upscaled else None
+        lost = None
         if up and not (project.root / up["file"]).is_file():
-            up = None
+            up, lost = None, take.get("upscaled")
         segments.append({"scene": scene["id"], "scene_number": index + 1, "take": take["id"],
                          "take_number": take.get("number"),
                          "file": str(project.root / (up["file"] if up else f"{take['dir']}/take.mp4")),
                          "upscaled": (f"{up['method']} {up['size']}" if up else None),
                          "width": int(up["width"] if up else meta.get("width") or take.get("width") or 416),
                          "height": int(up["height"] if up else meta.get("height") or take.get("height") or 736),
-                         "start_frame": start, "end_frame": end, "seconds": (end - start) / FPS})
+                         "start_frame": start, "end_frame": end, "seconds": (end - start) / FPS, "lost_upscale": lost})
     if not segments:
         raise ProjectError("the project has no scenes")
     return segments
@@ -58,6 +59,7 @@ WARNINGS = {
     "parent_missing": "continues from a scene that has no take",
     "prompt_changed": "has a newer prompt than its selected take (the video shows the older version)",
     "refs_changed": "has different references than its selected take (the video shows the older version)",
+    "pictures_changed": "uses a reference picture that changed after its selected take (e.g. a new main look); the video shows the old picture",
 }
 
 
@@ -79,6 +81,35 @@ def export_check(project: Project) -> dict:
                                  "message": f"Scene {index + 1} {WARNINGS[badge]}"})
     missing = [i + 1 for i, s in enumerate(project.scenes) if i >= ready]
     plan = export_plan(project, partial=True) if ready else []
+
+    def warn(scene, badge, message):
+        warnings.append({"scene": scene, "badge": badge, "at_seconds": None, "message": message})
+    for seg in plan:
+        n, take = seg["scene_number"], project.data["takes"][seg["take"]]
+        if seg.get("lost_upscale"):
+            warn(n, "upscale_missing", f"Scene {n}: the upscaled file it uses ({seg['lost_upscale']}) is missing on disk; the original is used")
+        elif not take.get("upscales"):
+            other = [t for t in project.takes_for(seg["scene"]) if t["id"] != take["id"] and t.get("upscales")]
+            if other:
+                warn(n, "upscale_other_take", f"Scene {n}: only Take {other[-1].get('number')} (not the selected Take {take.get('number')}) is upscaled; the export uses Take {take.get('number')} as rendered")
+    if plan:
+        w0, h0 = export_size(plan, "auto")
+        for seg in plan:
+            if abs(seg["width"] / seg["height"] - w0 / h0) > 0.02:
+                warn(seg["scene_number"], "shape", f"Scene {seg['scene_number']} has another shape ({seg['width']}×{seg['height']}); "
+                     "it is fitted inside the frame with bars")
+    from .finish import finish_of
+    fin = finish_of(project)
+    for kind, items in (("track", fin["tracks"]), ("overlay", fin["overlays"])):
+        for it in items:
+            a = project.assets.get(it.get("asset") or "")
+            title = (a or {}).get("title") or it.get("asset")
+            if not a:
+                warn(None, "finish_missing", f"Finish: a {kind} uses a removed library item; it is left out")
+            elif ready and it.get("start", 0) >= seconds:
+                warn(None, "finish_late", f"Finish: {kind} \"{title}\" starts at {it['start']:g}s, after the video ends ({seconds:.1f}s); it is left out")
+            elif kind == "overlay" and it.get("end") is not None and it["end"] <= it.get("start", 0):
+                warn(None, "finish_empty", f"Finish: overlay \"{title}\" ends ({it['end']:g}s) before it starts ({it.get('start', 0):g}s)")
     upscaled = [s["scene_number"] for s in plan if s["upscaled"]]
     size = export_size(plan, "auto") if plan else None
     return {"ready": ready, "total": len(project.scenes), "complete": ready == len(project.scenes),
@@ -141,7 +172,10 @@ def export_video(project: Project, *, name: str | None = None, partial: bool = F
     out_dir.mkdir(exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     # File names that work on every system: the project's folder-style name (letters, digits, dashes).
-    out = out_dir / f"{folder_name(name or project.data['name'])}-{stamp}.mp4"
+    base_name = f"{folder_name(name or project.data['name'])}-{stamp}"
+    out, n = out_dir / f"{base_name}.mp4", 2
+    while out.exists():   # two exports in the same second never overwrite each other
+        out, n = out_dir / f"{base_name}-{n}.mp4", n + 1
 
     cmd = [FFMPEG, "-v", "error", "-y"]
     for seg in segments:
@@ -150,7 +184,13 @@ def export_video(project: Project, *, name: str | None = None, partial: bool = F
     for i, seg in enumerate(segments):
         t0, t1 = seg["start_frame"] / FPS, seg["end_frame"] / FPS
         dur = t1 - t0
-        scale = "" if (seg["width"], seg["height"]) == (width, height) else f",scale={width}:{height}:flags=lanczos,setsar=1"
+        if (seg["width"], seg["height"]) == (width, height):
+            scale = ""
+        elif abs(seg["width"] / seg["height"] - width / height) <= 0.02:   # rounding only (e.g. Re-detail's multiples of 32)
+            scale = f",scale={width}:{height}:flags=lanczos,setsar=1"
+        else:   # another shape: fit it inside the frame with bars, never stretch
+            scale = (f",scale={width}:{height}:flags=lanczos:force_original_aspect_ratio=decrease,"
+                     f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1")
         parts.append(f"[{i}:v]trim=start_frame={seg['start_frame']}:end_frame={seg['end_frame']},setpts=PTS-STARTPTS{scale}[v{i}]")
         fades = []
         if i > 0:

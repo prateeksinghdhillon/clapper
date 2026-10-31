@@ -129,7 +129,14 @@ def queue_upscale(project: Project, client: ComfyClient, take_id: str, *, method
         meta = json.loads((take_dir / "meta.json").read_text(encoding="utf-8"))
         width, height = int(meta["width"]), int(meta["height"])
     label = method if method == "sharpen" else f"redetail-{strength}"
-    out_rel = f"{take['dir']}/upscaled/{label}-{size}.mp4"
+    # every run gets its own file: a second run of the same kind is a new version, it never replaces one
+    # (a new path also keeps ComfyUI from answering an identical graph from its cache without writing anything)
+    used = set((take.get("upscales") or {})) | {Path(j.get("out", "")).stem for j in (project.data.get("jobs") or {}).values()
+                                                 if j.get("kind") == "upscale" and j.get("take") == take_id}
+    stem, n = f"{label}-{size}", 2
+    while stem in used or (project.root / take["dir"] / "upscaled" / f"{stem}.mp4").exists():
+        stem, n = f"{label}-{size}-{n}", n + 1
+    out_rel = f"{take['dir']}/upscaled/{stem}.mp4"
     out_path = project.root.resolve() / out_rel
     seed = int(seed) if seed is not None else random.randrange(1, 2**48)
     if method == "sharpen":
@@ -162,20 +169,24 @@ def finish_job(project: Project, job: dict) -> bool:
         versions[key] = {"file": job["out"], "method": job["inputs"]["method"], "size": job["inputs"]["size"],
                          "strength": job["inputs"].get("strength"), "width": job.get("width"), "height": job.get("height"),
                          "created": _now(), "job": job["id"]}
-        take["upscaled"] = key   # the version export uses
+        if not take.get("upscaled") and not take.get("upscale_original"):
+            take["upscaled"] = key   # the version export uses: a new one only when none was chosen (the user picks another)
     return True
 
 
-def delete_version(project: Project, take_id: str, version: str) -> None:
-    """Delete one upscaled version of a take (file and record); the export falls back to the original."""
+def delete_version(project: Project, take_id: str, version: str) -> str | None:
+    """Delete one upscaled version of a take (file and record). If export used it, it uses the newest other
+    version (or the original when none is left); returns the version export uses now."""
     take = project.data["takes"].get(take_id)
     if not take or version not in (take.get("upscales") or {}):
         raise ProjectError("unknown upscaled version")
     rec = take["upscales"].pop(version)
     (project.root / rec["file"]).unlink(missing_ok=True)
     if take.get("upscaled") == version:
-        take["upscaled"] = None
+        rest = sorted(take["upscales"].items(), key=lambda kv: kv[1].get("created") or "")
+        take["upscaled"] = rest[-1][0] if rest else None
     project.save()
+    return take.get("upscaled")
 
 
 def best_upscale(take: dict) -> dict | None:

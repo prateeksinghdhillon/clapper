@@ -22,6 +22,7 @@ const BADGES = {
   rendering: ["info", "rendering…"],
   prompt_changed: ["warn", "prompt edited since take"],
   refs_changed: ["warn", "references changed since take"],
+  pictures_changed: ["warn", "a reference picture changed since take"],
   continuity_changed: ["warn", "previous scene changed"],
   parent_missing: ["bad", "previous scene has no take"],
   prompt_error: ["bad", "prompt error"],
@@ -405,21 +406,53 @@ $("renderRestBtn").onclick = () => once("renderRest", async () => {
 // ------------------------------------------------------------------ scene editor
 
 let saveTimer = null;
-function openEditor(sid) { state.sceneId = sid; $("drawer").hidden = false; renderEditor(); renderBoard(); }
+function openEditor(sid) {
+  if (sid !== state.sceneId) {
+    flushSave();   // edits typed in the scene that was open are saved to that scene, not to the next one
+    $("edSeed").value = ""; $("edSteps").value = "";   // per-render options belong to one scene's next render
+    $("edText").blur();
+  }
+  state.sceneId = sid; $("drawer").hidden = false; renderEditor(); renderBoard();
+}
 function closeEditor() { flushSave(); state.sceneId = null; $("drawer").hidden = true; document.querySelectorAll(".scene-card.active").forEach((c) => c.classList.remove("active")); }
 $("drawerClose").onclick = closeEditor;
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("drawer").hidden && !document.querySelector("dialog[open]")) closeEditor(); });
 
 function scheduleSave(fields) {
+  if (state.pendingFields && state.pendingScene !== state.sceneId) flushSave();
+  state.pendingScene = state.sceneId; state.pendingPath = state.path;
   state.pendingFields = { ...(state.pendingFields || {}), ...fields };
   clearTimeout(saveTimer); saveTimer = setTimeout(flushSave, 700);
 }
 async function flushSave() {
   clearTimeout(saveTimer);
-  const fields = state.pendingFields; state.pendingFields = null;
-  if (!fields || !state.sceneId || !state.path) return;
-  const data = await guard(() => call("/scene", { path: state.path, action: "update", id: state.sceneId, ...fields }));
-  if (data) { state.project = data; renderBoard(); renderEditor(); }
+  const fields = state.pendingFields, sid = state.pendingScene, path = state.pendingPath;
+  state.pendingFields = null;
+  if (!fields || !sid || !path || path !== state.path) return;
+  const data = await guard(() => call("/scene", { path, action: "update", id: sid, ...fields }));
+  if (data && path === state.path) {
+    state.project = data;
+    if ("text" in fields && sid === state.sceneId) state.edLoaded = { sid, text: sceneById(sid)?.text ?? "" };
+    renderBoard(); renderEditor();
+  }
+}
+// The scene text box keeps what the user types; a change made elsewhere (assistant, another device) is shown when
+// they are not in the middle of typing, and they are told when both changed.
+function syncEditorText() {
+  const scene = sceneById(state.sceneId), box = $("edText");
+  if (!scene) return;
+  const loaded = state.edLoaded && state.edLoaded.sid === scene.id ? state.edLoaded.text : null;
+  const typing = document.activeElement === box, pending = state.pendingFields && "text" in state.pendingFields && state.pendingScene === scene.id;
+  if (!typing || loaded === null) { box.value = scene.text || ""; state.edLoaded = { sid: scene.id, text: scene.text || "" }; return; }
+  if ((scene.text || "") === loaded) return;
+  if (!pending) {
+    const at = box.selectionStart; box.value = scene.text || ""; box.selectionStart = box.selectionEnd = Math.min(at, box.value.length);
+    state.edLoaded = { sid: scene.id, text: scene.text || "" };
+    toast("This scene's text was changed elsewhere — the editor now shows that version");
+  } else if (state.edConflict !== scene.text) {
+    state.edConflict = scene.text;
+    toast("This scene's text was also changed elsewhere (the assistant or another device). What you are typing will replace it.", true);
+  }
 }
 
 function renderBadges() {
@@ -440,7 +473,7 @@ function renderEditor() {
   const index = scenes().indexOf(scene);
   $("edEyebrow").textContent = `Scene ${index + 1} of ${scenes().length}`;
   if (document.activeElement !== $("edTitle")) $("edTitle").value = scene.title || "";
-  if (document.activeElement !== $("edText")) $("edText").value = scene.text || "";
+  syncEditorText();
   if (document.activeElement !== $("edSeconds")) $("edSeconds").value = scene.seconds || "";
   $("edSeconds").placeholder = effective()?.scene_seconds || 5;
   const mode = sceneMode(scene);
@@ -477,8 +510,12 @@ function renderEditor() {
 
   // parent choices
   const prev = scenes()[index - 1];
-  const parentSel = $("edParent"); parentSel.replaceChildren(h("option", { value: "" }, prev ? "previous scene's selected take" : "(first scene)"));
+  const parentSel = $("edParent");
+  const keep = parentSel.dataset.scene === scene.id ? parentSel.value : "";   // the user's choice stays while this scene is open
+  parentSel.replaceChildren(h("option", { value: "" }, prev ? "previous scene's selected take" : "(first scene)"));
   if (prev) for (const t of takesFor(prev.id).filter((t) => t.status === "done")) parentSel.append(h("option", { value: t.id }, `${takeLabel(t)}${t.id === prev.selected_take ? " (selected)" : ""} · ${fmtWhen(t.created)}`));
+  parentSel.value = [...parentSel.options].some((o) => o.value === keep) ? keep : "";
+  parentSel.dataset.scene = scene.id;
   parentSel.disabled = !prev || scene.join === "cut";
 
   // takes
@@ -611,13 +648,14 @@ $("edClipAdd").onchange = () => {
 };
 
 $("edRender").onclick = () => {
-  const sid = state.sceneId;
+  const sid = state.sceneId, parent = $("edParent").value;   // read before the save re-draws the editor
   once(`render:${sid}`, async () => {
     await flushSave();
+    if (parent && $("edParent").dataset.scene === sid) $("edParent").value = parent;
     const body = { path: state.path, scene_id: sid };
     if ($("edSeed").value) body.seed = Number($("edSeed").value);
     if ($("edSteps").value) body.overrides = { sampling: { steps: Number($("edSteps").value) } };
-    if ($("edParent").value) body.parent_take = $("edParent").value;
+    if ($("edParent").value && $("edParent").dataset.scene === sid) body.parent_take = $("edParent").value;
     const data = await call("/render", body);
     toast(`${takeLabel(data.take)} queued`);
     setProject(data.project);
@@ -632,7 +670,8 @@ $("edRemove").onclick = () => guard(async () => {
 });
 
 async function restorePrompt(tid) {
-  if (!confirm("Replace the scene's current text and references with this take's version?")) return;
+  await flushSave();
+  if (!confirm("Replace the scene's current text, references and length with this take's version?\n\n(The current version is kept in the project history.)")) return;
   await guard(async () => { setProject(await call("/take/restore_prompt", { path: state.path, take_id: tid })); toast("Prompt restored"); });
 }
 async function selectTake(sid, tid) { await guard(async () => setProject(await call("/select", { path: state.path, scene_id: sid, take_id: tid }))); }
@@ -676,7 +715,7 @@ async function refresh(showErrors) {
       if (made) toast(`${made} new item(s) in the Library`);
     }
     if (!document.activeElement || !["edText", "edTitle", "edSeconds"].includes(document.activeElement.id) || data.changed.length) setProject(data.project);
-    else { state.project = data.project; renderBoard(); }
+    else { state.project = data.project; renderBoard(); syncEditorText(); }
   } catch (e) { if (showErrors) toast(e.message, true); }
 }
 
@@ -1304,7 +1343,8 @@ function versionList(take, sceneNo) {
       h("button", { title: "Play", onclick: () => playFile(u.file, `Scene ${sceneNo} · ${takeLabel(take)} · ${versionLabel(u)}`) }, "▶"),
       h("a", { class: "btn", href: media(u.file), download: `scene${sceneNo}-take${take.number}-${key}.mp4`, title: "Download" }, "⤓"),
       h("button", { class: "icon", title: "Delete this upscaled file (the take stays)", onclick: () => guard(async () => {
-        if (!confirm(`Delete the ${versionLabel(u)} version of this take?`)) return;
+        const inUse = take.upscaled === key, others = Object.keys(take.upscales || {}).filter((k) => k !== key).length;
+        if (!confirm(`Delete the ${versionLabel(u)} version of this take?` + (inUse ? `\n\nThe export uses this version; it will use ${others ? "the newest other upscaled version" : "the original take"} instead.` : ""))) return;
         setProject(await call("/upscale/delete", { path: state.path, take_id: take.id, version: key }));
       }) }, "✕"));
   });

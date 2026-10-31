@@ -116,6 +116,7 @@ def queue_take(project: Project, scene_id: str, client: ComfyClient, **kwargs) -
         scene_text=scene.get("text", ""), scene_refs=scene.get("refs"), scene_join=scene.get("join"),
         scene_seconds=scene.get("seconds"), scene_start_image=scene.get("start_image"),
         scene_audio_clips=scene.get("audio_clips"), model=plan["settings"].get("model_used"),
+        pictures=plan["compiled"].get("pictures"),
         steps=plan["settings"]["sampling"]["steps"])
     take_dir = project.root.resolve() / take["dir"]
     meta = {"project": project.data["name"], "scene": scene_id, "take": take["id"], "prompt": plan["compiled"]["prompt"],
