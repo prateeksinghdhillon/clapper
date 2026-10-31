@@ -43,6 +43,7 @@ def _save_cache(runner: llm.LocalRunner) -> None:
     if running:
         for r in running:
             r["stop"] = True
+            r["stop_reason"] = "The answer was stopped because a render started and needed the GPU. Send the message again when you like."
         _cache["saved"] = None
         log.info("Clapper: a render was queued while the assistant was answering — answer stopped, cache not saved")
         return
@@ -271,7 +272,7 @@ async def chat_send(request):
                     note = (f"[Attached: 4 frames, start to end, of scene {index + 1} Take {review.get('number')}. "
                             f"Compare them with the scene text it was rendered from; say first what already matches, "
                             f"then what differs. Propose an edit only if something important differs.\n"
-                            f"Scene text:\n{review.get('scene_text', '')}]")
+                            f"Scene text:\n{assistant.take_text(p, review) or '(not recorded)'}]")
                 agent = assistant.Assistant(provider, open=lambda: Project.open(root), write=_writer(root, loop),
                                             before_request=before_request, update=lambda s: state.update(s),
                                             stopped=lambda: state["stop"])
@@ -282,6 +283,10 @@ async def chat_send(request):
                 log.exception("Clapper assistant turn failed")
                 state["error"] = f"{type(exc).__name__}: {exc}"
             finally:
+                if state.get("stop_reason") and not state.get("error"):   # tell the user why the answer ends here
+                    state["error"] = state["stop_reason"]
+                    chat["messages"].append({"role": "event", "text": "(The previous answer was cut off: a render took the GPU.)",
+                                             "t": assistant._now()})
                 state.update(running=False, phase="done")
                 try:
                     assistant.save_chat(Project.open(root), chat)

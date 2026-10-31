@@ -196,7 +196,8 @@ class Project:
         if snapshot and path.exists():
             hist = self.root / "history"
             hist.mkdir(exist_ok=True)
-            shutil.copy2(path, hist / f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}.json")
+            # sortable to the nanosecond, so pruning always drops the oldest
+            shutil.copy2(path, hist / f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 10**9:09d}.json")
             for old in sorted(hist.glob("*.json"))[:-HISTORY_KEEP]:
                 old.unlink()
         current = self._file_stamp()
@@ -559,7 +560,10 @@ class Project:
                 and not any(i["file"] == asset["file"] for i in self.data["library"]["items"].values()):
             trash = self.root / "trash"
             trash.mkdir(exist_ok=True)
-            shutil.move(str(path), trash / path.name)
+            dest, n = trash / path.name, 2
+            while dest.exists():   # an earlier file of the same name stays
+                dest, n = trash / f"{path.stem}-{n}{path.suffix}", n + 1
+            shutil.move(str(path), dest)
         self.save()
 
     def ref_path(self, name: str) -> Path:
@@ -759,13 +763,13 @@ class Project:
         take = {"id": take_id, "scene": scene_id, "number": number, "status": "queued", "created": _now(),
                 "dir": f"takes/{scene_id}/{take_id}", **fields}
         self.data["takes"][take_id] = take
-        self.save()
+        self.save(snapshot=False)   # render bookkeeping, not an edit: keeps the undo history for real changes
         return take
 
     def update_take(self, take_id: str, **fields) -> dict:
         take = self.data["takes"][take_id]
         take.update(fields)
-        self.save()
+        self.save(snapshot=False)   # status and timing updates
         return take
 
     def select_take(self, scene_id: str, take_id: str) -> None:

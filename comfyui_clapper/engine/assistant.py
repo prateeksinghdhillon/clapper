@@ -1671,7 +1671,11 @@ class Assistant:
         self._echoed: set = set()   # (turn, scene) pairs that already got the continuity check
 
     def _complete(self, project: Project, chat: dict, state: dict, *, thinking=False, tools=TOOLS) -> dict:
+        if self.stopped():   # stopped before the request went out (e.g. a render took the GPU): don't load the model again
+            return {"content": "", "reasoning": "", "finish_reason": "stopped", "tool_calls": [], "usage": {}}
         self.before_request()
+        if self.stopped():
+            return {"content": "", "reasoning": "", "finish_reason": "stopped", "tool_calls": [], "usage": {}}
         messages = build_messages(project, chat, self.provider)
         try:
             return self._send(chat, state, messages, thinking, tools)

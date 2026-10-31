@@ -44,7 +44,7 @@ function renderWorkspace(force) {
   const el = $("ws" + ws[0].toUpperCase() + ws.slice(1));
   const typing = !force && el && el.contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
   if (ws === "studio") { if (typing) renderStudioLive(); else renderStudio(); }
-  if (ws === "finish" && !typing) renderFinish();
+  if (ws === "finish" && !typing) { if (!force) studio.exports = null; renderFinish(); }   // re-check what each export is out of date with
 }
 // Names the older code calls.
 function renderLibrary() { renderWorkspace(); }
@@ -662,7 +662,12 @@ async function renderFinish() {
       h("p", { class: "hint" }, `${m.total_seconds.toFixed(1)} s · ${m.width}×${m.height} · scenes 1–${m.scenes_exported} of ${m.scenes_total}${m.finish ? ` · ${m.finish.tracks.length} sound track(s), ${m.finish.overlays.length} overlay(s)` : ""}`),
       h("a", { class: "btn primary", href: media(d.file), download: d.file.split("/").pop() }, "⤓ Download")));
   };
-  if (lastExport && lastExport.path === state.path) showResult(lastExport);
+  // the export just made: shown while it exists; marked when the project changed since
+  if (lastExport && lastExport.path === state.path) {
+    const now = studio.exports.find((x) => x.file === lastExport.file);
+    if (!now) lastExport = null;
+    else { showResult(lastExport); if (now.changed_since?.length) result.append(h("p", { class: "hint warn" }, `Out of date: ${now.changed_since.join("; ")}. Export again for the current version.`)); }
+  }
   const label = c.complete ? "Export the video" : `Export scenes 1–${c.ready} (partial)`;
   const go = h("button", { class: "primary big", disabled: !c.ready, ...busyAttr("export"), onclick: () => once("export", async () => {
     go.textContent = "Exporting…";
@@ -694,7 +699,10 @@ async function renderFinish() {
       h("div", { class: "card-head" }, h("h3", {}, "4 · Previous exports")),
       studio.exports.length ? h("div", { class: "exp-list" }, studio.exports.map((x) => h("div", { class: "exp-row" },
         h("button", { class: "fin-thumb", onclick: () => playFile(x.file, fmtStamp(x.created) || x.file) }, posterImg(x.file, 0.5)),
-        h("div", { class: "fin-info" }, h("b", {}, fmtStamp(x.created) || x.file.split("/").pop()), h("span", { class: "hint" }, `${(x.seconds || 0).toFixed(1)} s · ${x.width || "?"}×${x.height || "?"} · ${fmtSize(x.bytes)}${x.upscaled?.length ? " · upscaled " + x.upscaled.join(", ") : ""}`)),
+        h("div", { class: "fin-info" }, h("b", {}, fmtStamp(x.created) || x.file.split("/").pop()), h("span", { class: "hint" }, `${(x.seconds || 0).toFixed(1)} s · ${x.width || "?"}×${x.height || "?"} · ${fmtSize(x.bytes)}`
+          + (x.scenes && x.scenes_total && x.scenes < x.scenes_total ? ` · scenes 1–${x.scenes} of ${x.scenes_total}` : "")
+          + (x.upscaled?.length ? " · upscaled " + x.upscaled.join(", ") : "")),
+          x.changed_since?.length ? h("span", { class: "hint warn", title: x.changed_since.join("\n") }, `Out of date: ${x.changed_since.slice(0, 2).join("; ")}${x.changed_since.length > 2 ? "…" : ""}`) : null),
         h("div", { class: "fin-act" }, h("button", { onclick: () => playFile(x.file, fmtStamp(x.created) || x.file) }, "▶"), h("a", { class: "btn", href: media(x.file), download: x.file.split("/").pop() }, "⤓"),
           h("button", { class: "icon", title: "Delete", onclick: () => guard(async () => { if (!confirm("Delete this exported video?")) return; const d = await call("/exports/delete", { path: state.path, file: x.file }); studio.exports = d.exports; renderFinish(); }) }, "✕")))))
         : h("p", { class: "hint" }, "No exports yet.")));

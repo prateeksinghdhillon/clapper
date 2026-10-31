@@ -137,8 +137,42 @@ def export_size(segments: list[dict], size: str) -> list[int]:
     return [big["width"], big["height"]]
 
 
+def export_changes(project: Project, manifest: dict) -> list[str]:
+    """What changed in the project since an export was made (empty = it is what an export would make now)."""
+    if not manifest.get("segments") or not all("scene" in s for s in manifest["segments"]):
+        return []   # an export record from an older version: nothing to compare
+    from .finish import finish_of, is_empty
+    from .upscale import best_upscale
+    out = []
+    old = {s["scene"]: s for s in manifest["segments"]}
+    for i, scene in enumerate(project.scenes, 1):
+        take = project.data["takes"].get(scene.get("selected_take") or "") or {}
+        seg = old.get(scene["id"])
+        if seg is None:
+            if take.get("status") == "done":
+                out.append(f"scene {i} is new or newly rendered")
+            continue
+        if take.get("id") != seg["take"]:
+            out.append(f"scene {i} uses another take now")
+        elif seg.get("upscaled") is not None:
+            up = best_upscale(take)
+            if (f"{up['method']} {up['size']}" if up else None) != seg["upscaled"]:
+                out.append(f"scene {i} uses another upscaled version now")
+        elif best_upscale(take):
+            out.append(f"scene {i} has been upscaled since")
+    gone = [s for s in manifest["segments"] if not any(sc["id"] == s["scene"] for sc in project.scenes)]
+    if gone:
+        out.append(f"{len(gone)} scene(s) of it were removed")
+    fin = finish_of(project)
+    if (manifest.get("finish") or None) is not None or not is_empty(fin):
+        strip = lambda f: {k: f.get(k) for k in ("scene_volume", "tracks", "overlays")} if f else None   # noqa: E731
+        if strip(manifest.get("finish")) != (strip(fin) if not is_empty(fin) else None):
+            out.append("the sound & overlays changed")
+    return out
+
+
 def list_exports(project: Project) -> list[dict]:
-    """Exported videos, newest first, with their manifests."""
+    """Exported videos, newest first, with their manifests and what changed since each."""
     out = []
     folder = project.root / "exports"
     for mp4 in sorted(folder.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True) if folder.is_dir() else []:
@@ -150,7 +184,8 @@ def list_exports(project: Project) -> list[dict]:
         out.append({"file": f"exports/{mp4.name}", "bytes": mp4.stat().st_size, "created": manifest.get("created"),
                     "seconds": manifest.get("total_seconds"), "width": manifest.get("width"), "height": manifest.get("height"),
                     "scenes": manifest.get("scenes_exported"), "scenes_total": manifest.get("scenes_total"),
-                    "upscaled": [s["scene_number"] for s in manifest.get("segments", []) if s.get("upscaled")]})
+                    "upscaled": [s["scene_number"] for s in manifest.get("segments", []) if s.get("upscaled")],
+                    "changed_since": export_changes(project, manifest)})
     return out
 
 

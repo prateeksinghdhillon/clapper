@@ -189,3 +189,15 @@ def test_restoring_a_take_made_outside_a_scene(project):
     project.update_scene(s1["id"], text="@hero sleeps.")
     project.restore_take_prompt(t["id"])
     assert project.scene(s1["id"])["text"] == "integrated_multimodal_description: @hero runs."
+
+
+def test_an_export_knows_what_changed_since(project, tmp_path):
+    s1 = project.add_scene(text="@hero waits.", join="cut"); t1 = _rendered(project, s1)
+    manifest = {"segments": [{"scene": s1["id"], "take": t1["id"], "upscaled": None}], "finish": None}
+    assert export.export_changes(project, manifest) == []
+    t2 = _rendered(project, s1)
+    assert export.export_changes(project, manifest) == ["scene 1 uses another take now"]
+    (tmp_path / "logo.png").write_bytes(PNG)
+    logo = project.add_asset(tmp_path / "logo.png", role="overlay")
+    finish.set_finish(project, {"overlays": [{"asset": logo["id"]}]})
+    assert "the sound & overlays changed" in export.export_changes(project, manifest)
