@@ -552,6 +552,7 @@ span.link { color: var(--accent); cursor: pointer; }
   .panel { position: fixed; top: 0; right: 0; bottom: 0; width: min(480px, 94vw); max-height: none; border-radius: 0; z-index: 45; border: 0; border-left: 1px solid var(--line); }
   body.panel-open::after { content: ""; position: fixed; inset: 0; background: rgba(0,0,0,.28); z-index: 44; }
   .ws { padding: 14px 16px 40px; }
+  .drawer, .chat { top: calc(var(--top-h, 0px) + var(--nav-h, 0px)); }
 }
 /* phones: bottom tab bar, full-screen panels */
 @media (max-width: 700px) {

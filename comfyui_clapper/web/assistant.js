@@ -26,6 +26,10 @@ addEventListener("resize", closePops);
 
 // Panels (chat, scene editor) start below the header, whatever its height.
 new ResizeObserver(() => document.documentElement.style.setProperty("--top-h", `${$("stickyTop").offsetHeight}px`)).observe($("stickyTop"));
+// on tablets the workspace tabs are a row under the header: side panels start below it, so the tabs stay usable
+const navOffset = () => { const n = $("wsNav"); const row = n && getComputedStyle(n).position === "sticky" && n.offsetHeight < 120;
+  document.documentElement.style.setProperty("--nav-h", row ? `${n.offsetHeight}px` : "0px"); };
+if ($("wsNav")) { new ResizeObserver(navOffset).observe($("wsNav")); window.addEventListener("resize", navOffset); }
 
 /** One pill for everything the header used to show: rendering progress, GPU owner, waiting jobs, load. */
 function renderStatus() {
