@@ -183,3 +183,41 @@ def test_start_command_brings_the_server_up(tmp_path, monkeypatch):
     bad = llm.LocalRunner({"swap_url": "http://127.0.0.1:9", "model": "m", "start_command": "false"})
     with pytest.raises(llm.LLMError, match="start command failed"):
         bad.start_server(wait=1)
+
+
+def test_text_only_models_get_text(fake):
+    fake.script += [(400, {}, {"error": {"message": "messages[1].content must be a string", "type": "invalid_request_error"}}),
+                    (200, {}, [delta(content="ok"), *DONE])]
+    c = client(fake, model="text-only-x")
+    msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:,"}},
+                                                                          {"type": "text", "text": "look"}]}]
+    assert c.chat(msgs)["content"] == "ok" and not c.sees_images and c.notices
+    sent = fake.requests[1]["body"]["messages"][1]["content"]
+    assert sent == "look\n\n[1 picture not shown: this model cannot see images]"
+
+
+def test_too_large_is_learned_but_a_rate_limit_is_waited_for(fake, monkeypatch):
+    waits = []
+    monkeypatch.setattr(llm.time, "sleep", lambda s: waits.append(s))
+    big = {"error": {"message": "Request too large for model `m` on tokens per minute (TPM): Limit 8000, Requested 9405, please reduce your message size"}}
+    fake.script += [(413, {}, big)]
+    prov = {"kind": "openai", "base_url": fake.url, "model": "m-limit", "api_key": "k"}
+    with pytest.raises(llm.HTTPError) as err:
+        llm.Client(prov).chat([{"role": "user", "content": "x"}])
+    assert "larger than the provider allows" in str(err.value) and llm.learn_request_limit(prov, err.value) == 8000
+    assert llm.request_limit(prov) == 8000 and waits == []
+    slow = {"error": {"message": "Rate limit reached for model `m` on tokens per minute (TPM): Limit 8000, Used 7000, Requested 3000. Please try again in 7.25s."}}
+    fake.script += [(429, {"Retry-After": "7"}, slow), (200, {}, [delta(content="ok"), *DONE])]
+    assert llm.Client(prov).chat([{"role": "user", "content": "x"}])["content"] == "ok" and waits == [7.5]
+
+
+def test_groq_tool_use_failed_is_retried(fake):
+    fake.script += [(400, {}, {"error": {"message": "Failed to call a function. Please adjust your prompt.", "code": "tool_use_failed"}}),
+                    (200, {}, [delta(content="ok"), *DONE])]
+    assert client(fake).chat([{"role": "user", "content": "x"}])["content"] == "ok"
+
+
+def test_retired_model_hint(fake):
+    fake.script += [(400, {}, {"error": {"message": "The model `llama3-70b-8192` has been decommissioned and is no longer supported."}})]
+    with pytest.raises(llm.LLMError, match="Pick a model"):
+        client(fake).chat([{"role": "user", "content": "x"}])

@@ -141,6 +141,13 @@ def update_settings(changes: dict, path: Path = SETTINGS) -> dict:
             # a stored key is never sent to another host: changing the address needs the key again
             if old_host and _host(cur["base_url"]) != old_host and not prov.get("api_key"):
                 cur["api_key"] = ""
+        if "request_limit" in prov and prov["request_limit"] not in (None, ""):
+            try:
+                cur["request_limit"] = max(1000, int(prov["request_limit"]))
+            except (TypeError, ValueError):
+                raise LLMError("the request limit must be a number of tokens") from None
+        elif "request_limit" in prov:
+            cur.pop("request_limit", None)
         if "context" in prov:
             try:
                 cur["context"] = max(2048, int(prov["context"]))
@@ -150,6 +157,11 @@ def update_settings(changes: dict, path: Path = SETTINGS) -> dict:
             cur["api_key"] = prov["api_key"]
         if "thinking" in prov:
             cur["thinking"] = _thinking_mode(prov["thinking"])
+        if "reasoning_effort" in prov:   # online reasoning models: low / medium / high, or empty for the model's default
+            effort = prov["reasoning_effort"] or None
+            if effort not in (None, "low", "medium", "high"):
+                raise LLMError("reasoning effort must be low, medium or high")
+            cur["reasoning_effort"] = effort
         if prov.get("thinking_budget"):
             try:
                 cur["thinking_budget"] = max(64, int(prov["thinking_budget"]))
@@ -187,6 +199,42 @@ _HINTS = {
     413: "the request is too large for this provider or plan — use a provider with a larger limit",
     429: "the provider's rate limit was reached — wait a minute, or use another provider",
 }
+MODEL_ERROR = re.compile(r"decommission|deprecat|no longer (?:supported|available)|model[_ ]not[_ ]found|does not exist|"
+                         r"unknown model|invalid model|model .{0,40} not (?:found|supported|available)", re.I)
+MODEL_HINT = ("this model is retired or not available with this key — choose another one with \"Pick a model\" in "
+              "Assistant settings (it lists the provider's current models)")
+# the provider refused pictures in a message: a text-only model (e.g. Groq's gpt-oss, DeepSeek)
+IMAGE_ERROR = re.compile(r"content must be a string|image_url|image input|images? (?:are|is) not supported|does not support "
+                         r"(?:image|vision|multimodal)|vision is not|multimodal|unsupported content type|content\.\d+\.type", re.I)
+_TEXT_ONLY: set = set()   # (base URL, model) that refused pictures, learned while ComfyUI runs
+# "Request too large … Limit 8000, Requested 9405" (Groq's tokens-per-minute limit, also 413 elsewhere)
+LIMIT_RE = re.compile(r"(?:request too large|too large for model|tokens per minute|\bTPM\b).*?limit\D{0,3}(\d{3,7})", re.I | re.S)
+_LIMITS: dict = {}        # (base URL, model) → tokens one request may have, learned from the provider's answer
+
+
+def is_too_large(detail: str) -> bool:
+    """The request alone is over the provider's limit ("Request too large … Limit 8000, Requested 9405") —
+    unlike a rate limit ("Rate limit reached … Used …, try again in 7s"), where waiting helps."""
+    return bool(re.search(r"too large", detail or "", re.I)) and bool(LIMIT_RE.search(detail or ""))
+
+
+def request_limit(provider: dict) -> int | None:
+    """Tokens one request to this provider may contain, when known (set in settings, or learned)."""
+    key = (normalise_base_url(provider.get("base_url", "")), provider.get("model"))
+    return provider.get("request_limit") or _LIMITS.get(key)
+
+
+def learn_request_limit(provider: dict, err: "HTTPError") -> int | None:
+    """When the provider refused a request for its size (not the context window), remember its limit."""
+    if err.status not in (413, 429, 400):
+        return None
+    m = LIMIT_RE.search(err.detail or "")
+    if not m or not is_too_large(err.detail):
+        return None
+    limit = int(m.group(1))
+    _LIMITS[(normalise_base_url(provider.get("base_url", "")), provider.get("model"))] = limit
+    return limit
+
 CONTEXT_ERROR = re.compile(r"context[_ ]length|maximum context|context window|too many tokens|prompt is too long|reduce the length", re.I)
 
 
@@ -203,11 +251,14 @@ def _request(url: str, body: dict | None = None, *, key: str = "", timeout: floa
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace")[:800]
             retry_after = exc.headers.get("Retry-After") if exc.headers else None
-            if (exc.code == 429 or exc.code >= 500) and attempt < retries and not (should_stop and should_stop()):
-                time.sleep(min(30.0, float(retry_after) if retry_after and retry_after.isdigit() else 2.0 * 2 ** attempt))
+            too_large = is_too_large(detail)   # bigger than the limit itself: waiting does not help
+            if (exc.code == 429 or exc.code >= 500) and not too_large and attempt < retries and not (should_stop and should_stop()):
+                time.sleep(_wait_seconds(retry_after, detail, attempt))
                 continue
-            hint = _HINTS.get(exc.code) or ("the conversation is longer than the model's context window"
-                                            if CONTEXT_ERROR.search(detail) else "")
+            hint = ("this request is larger than the provider allows for this model on your plan" if too_large else
+                    MODEL_HINT if MODEL_ERROR.search(detail) and exc.code in (400, 404) else
+                    _HINTS.get(exc.code) or ("the conversation is longer than the model's context window"
+                                             if CONTEXT_ERROR.search(detail) else ""))
             raise HTTPError(f"{url} answered HTTP {exc.code}" + (f" — {hint}" if hint else "") + f": {detail[:500]}",
                             exc.code, detail) from None
         except (urllib.error.URLError, OSError) as exc:
@@ -216,6 +267,17 @@ def _request(url: str, body: dict | None = None, *, key: str = "", timeout: floa
                 time.sleep(2.0 * 2 ** attempt)
                 continue
             raise LLMError(f"cannot reach {url}: {reason}") from None
+
+
+def _wait_seconds(retry_after: str | None, detail: str, attempt: int) -> float:
+    """How long to wait before retrying a rate-limited request: the provider's Retry-After (seconds, may have
+    decimals), or "try again in 7.5s" in its message, else a growing backoff. At most a minute."""
+    for text in (retry_after or "", detail or ""):
+        m = re.search(r"(?:^|try again in\s*)(\d+(?:\.\d+)?)\s*(ms|s)?", text.strip(), re.I)
+        if m:
+            value = float(m.group(1)) / (1000 if (m.group(2) or "").lower() == "ms" else 1)
+            return min(60.0, value + 0.5)
+    return min(60.0, 2.0 * 2 ** attempt)
 
 
 def _json(url: str, body: dict | None = None, **kw):
@@ -227,6 +289,72 @@ def _json(url: str, body: dict | None = None, **kw):
         return raw.decode(errors="replace")
 
 
+def text_only(messages: list) -> list:
+    """Messages for a model that takes only text: picture parts become a note, list content becomes a string."""
+    out = []
+    for m in messages:
+        content = m.get("content")
+        if isinstance(content, list):
+            texts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
+            pictures = sum(1 for p in content if isinstance(p, dict) and p.get("type") == "image_url")
+            note = f"[{pictures} picture{'s' if pictures != 1 else ''} not shown: this model cannot see images]" if pictures else ""
+            m = {**m, "content": "\n\n".join(t for t in [*texts, note] if t)}
+        out.append(m)
+    return out
+
+
+def list_models(provider: dict) -> list[str]:
+    """The provider's model ids (GET /models), sorted; [] when it does not list them."""
+    data = _json(normalise_base_url(provider["base_url"]) + "/models", key=provider.get("api_key", ""), timeout=30)
+    items = data.get("data") if isinstance(data, dict) else data if isinstance(data, list) else []
+    ids = [(x.get("id") or x.get("name")) if isinstance(x, dict) else str(x) for x in items or []]
+    return sorted({i for i in ids if i})
+
+
+def probe(provider: dict) -> dict:
+    """What a real assistant turn needs, tried one by one: the model answers, it is listed, it calls tools, and
+    (when "can see images" is on) it accepts a picture. Each check: {"ok": bool, "detail": str}."""
+    import base64
+    import io
+
+    out: dict = {}
+    client = Client(provider)
+    t0 = time.time()
+    r = client.chat([{"role": "user", "content": "Reply with exactly: OK"}], max_tokens=200, timeout=120)
+    out["answer"] = {"ok": True, "detail": (r["content"] or "").strip()[:80], "seconds": round(time.time() - t0, 1),
+                     "usage": bool(r.get("usage")), "reasoning": bool(r.get("reasoning"))}
+    if provider.get("kind") != "local":
+        try:
+            models = list_models(provider)
+            out["listed"] = {"ok": provider["model"] in models or not models,
+                             "detail": "" if provider["model"] in models else
+                             ("the provider does not list its models" if not models else "not in the provider's model list")}
+        except LLMError as exc:
+            out["listed"] = {"ok": True, "detail": f"could not read the model list ({str(exc)[:120]})"}
+    tool = {"type": "function", "function": {"name": "get_scene", "description": "Read one scene.",
+                                             "parameters": {"type": "object", "properties": {"scene": {"type": "integer"}}, "required": ["scene"]}}}
+    try:
+        r = client.chat([{"role": "user", "content": "Call get_scene for scene 2."}], tools=[tool], max_tokens=400, timeout=120)
+        names = [c["name"] for c in r["tool_calls"]]
+        out["tools"] = {"ok": "get_scene" in names, "detail": "" if "get_scene" in names else "it answered without calling the tool"}
+    except LLMError as exc:
+        out["tools"] = {"ok": False, "detail": str(exc)[:300]}
+    if provider.get("vision"):
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 64), (220, 30, 30)).save(buf, format="PNG")
+        url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+        try:
+            r = client.chat([{"role": "user", "content": [{"type": "image_url", "image_url": {"url": url}},
+                                                          {"type": "text", "text": "What colour is this square? One word."}]}],
+                            max_tokens=300, timeout=120)
+            out["images"] = {"ok": client.sees_images, "detail": (r["content"] or "").strip()[:40] if client.sees_images
+                             else "this model cannot see pictures — turn off “can see images”"}
+        except LLMError as exc:
+            out["images"] = {"ok": False, "detail": str(exc)[:300]}
+    return out
+
+
 class Client:
     """OpenAI-compatible chat client for one provider (llama.cpp, OpenAI, OpenRouter, Groq, Mistral, DeepSeek,
     Together, Gemini's and Anthropic's OpenAI-compatible endpoints, LM Studio, Ollama, vLLM, …)."""
@@ -235,6 +363,8 @@ class Client:
         self.p = provider
         self.base = normalise_base_url(provider["base_url"])
         self._dropped: set[str] = set()   # request fields this provider rejected (learned per client)
+        self._tool_retries = 0
+        self.notices: list[str] = []      # what the client changed on its own (shown to the user)
         field = provider.get("max_tokens_field") or ("max_completion_tokens" if "api.openai.com" in self.base else "max_tokens")
         self._max_field = field
 
@@ -256,17 +386,30 @@ class Client:
             if isinstance(thinking, int) and not isinstance(thinking, bool):
                 body["thinking_budget_tokens"] = thinking
             body["cache_prompt"] = True
-        elif thinking and self.p.get("reasoning_effort"):   # opt-in: only reasoning models accept it
+        elif self.p.get("reasoning_effort"):   # chosen in settings for a reasoning model (others reject it: then dropped)
             body["reasoning_effort"] = self.p["reasoning_effort"]
         for key in self._dropped:
             body.pop(key, None)
+        if not self.sees_images:
+            body["messages"] = text_only(messages)
         return body
+
+    @property
+    def sees_images(self) -> bool:
+        return (self.base, self.p.get("model")) not in _TEXT_ONLY
 
     def _adapt(self, err: HTTPError, body: dict) -> bool:
         """Learn from a 400 about one request field and say whether a retry makes sense."""
         if err.status not in (400, 422):
             return False
         d = err.detail.lower()
+        if IMAGE_ERROR.search(d) and self.sees_images and any(isinstance(m.get("content"), list) for m in body["messages"]):
+            _TEXT_ONLY.add((self.base, self.p.get("model")))   # from now on: text only for this model
+            self.notices.append("This model cannot see pictures, so the frames were left out (turn off “can see images” for it in Assistant settings).")
+            return True
+        if "tool_use_failed" in d and self._tool_retries < 2:   # Groq: the model wrote a malformed tool call; ask again
+            self._tool_retries += 1
+            return True
         if "max_completion_tokens" in d and self._max_field == "max_tokens" and "max_tokens" in body:
             self._max_field = "max_completion_tokens"
             return True
@@ -284,7 +427,8 @@ class Client:
         """One completion, streamed. Returns {content, reasoning, tool_calls, finish_reason, usage}.
         on_delta(kind, text) is called with kind "content" / "reasoning" as text arrives.
         A stopped request returns finish_reason "stopped" and no tool calls (they would be incomplete)."""
-        for _ in range(4):
+        self._tool_retries = 0
+        for _ in range(5):
             body = self._body(messages, tools, max_tokens, thinking, stream=True)
             try:
                 return self._stream(body, on_delta, should_stop, timeout)

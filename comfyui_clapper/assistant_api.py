@@ -28,6 +28,29 @@ def _key(project: Project, chat_id: str) -> str:
     return f"{project.root}::{chat_id}"
 
 
+def _remember(provider: dict, agent) -> None:
+    """Keep what a turn learned about an online provider (it refuses pictures; its request limit) in its settings,
+    so the next turn — also after a restart — does not hit the same error first."""
+    if provider.get("kind") == "local":
+        return
+    settings = llm.load_settings()
+    pid = next((k for k, v in settings["providers"].items() if v.get("base_url") == provider.get("base_url")
+                and v.get("model") == provider.get("model")), None)
+    if not pid:
+        return
+    changes = {}
+    if provider.get("vision") and not agent.client.sees_images:
+        changes["vision"] = False
+    limit = llm.request_limit(provider)
+    if limit and limit != settings["providers"][pid].get("request_limit"):
+        changes["request_limit"] = limit
+    if changes:
+        try:
+            llm.update_settings({"providers": {pid: changes}})
+        except llm.LLMError as exc:
+            log.warning("Clapper: could not save what was learned about the provider: %s", exc)
+
+
 def _provider(settings: dict | None = None) -> dict:
     settings = settings or llm.load_settings()
     return settings["providers"].get(settings["active"]) or settings["providers"]["local"]
@@ -144,11 +167,27 @@ async def assistant_test(request):
         def run():
             if prov.get("kind") == "local":
                 G.ensure_llm()
-            started = time.time()
-            r = llm.Client(prov).chat([{"role": "user", "content": "Reply with exactly: OK"}], max_tokens=200, timeout=120)
-            return {"seconds": round(time.time() - started, 1), "reply": (r["content"] or "").strip()[:80],
-                    "usage": bool(r.get("usage")), "reasoning": bool(r.get("reasoning")), "finish_reason": r.get("finish_reason")}
+            checks = llm.probe(prov)   # answers, is listed, calls tools, sees pictures (what a real turn needs)
+            a = checks["answer"]
+            return {"seconds": a["seconds"], "reply": a["detail"], "usage": a["usage"], "reasoning": a["reasoning"], "checks": checks}
         return _ok(await loop.run_in_executor(None, run))
+    except ERRORS as exc:
+        return _err(exc)
+
+
+@routes.post("/clapper/api/assistant/models")
+async def assistant_models(request):
+    """id, provider (form values; an empty api_key uses the saved one): the provider's current model ids."""
+    body = await _body(request)
+    try:
+        saved = llm.load_settings()["providers"].get(body.get("id"), {})
+        prov = {**saved, **{k: v for k, v in (body.get("provider") or {}).items() if v not in (None, "")}}
+        if not body.get("provider", {}).get("api_key"):
+            prov["api_key"] = saved.get("api_key", "") if llm._host(saved.get("base_url", "")) == llm._host(prov.get("base_url", "")) else ""
+        if not prov.get("base_url"):
+            raise llm.LLMError("fill in the base URL first")
+        loop = asyncio.get_running_loop()
+        return _ok({"models": await loop.run_in_executor(None, lambda: llm.list_models(prov))})
     except ERRORS as exc:
         return _err(exc)
 
@@ -277,12 +316,15 @@ async def chat_send(request):
                                             before_request=before_request, update=lambda s: state.update(s),
                                             stopped=lambda: state["stop"])
                 agent.run_turn(chat, text, images=images, thinking=thinking, note=note)
+                _remember(provider, agent)
             except ERRORS as exc:
                 state["error"] = str(exc)
             except Exception as exc:  # noqa: BLE001 — report, never crash the server
                 log.exception("Clapper assistant turn failed")
                 state["error"] = f"{type(exc).__name__}: {exc}"
             finally:
+                if state.get("error"):   # kept in the chat, so it can still be read after a reload or a restart
+                    chat["messages"].append({"role": "notice", "kind": "error", "text": state["error"], "t": assistant._now()})
                 if state.get("stop_reason") and not state.get("error"):   # tell the user why the answer ends here
                     state["error"] = state["stop_reason"]
                     chat["messages"].append({"role": "event", "text": "(The previous answer was cut off: a render took the GPU.)",

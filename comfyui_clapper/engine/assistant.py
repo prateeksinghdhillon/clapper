@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 
 from .export import FFMPEG
-from .llm import CONTEXT_ERROR, Client, HTTPError, LLMError
+from .llm import CONTEXT_ERROR, Client, HTTPError, LLMError, learn_request_limit, request_limit
 from .project import JOIN_MODES, Project, ProjectError
 
 GUIDE = Path(__file__).resolve().parents[2] / "docs" / "PROMPT_GUIDE.md"
@@ -71,6 +71,17 @@ INSTRUCTIONS = """You are the director's assistant inside Clapper, a studio for 
 - New material: create_character for a new character or place (a precise description, without repeating its name); make_images for new looks, angles or start frames; speak_line for exact dialogue in a character's voice; edit_character to change a description or voice.
 - A new video: agree on length, shape (portrait 9:16 or landscape 16:9), language and characters if unclear; style text (edit_project, with a line "subject_definitions:"); the cast with create_character; once they have main looks, start frames and lines; then all scenes in one add_scenes call.
 """
+
+# The prompt guide in brief, for providers whose request limit is too small for the whole guide (lean mode).
+GUIDE_SHORT = """- Clapper builds each take's prompt: the style text, then the definitions of the scene's references, then "Continuation of Chunk N." for continued scenes, then the scene text; every @name becomes <Picture N>/<Audio N>.
+- Style text: only what is always true (format and flow, look, voices, rules such as "no readable writing"). No one-time actions, dialogue or endings. Avoid changing it once takes exist.
+- References: a scene uses only the references that should be visible; anyone named in the text must be in its refs. Definitions say what the reference is ("@aoi is Aoi: …").
+- Scene text has three fields: integrated_multimodal_description ([Shot 1], the action, the camera, spoken lines), overall_soundscape (ambience, action sounds, non-verbal sounds), non_diegetic_music (or N/A).
+- One main action per scene, plus at most a small reaction; state where the camera is and which way people move.
+- A continued scene starts from the picture the previous take really ends on: its first sentence describes that state.
+- Spoken words: <d>[Language] exact words</d> with a named speaker; about one or two short sentences per 5 seconds. An off-screen narrator: visible characters keep their lips closed.
+- Sound: one clear sound early in the scene works well; keep music continuous across scenes ("the same score continues").
+- Signs, papers and screens show pictures and plain lines, no readable writing."""
 
 SCENE_CHECKLIST = """# Before you write any scene text
 Decide these four things first; then write the three H3 fields.
@@ -146,13 +157,17 @@ def delete_chat(project: Project, chat_id: str) -> None:
 
 # ------------------------------------------------------------------ what the model sees
 
-def system_prompt(chat: dict) -> str:
-    try:
-        guide = GUIDE.read_text(encoding="utf-8")
-    except OSError:
-        guide = ""
+def system_prompt(chat: dict, *, lean: bool = False) -> str:
+    """lean: the prompt guide in brief, for providers with a small request limit."""
+    if lean:
+        guide = GUIDE_SHORT
+    else:
+        try:
+            guide = GUIDE.read_text(encoding="utf-8")
+        except OSError:
+            guide = GUIDE_SHORT
     # the checklist comes last: models follow what they read last most closely
-    text = INSTRUCTIONS + "\n# Prompt guide (reference)\n\n" + guide + "\n\n" + SCENE_CHECKLIST
+    text = INSTRUCTIONS + ("\n# Prompt guide (in brief)\n\n" if lean else "\n# Prompt guide (reference)\n\n") + guide + "\n\n" + SCENE_CHECKLIST
     if chat.get("summary"):
         text += "\n\n# Summary of the earlier conversation\n\n" + chat["summary"]
     return text
@@ -378,12 +393,12 @@ def _image_part(project: Project, rel: str) -> dict | None:
     return {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()}}
 
 
-def build_messages(project: Project, chat: dict, provider: dict, *, with_snapshot: bool = True) -> list[dict]:
+def build_messages(project: Project, chat: dict, provider: dict, *, with_snapshot: bool = True, lean: bool = False) -> list[dict]:
     """The request messages. with_snapshot=False gives the stable part only (used to prime the cache)."""
     vision = bool(provider.get("vision"))
     history = chat["messages"][chat.get("summarized_upto", 0):]
     last_user = max((i for i, m in enumerate(history) if m["role"] == "user"), default=-1)
-    out = [{"role": "system", "content": system_prompt(chat)}]
+    out = [{"role": "system", "content": system_prompt(chat, lean=lean)}]
     events: list[str] = []
     local = provider.get("kind") == "local"
     held: list[dict] = []      # images a tool showed: sent after the last tool reply of that round
@@ -412,6 +427,9 @@ def build_messages(project: Project, chat: dict, provider: dict, *, with_snapsho
                 changed = m.get("changes") or []
                 head = since + (("Changed in the project since your last message (by the user or by applied cards): "
                                  + "; ".join(changed) + ".\n\n") if changed else "")
+                if not vision:
+                    head += ("You cannot see pictures with this model: where these instructions say to look at frames, read the "
+                             "text the take was made from instead (get_scene, view_take), and tell the user what you could not check.\n\n")
                 text = head + (m.get("snapshot") or "") + "\n\n# The user's message\n" + text
             else:
                 text = since + text
@@ -436,6 +454,25 @@ def build_messages(project: Project, chat: dict, provider: dict, *, with_snapsho
             parts = [p for p in (_image_part(project, r) for r in m.get("images", [])) if p] if vision else []
             held.append({"role": "user", "content": [*parts, {"type": "text", "text": m["text"]}] if parts else m["text"]})
     close_round()
+    return out
+
+
+def fit_messages(messages: list, budget: int) -> list:
+    """For a provider with a small request limit: shorten the longest tool results (oldest first among equals)
+    until the request fits, each with a note on how to get the part that is needed. The rest stays as it is."""
+    if estimate_tokens(messages) <= budget:
+        return messages
+    out = [dict(m) for m in messages]
+    tools = sorted((i for i, m in enumerate(out) if m.get("role") == "tool" and isinstance(m.get("content"), str)),
+                   key=lambda i: -len(out[i]["content"]))
+    for keep in (1500, 800, 400):
+        for i in tools:
+            text = out[i]["content"]
+            if len(text) > keep:
+                out[i]["content"] = (text[:keep] + "\n[… shortened to fit this provider's request limit. Ask for one thing at a "
+                                     "time: view_take scene=N take=M gives one take's text.]")
+            if estimate_tokens(out) <= budget:
+                return out
     return out
 
 
@@ -1475,8 +1512,10 @@ def run_read_tool(project: Project, tool: str, args: dict, provider: dict) -> tu
                                + f" (its takes: {numbers})")
         if take.get("status") != "done":
             raise ProjectError(f"Take {take.get('number')} of scene {project.scene_index(sid) + 1} has no video: it is {take_status_words(take)}")
-        if not provider.get("vision"):
-            return "This model cannot see images.", []
+        if not provider.get("vision"):   # a text-only model: the take's own text says how it ends
+            return (f"You cannot see pictures. Scene {project.scene_index(sid) + 1} Take {take.get('number')} was made from this text; "
+                    "its last action is the state the take ends in (treat it as approximate, and say so if it matters):\n"
+                    + (take_text(project, take) or "(not recorded)")), []
         if args.get("part") == "end":
             frames = extract_frames(project, take, 3, end=True)
             return (f"Showing the last {len(frames)} frames (the final second) of scene {project.scene_index(sid) + 1} Take "
@@ -1663,6 +1702,7 @@ class Assistant:
     def __init__(self, provider: dict, *, open, write, before_request=None, update=None, stopped=None):
         self.provider = provider
         self.client = Client(provider)
+        self.lean = False   # the prompt guide in brief (a provider with a small request limit)
         self.open, self.write = open, write
         self.before_request = before_request or (lambda: None)
         self.update = update or (lambda state: None)
@@ -1676,16 +1716,49 @@ class Assistant:
         self.before_request()
         if self.stopped():
             return {"content": "", "reasoning": "", "finish_reason": "stopped", "tool_calls": [], "usage": {}}
+        limit = request_limit(self.provider)
         messages = build_messages(project, chat, self.provider)
+        if limit and estimate_tokens(messages) + estimate_tokens([{"content": json.dumps(tools or [])}]) > 0.9 * limit:
+            self.lean = True
+        if self.lean:
+            messages = build_messages(project, chat, self.provider, lean=True)
+            if limit:
+                messages = fit_messages(messages, int(0.85 * limit) - estimate_tokens([{"content": json.dumps(tools or [])}]))
         try:
             return self._send(chat, state, messages, thinking, tools)
         except HTTPError as err:
+            learned = learn_request_limit(self.provider, err)
+            if learned:
+                # the provider's per-request (or per-minute) token limit: the guide in brief, then older messages summarised
+                tools_cost = estimate_tokens([{"content": json.dumps(tools or [])}])
+                budget = int(0.85 * learned) - tools_cost
+                if not self.lean:
+                    self.lean = True
+                    chat["messages"].append({"role": "notice", "text": f"This provider accepts at most {learned} tokens per request, so the "
+                                             "assistant uses the prompt guide in brief (and summarises older messages when needed).", "t": _now()})
+                    try:
+                        return self._send(chat, state, fit_messages(build_messages(project, chat, self.provider, lean=True), budget), thinking, tools)
+                    except HTTPError as again:
+                        if not learn_request_limit(self.provider, again):
+                            raise
+                if self.compact(project, chat):
+                    state["phase"] = "compacting"
+                    self.update(state)
+                    try:
+                        return self._send(chat, state, fit_messages(build_messages(project, chat, self.provider, lean=True), budget), thinking, tools)
+                    except HTTPError as again:
+                        if not learn_request_limit(self.provider, again):
+                            raise
+                raise LLMError(f"this provider accepts at most {learned} tokens per request (its plan's limit for this model), and the "
+                               f"assistant's smallest request is larger (about {estimate_tokens(build_messages(project, chat, self.provider, lean=True)) + estimate_tokens([{'content': json.dumps(tools or [])}])} "
+                               "tokens: its instructions, the tools and your project). Use a model or plan with a higher limit "
+                               "— for example a paid tier, another model of this provider, or the local model.") from None
             # too long for the model: summarise older messages and try once more
             if not CONTEXT_ERROR.search(err.detail or "") or not self.compact(project, chat):
                 raise
             state["phase"] = "compacting"
             self.update(state)
-            return self._send(chat, state, build_messages(project, chat, self.provider), thinking, tools)
+            return self._send(chat, state, build_messages(project, chat, self.provider, lean=self.lean), thinking, tools)
 
     def _send(self, chat: dict, state: dict, messages: list, thinking, tools) -> dict:
         state.update(phase="thinking", text="", reasoning=0)
@@ -1717,6 +1790,8 @@ class Assistant:
         """note: extra context for the model that the chat panel does not show (e.g. what attached frames are)."""
         project = self.open()
         state = {"phase": "starting", "text": "", "reasoning": 0, "tool": None}
+        if self.provider.get("vision") and not getattr(self.client, "sees_images", True):
+            self.provider = {**self.provider, "vision": False}   # learned: this model refuses pictures
         if self.needs_compaction(chat):
             state["phase"] = "compacting"
             self.update(state)
@@ -1752,6 +1827,7 @@ class Assistant:
                                      "tool_calls": result["tool_calls"], "t": _now()})
             self.write_chat(chat)
             if result["finish_reason"] == "stopped" or not result["tool_calls"]:
+                self._notices(chat)
                 break
             last_round = tools is None   # the model was asked to answer without tools but still called one: run it, then stop
             start = len(chat["messages"])
@@ -1762,6 +1838,7 @@ class Assistant:
             self.write_chat(chat)
             if last_round:
                 break
+            self._notices(chat)
             if all(REPEAT in m["text"] for m in chat["messages"][start:] if m["role"] == "tool"):
                 repeats += 1
                 if repeats >= 2:
@@ -1769,6 +1846,15 @@ class Assistant:
             else:
                 repeats = 0
         return chat
+
+    def _notices(self, chat: dict) -> None:
+        """What the client changed on its own (e.g. pictures left out for a text-only model): shown in the chat once."""
+        for text in getattr(self.client, "notices", []) or []:
+            chat["messages"].append({"role": "notice", "text": text, "t": _now()})
+        if getattr(self.client, "notices", None):
+            self.client.notices.clear()
+            if not self.client.sees_images:
+                self.provider = {**self.provider, "vision": False}
 
     def write_chat(self, chat: dict) -> None:
         save_chat(self.open(), chat)
@@ -1843,6 +1929,8 @@ class Assistant:
                         key = (self.turn, plan["args"].get("scene"))
                         if echo and key not in self._echoed:
                             self._echoed.add(key)
+                            if not self.provider.get("vision"):   # it cannot look: point it at the take's text instead
+                                echo = re.sub(r"\(view_take [^)]*\)", "(you cannot see it: view_take gives the text that take was made from; its last action is where it ends)", echo)
                             result += " " + echo
                         result += auto_note
                         if name == "add_scenes" and len(plan["args"]["scenes"]) > 1 and asks_for_one_scene(getattr(self, "turn_text", "")):

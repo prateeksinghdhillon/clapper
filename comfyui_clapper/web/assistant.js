@@ -174,6 +174,7 @@ function renderChat(d) {
     } else if (m.role === "attachment") {
       box.append(h("div", { class: "thumbs small" }, (m.images || []).map((f) => h("img", { src: media(f), title: m.text }))));
     } else if (m.role === "event") box.append(h("div", { class: "chat-event" }, m.text.replace(/^The user /, "You ")));
+    else if (m.role === "notice") box.append(h("div", { class: "chat-event" + (m.kind === "error" ? " bad" : "") }, (m.kind === "error" ? "⚠ The answer failed: " : "ℹ ") + m.text));
   });
 
   const run = d.run;
@@ -365,11 +366,12 @@ $("aiAdd").onclick = () => {
   aiDraft.providers[id] = { kind: "openai", name: "Online model", base_url: "https://api.openai.com/v1", model: "", api_key: "", context: 128000, vision: false, _new: true };
   renderAiSettings();
 };
-// Base URLs of common OpenAI-compatible services (the model name is up to you; vision depends on the model).
+// Base URLs of common OpenAI-compatible services. Their model names are suggestions that providers retire over time:
+// "Load list" shows what the provider offers now. Vision depends on the model ("Test connection" checks it).
 const AI_PRESETS = [
   ["OpenAI", "https://api.openai.com/v1", "gpt-4.1-mini", 1047576, true],
   ["OpenRouter", "https://openrouter.ai/api/v1", "openai/gpt-4.1-mini", 1047576, true],
-  ["Groq", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", 131072, false],
+  ["Groq", "https://api.groq.com/openai/v1", "openai/gpt-oss-120b", 131072, false],
   ["Mistral", "https://api.mistral.ai/v1", "mistral-medium-latest", 131072, true],
   ["DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", 65536, false],
   ["Together", "https://api.together.xyz/v1", "meta-llama/Llama-3.3-70B-Instruct-Turbo", 131072, false],
@@ -400,13 +402,32 @@ function renderAiSettings() {
       renderAiSettings();
     };
     const testOut = h("span", { class: "hint test-out" });
+    // the provider's current models (a typed name may be retired or misspelled)
+    const modelList = h("select", { hidden: true });
+    const pickModel = h("label", {}, "Pick a model", h("div", { class: "row" },
+      h("button", { type: "button", onclick: () => guard(async () => {
+        const { api_key_set, api_key_hint, _new, ...rest } = p;
+        const r = await call("/assistant/models", { id, provider: rest });
+        if (!r.models.length) { toast("This provider does not list its models — type the name"); return; }
+        modelList.replaceChildren(h("option", { value: "" }, `${r.models.length} models…`), ...r.models.map((m) => h("option", { value: m, selected: m === p.model }, m)));
+        modelList.hidden = false;
+      }) }, "Load list"), modelList));
+    modelList.onchange = () => { if (modelList.value) { p.model = modelList.value; renderAiSettings(); } };
+    const effort = p.kind === "local" ? null : h("select", {}, [["", "Default"], ["low", "Low"], ["medium", "Medium"], ["high", "High"]]
+      .map(([v, l]) => h("option", { value: v, selected: (p.reasoning_effort || "") === v }, l)));
+    if (effort) effort.onchange = () => (p.reasoning_effort = effort.value || null);
     const test = h("button", { onclick: () => guard(async () => {
       test.disabled = true; testOut.className = "hint test-out"; testOut.textContent = p.kind === "local" ? "Testing (may load the model first)…" : "Testing…";
       try {
         const { api_key_set, api_key_hint, _new, ...rest } = p;
         const r = await call("/assistant/test", { id, provider: rest });
-        testOut.className = "hint test-out ok";
-        testOut.textContent = `✓ answered in ${r.seconds} s: “${r.reply}”` + (r.usage ? "" : " · sends no token counts (estimated instead)") + (r.reasoning ? " · shows its reasoning" : "");
+        const c = r.checks || {}, bad = Object.entries(c).filter(([, v]) => !v.ok);
+        const NAMES = { listed: "model list", tools: "tool calling (needed for proposals)", images: "pictures" };
+        testOut.className = "hint test-out " + (bad.length ? "bad" : "ok");
+        testOut.replaceChildren(
+          h("div", {}, `✓ answered in ${r.seconds} s: “${r.reply}”` + (r.usage ? "" : " · sends no token counts (estimated instead)") + (r.reasoning ? " · shows its reasoning" : "")),
+          ...["listed", "tools", "images"].filter((k) => c[k]).map((k) => h("div", {}, (c[k].ok ? "✓ " : "✗ ") + NAMES[k] + (c[k].detail ? `: ${c[k].detail}` : ""))));
+        if (c.images && !c.images.ok && /cannot see pictures/.test(c.images.detail)) { p.vision = false; vision.checked = false; }
       } catch (e) { testOut.className = "hint test-out bad"; testOut.textContent = "✗ " + e.message; throw Object.assign(e, { silent: true }); }
       finally { test.disabled = false; }
     }) }, "Test connection");
@@ -415,13 +436,17 @@ function renderAiSettings() {
         p.kind !== "local" ? h("button", { class: "ghost danger", onclick: () => { p.remove = true; renderAiSettings(); } }, p.remove ? "will be removed" : "Remove") : null),
       h("div", { class: "settings-grid" },
         f("Name", "name"), f("Model", "model", { placeholder: p.kind === "local" ? "llama-swap model name" : "e.g. gpt-4.1" }),
+        p.kind !== "local" ? pickModel : null,
         f("Base URL (…/v1)", "base_url"),
         p.kind === "local" ? f("llama-swap URL", "swap_url") : f(`API key${p.api_key_hint ? ` (saved: ${p.api_key_hint})` : ""}`, "api_key", { type: "password", placeholder: p.api_key_set ? "leave empty to keep" : "" }),
         p.kind === "local" ? f("Start command (run when llama-swap is not running)", "start_command", { placeholder: "systemctl --user start llama-swap" }) : null,
         f("Context (tokens)", "context", { type: "number" }),
+        p.kind !== "local" ? h("label", { title: "Some plans limit how many tokens one request (or one minute) may use, e.g. Groq's free tier: 8000 for gpt-oss-120b. Clapper learns it from the first refusal; then it sends the prompt guide in brief and waits between requests when needed." },
+          "Request limit (tokens, optional)", (() => { const i = h("input", { type: "number", value: p.request_limit ?? "", placeholder: "learned automatically" }); i.oninput = () => (p.request_limit = i.value ? Number(i.value) : null); return i; })()) : null,
         p.kind === "local" ? h("label", {}, "Thinking", think) : null,
         p.kind === "local" ? f("Thinking budget (tokens; also used by “think harder”)", "thinking_budget", { type: "number" }) : null,
         h("label", { class: "switch" }, vision, "can see images"),
+        effort ? h("label", { title: "For reasoning models (OpenAI o-series and gpt-5, gpt-oss, …): how hard they think when planning or writing scenes" }, "Reasoning effort", effort) : null,
         preset ? h("label", {}, "Preset", preset) : null),
       h("div", { class: "row" }, test, testOut)));
   }

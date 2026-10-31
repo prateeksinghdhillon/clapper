@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Online providers work better** (tested with Groq and gpt-oss-120b):
+  - A text-only model no longer fails on pictures (*content must be a string*): the request is sent as text, the chat says so once, and *can see images* is turned off. Such a model gets each take's text instead of its frames.
+  - A plan's request limit (Groq's free tier: 8000 tokens for gpt-oss-120b) is learned and saved. The assistant then uses the prompt guide in brief, shortens long tool results and summarises older messages to fit, and waits as long as the provider asks between requests (decimal `Retry-After` and "try again in 7.5s" are understood). If even the smallest request is too large, the message says so plainly.
+  - **Load list** picks from the provider's current models. A retired model gets a clear message, and the Groq preset suggests a current model.
+  - **Test connection** checks what a turn needs: answer, model listed, tool calling and pictures.
+  - Groq's *tool_use_failed* is retried. **Reasoning effort** can be set for online reasoning models.
+  - A failed answer stays in the chat after a reload.
 - **Whole-app audit fixes** (Scenes, Studio, Finish, jobs):
   - Nothing is saved into the wrong scene, the *Continue from* choice and per-render seed/steps behave, a text changed elsewhere is shown, every take shows what it was made from, and Restore works for every take.
   - Changing a character's main look (or any reference picture) is flagged on the scenes that used the old one; renumbering scenes no longer looks like an edit.
