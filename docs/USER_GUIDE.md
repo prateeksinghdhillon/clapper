@@ -58,8 +58,9 @@ If you select a different take for scene 3, scene 4's selected take was still ma
 | take ready | The selected take is finished and matches the scene |
 | no take yet | The scene has no finished selected take |
 | rendering… | A take of this scene is queued or rendering |
-| prompt edited since take | The scene's text (or style text / definitions) changed after the selected take was made; the video still shows the older version |
+| prompt edited since take | The scene's text (or style text / definitions) changed after the selected take was made; the video still shows the older version. (Only renumbering — a scene added or moved before it — does not count.) |
 | references changed since take | The scene's reference list changed after the selected take was made |
+| a reference picture changed since take | Same @names, but one of their pictures is new (for example a character's new main look, or the start image); the video shows the old picture |
 | previous scene changed | The previous scene's selected take is not the one this take continued from |
 | previous scene has no take | This scene continues from a scene that has nothing to continue from |
 | prompt error | The text uses a `@name` that is not active in this scene, or another prompt problem (shown in the editor) |
@@ -150,9 +151,12 @@ One card per scene, in order: a thumbnail of the selected take (hover or tap to 
 - **Takes** — oldest first. Each shows its number, status, *Created* and *Finished* date and time (in your device's time zone), how long it took, seed, and which take it continued from. Buttons:
   - **Use this take** — select it for the video.
   - **Play** — the player also has **Save this frame to Library**: pause where you want and save that frame as an image (to start a later scene from it, or as a reference).
-  - **Restore its prompt** — put this take's text, references, length and join back into the scene editor (to redo or vary that version).
-  - **Stop / Cancel** while rendering or waiting; **Re-queue** after an interruption or failure.
-- **Remove scene from timeline** — its takes stay saved on disk.
+  - **What it was made from** — opens the exact text, references, length and steps this take was made from, and says what differs from the scene now (also for takes made outside a scene).
+  - **Restore its prompt** — put this take's text, references, length and join back into the scene editor (to redo or vary that version). It appears whenever any of these differ; what you were typing is saved first.
+  - **Stop / Cancel** while rendering or waiting (the tooltip counts the queued takes that continue from it, which stop too); **Re-queue** after an interruption or failure — the same seed and step count, continuing from the take it continued from, or from the scene before's newer take if that was rendered again.
+- **Remove scene from timeline** — its takes stay saved on disk. Not possible while one of its takes renders (stop it first).
+
+The editor saves what you type to the scene you typed it in, also when you open another scene right away. *Seed* and *Steps* in Options are for the next render of this scene only (they clear when you open another scene), and *Continue from* keeps your choice while the scene is open. If the scene's text is changed elsewhere (the assistant, another device) while the editor is open, the editor shows the new text — or, if you are typing, warns you that your text will replace it.
 
 Everything you type is saved automatically.
 
@@ -248,7 +252,7 @@ Three steps on one page:
 | **Sharpen** | Real-ESRGAN ×2 on every frame, then an exact resize. Crisp edges; the picture stays exactly the same, including its flaws | 720p ≈ 1.2 min · 1080p ≈ 1.4 min |
 | **Re-detail** | The H3 latent upscaler, then H3 (Ref2VA) redraws fine detail at the new size, in tiles so it fits in 16 GB. Faces, eyes and hair become clean; small details can change. *Light* stays closest to the take, *Strong* redraws more | light 720p ≈ 7.5 min · light 1080p ≈ 19 min |
 
-Both keep the take's sound exactly. Each method and size is kept as its own version of the take (a new run never replaces another); each scene lists its versions with **▶** play, **⤓** download and **✕** delete, and a choice of which one goes into the video (or the *Original*). Scene cards on the storyboard show *⤢ 1080p* when upscaled.
+Both keep the take's sound exactly. Each run is kept as its own version of the take (a second run of the same method and size is saved next to the first, as *…-2*); a new version is used in the video only if none was chosen yet — pick it with the radio button. Deleting the version in use falls back to the newest other version (or the original). An upscale that failed or did not finish (for example ComfyUI was restarted) is shown on the scene's row with a **Dismiss** button; each scene lists its versions with **▶** play, **⤓** download and **✕** delete, and a choice of which one goes into the video (or the *Original*). Scene cards on the storyboard show *⤢ 1080p* when upscaled.
 
 **2 · Sound & overlays** — added at export, exact, nothing re-rendered. A timeline strip shows the scenes and, one lane each, every track and overlay.
 
@@ -261,7 +265,9 @@ Both keep the take's sound exactly. Each method and size is kept as its own vers
 
 **With sound & overlays** can be switched off for a clean version.
 
-**4 · Previous exports** — every export with play, download and delete (also in Studio › Exports).
+**4 · Previous exports** — every export with play, download and delete (also in Studio › Exports). An export made before later changes says so — *Out of date: scene 3 uses another take now; the sound & overlays changed* — and a partial export shows *scenes 1–N of M*.
+
+The export checks before it runs and lists what would go wrong: an upscaled file missing on disk, a scene whose upscale belongs to a take that is no longer selected, a scene of another shape (it is fitted in the frame with bars, never stretched), and in the mix an item that was removed, starts after the video ends, or ends before it starts. A library item used by the mix cannot be removed until it is taken out of the mix.
 
 ### Storage and deleting a project
 
@@ -330,7 +336,7 @@ Use **+** between two scenes. The new scene continues from the one before it. Th
 
 ### Stop and resume
 
-Stop anything with **■ Stop**. Close the browser, restart ComfyUI or shut down the computer at any time: reopening the project shows exactly where you were. Takes that were rendering when ComfyUI stopped show as *interrupted* with **Re-queue** (same seed and settings, so the same result).
+Stop anything with **■ Stop**. Close the browser, restart ComfyUI or shut down the computer at any time: reopening the project shows exactly where you were. Takes that were rendering when ComfyUI stopped show as *interrupted* with **Re-queue** (same seed and step count; the same result if the scene and settings are unchanged). Images, speech and upscales that finished just before a restart are still collected into the library.
 
 ### Plan a video with the assistant
 

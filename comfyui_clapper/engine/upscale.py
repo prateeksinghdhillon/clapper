@@ -151,7 +151,11 @@ def queue_upscale(project: Project, client: ComfyClient, take_id: str, *, method
            "inputs": {"method": method, "size": size, "strength": strength}, "seed": seed, "status": "queued",
            "created": _now(), "dir": str(Path(out_rel).parent), "out": out_rel, "title": "", "outputs": [],
            "width": tw - (tw % 32 if method == "redetail" else 0), "height": th - (th % 32 if method == "redetail" else 0)}
-    job["prompt_id"] = client.submit(graph)
+    from .comfy_client import ComfyTimeout
+    try:
+        job["prompt_id"] = client.submit(graph)
+    except ComfyTimeout as exc:   # may be queued anyway: collect() finds it
+        job["prompt_id"] = exc.prompt_id
     project.data.setdefault("jobs", {})[job_id] = job
     project.save()
     return job

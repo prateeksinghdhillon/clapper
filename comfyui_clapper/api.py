@@ -384,6 +384,9 @@ async def project_delete(request):
             busy = [t for t in project.data["takes"].values() if t["status"] in ("queued", "rendering")]
             if busy:
                 raise ProjectError(f"{len(busy)} take(s) of this project are rendering or waiting — stop them first")
+            jobs = [j for j in (project.data.get("jobs") or {}).values() if j["status"] in ("queued", "running")]
+            if jobs:   # images, speech or upscales would write into the deleted folder
+                raise ProjectError(f"{len(jobs)} image, speech or upscale job(s) of this project are running or waiting — cancel them first")
             freed = disk_usage(project.root)["total"]
             if not body.get("keep_files"):
                 loop = asyncio.get_running_loop()
@@ -605,7 +608,7 @@ async def run_tool(request):
         loop = asyncio.get_running_loop()
         async with _lock:
             project = _open(body["path"], request)
-            jobs = await loop.run_in_executor(None, lambda: tools.queue_tool(
+            jobs = await loop.run_in_executor(None, lambda: _guarded(tools.queue_tool)(
                 project, _client(), body["tool"], body.get("inputs") or {}, count=int(body.get("count") or 1),
                 role=body.get("role"), seed=body.get("seed"), title=body.get("title", ""),
                 version_of=body.get("version_of") or None))
@@ -637,7 +640,7 @@ async def upscale_takes(request):
                 raise ProjectError("nothing to upscale: every selected take already has this version")
             jobs = []
             for tid in ids:
-                jobs.append(await loop.run_in_executor(None, lambda tid=tid: upscale.queue_upscale(
+                jobs.append(await loop.run_in_executor(None, lambda tid=tid: _guarded(upscale.queue_upscale)(
                     project, _client(), tid, method=method, size=size, strength=strength, seed=body.get("seed"))))
         return _ok({"jobs": [j["id"] for j in jobs], "project": _view(project)})
     except (KeyError, ProjectError, OSError, ValueError, RuntimeError) as exc:
@@ -714,7 +717,10 @@ async def dismiss_tool(request):
             project = _open(body["path"], request)
             if body.get("finished"):
                 for jid in [j["id"] for j in (project.data.get("jobs") or {}).values() if j["status"] not in ("queued", "running")]:
-                    tools.dismiss(project, jid)
+                    try:
+                        tools.dismiss(project, jid)
+                    except ProjectError:   # results on disk not collected yet: kept
+                        pass
             else:
                 tools.dismiss(project, body["job_id"])
         return _ok(_view(project))
@@ -761,7 +767,7 @@ async def entity_generate(request):
         loop = asyncio.get_running_loop()
         async with _lock:
             project = _open(body["path"], request)
-            jobs = await loop.run_in_executor(None, lambda: tools.queue_entity(
+            jobs = await loop.run_in_executor(None, lambda: _guarded(tools.queue_entity)(
                 project, _client(), body["id"], body["action"], body.get("text", ""), place_id=body.get("place"),
                 count=int(body.get("count") or 2), seed=body.get("seed"), aspect=body.get("aspect"),
                 prompt=body.get("prompt") or None))

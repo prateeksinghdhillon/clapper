@@ -350,10 +350,15 @@ def cmd_delete(args) -> int:
     if any(t["status"] in ("queued", "rendering") for t in p.data["takes"].values()):
         print("refusing: takes of this project are rendering or waiting — stop them first")
         return 1
+    if any(j["status"] in ("queued", "running") for j in (p.data.get("jobs") or {}).values()):
+        print("refusing: image, speech or upscale jobs of this project are running or waiting — cancel them first")
+        return 1
     size = disk_usage(p.root)["total"]
     if not args.keep_files:
         delete_project_folder(p.root)
     registry.unregister(p.root)
+    from comfyui_clapper.engine import profiles
+    profiles.Store().assign(p.root, None)   # as the app does: no profile keeps pointing at it
     print("removed from the list" + ("" if args.keep_files else f" and deleted {p.root} ({_size(size)} freed)"))
     return 0
 

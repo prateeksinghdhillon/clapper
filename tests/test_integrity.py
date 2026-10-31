@@ -201,3 +201,18 @@ def test_an_export_knows_what_changed_since(project, tmp_path):
     logo = project.add_asset(tmp_path / "logo.png", role="overlay")
     finish.set_finish(project, {"overlays": [{"asset": logo["id"]}]})
     assert "the sound & overlays changed" in export.export_changes(project, manifest)
+
+
+def test_a_slow_comfyui_answer_does_not_fail_a_queued_take(project):
+    from comfyui_clapper.engine import director
+    from comfyui_clapper.engine.comfy_client import ComfyTimeout
+
+    class Slow(Client):
+        def submit(self, graph):
+            raise ComfyTimeout("timed out", "0b6a7f3e-0000-4000-8000-000000000001")
+    s1 = project.add_scene(text="@hero waits.", join="cut")
+    t = director.queue_take(project, s1["id"], Slow())
+    assert t["status"] == "queued" and t["prompt_id"] == "0b6a7f3e-0000-4000-8000-000000000001"
+    project.data["takes"][t["id"]]  # the next refresh: no history, not queued → interrupted (re-queueable), not failed
+    director.refresh(project, Client())
+    assert project.data["takes"][t["id"]]["status"] == "interrupted"

@@ -370,7 +370,9 @@ async def proposal_action(request):
                     if prop["tool"] == "render_scenes":
                         prop["result"] = await loop.run_in_executor(None, lambda: assistant.apply_proposal(project, prop, render=_render))
                     elif prop["tool"] in assistant.GENERATE_TOOLS:   # queues image / speech jobs in ComfyUI
-                        prop["result"] = await loop.run_in_executor(None, lambda: assistant.apply_proposal(project, prop, client=_client()))
+                        gpu_job = not (prop["tool"] == "create_character" and not prop["args"].get("designs"))   # a character from an image needs no GPU
+                        apply = _guarded(assistant.apply_proposal) if gpu_job else assistant.apply_proposal
+                        prop["result"] = await loop.run_in_executor(None, lambda: apply(project, prop, client=_client()))
                     else:   # force: the user confirmed replacing a change they made after the card was written
                         prop["result"] = assistant.apply_proposal(project, prop, force=bool(body.get("force")))
                 except (ProjectError, RuntimeError) as exc:

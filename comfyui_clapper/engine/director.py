@@ -126,8 +126,11 @@ def queue_take(project: Project, scene_id: str, client: ComfyClient, **kwargs) -
     graph = build_take_graph(settings=plan["settings"], prompt=plan["compiled"]["prompt"], width=plan["width"],
                              height=plan["height"], frames=plan["frames"], spec=plan["spec"], seed=plan["seed"],
                              take_dir=str(take_dir), meta=meta)
+    from .comfy_client import ComfyTimeout
     try:
         prompt_id = client.submit(graph)
+    except ComfyTimeout as exc:   # it may be queued: the next refresh finds it (or marks it interrupted)
+        return project.update_take(take["id"], prompt_id=exc.prompt_id, note="ComfyUI was slow to answer; checking whether it was queued")
     except Exception as exc:
         project.update_take(take["id"], status="failed", error=str(exc)[:2000])
         raise

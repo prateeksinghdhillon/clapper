@@ -14,6 +14,14 @@ class ComfyError(RuntimeError):
     pass
 
 
+class ComfyTimeout(ComfyError):
+    """ComfyUI did not answer in time; the job may still have been queued under `prompt_id`."""
+
+    def __init__(self, message: str, prompt_id: str):
+        super().__init__(message)
+        self.prompt_id = prompt_id
+
+
 class ComfyClient:
     def __init__(self, url: str = DEFAULT_URL):
         self.url = url.rstrip("/")
@@ -30,7 +38,14 @@ class ComfyClient:
             raise ComfyError(f"{path}: HTTP {exc.code}: {exc.read().decode(errors='replace')[:2000]}") from exc
 
     def submit(self, graph: dict) -> str:
-        result = self._request("/prompt", {"prompt": graph, "client_id": self.client_id})
+        # the id is chosen here, so a job ComfyUI queued while it was too busy to answer can still be found
+        prompt_id = str(uuid.uuid4())
+        try:
+            result = self._request("/prompt", {"prompt": graph, "client_id": self.client_id, "prompt_id": prompt_id})
+        except (TimeoutError, OSError) as exc:
+            if isinstance(exc, urllib.error.HTTPError) or not ("timed out" in str(exc) or isinstance(exc, TimeoutError)):
+                raise
+            raise ComfyTimeout(f"ComfyUI did not answer in time ({exc})", prompt_id) from exc
         if result.get("node_errors"):
             raise ComfyError(f"graph rejected: {json.dumps(result['node_errors'])[:2000]}")
         return result["prompt_id"]

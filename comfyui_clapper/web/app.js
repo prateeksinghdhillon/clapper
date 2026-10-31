@@ -368,13 +368,21 @@ function renderBoard() {
   const firstMissing = list.findIndex((s) => (state.project.takes[s.selected_take] || {}).status !== "done");
   const busy = takes().some((t) => t.status === "queued" || t.status === "rendering");
   const rest = firstMissing < 0 ? 0 : list.length - firstMissing;
-  const timed = takes().filter((t) => t.render_seconds > 30);
-  const avg = timed.length ? timed.reduce((a, t) => a + t.render_seconds, 0) / timed.length : 360;
+  // the same per-scene estimate as the editor and Settings (model, steps, length of each scene)
+  let restSec = 0;
+  try {
+    const st = effective();
+    list.slice(Math.max(0, firstMissing)).forEach((sc, k) => {
+      const mode = sceneMode(sc), fresh = (firstMissing + k === 0) || mode === "fresh" || mode === "image";
+      const model = usedModel(st, fresh);
+      restSec += estimateTake(st, { model, steps: stepsFor(st, model), seconds: sceneSeconds(sc), continued: !fresh }).sec;
+    });
+  } catch (e) { restSec = rest * 360; }
   const btn = $("renderRestBtn");
   btn.hidden = !rest || busy;
   const ready = list.filter((s) => (state.project.takes[s.selected_take] || {}).status === "done");
   $("upscaleScenesBtn").hidden = !ready.length;
-  btn.textContent = `Render remaining ${rest} scene${rest === 1 ? "" : "s"} (≈${Math.round(rest * avg / 60)} min)`;
+  btn.textContent = `Render remaining ${rest} scene${rest === 1 ? "" : "s"} (≈${fmtMin(restSec)})`;
   btn.title = `Queues scenes ${firstMissing + 1}–${list.length} in order; each continues from the one before. You can still retake any of them later.`;
 
   list.forEach((scene, i) => {
@@ -794,7 +802,7 @@ function renderLive() {
   const mine = takes().filter((t) => t.status === "queued" || t.status === "rendering");
   $("stopBtn").hidden = !who;
   $("stopBtn").dataset.take = who ? who.take.id : "";
-  const dependents = who ? mine.filter((t) => t.id !== who.take.id).length : 0;
+  const dependents = who ? descendantsOf(who.take.id).length : 0;   // what the server stops with it: takes that continue from it
   $("stopBtn").title = dependents ? `Stop this take and the ${dependents} queued scene(s) after it` : "Stop this take";
   $("stopAllBtn").hidden = mine.length < 2;
   const fill = $("liveFill");
@@ -808,12 +816,19 @@ function renderTakesOnly() {
   if (list.some((t) => t.status === "queued" || t.status === "rendering")) $("edTakes").replaceChildren(...list.map((t) => takeCard(scene, t)));
 }
 
+function descendantsOf(takeId) {
+  const active = takes().filter((t) => t.status === "queued" || t.status === "rendering");
+  const out = new Set([takeId]);
+  for (let grew = true; grew;) { grew = false; for (const t of active) if (!out.has(t.id) && out.has(t.parent_take)) { out.add(t.id); grew = true; } }
+  out.delete(takeId);
+  return [...out];
+}
 async function stopTake(takeId) {
   await once("stop", async () => {
     const t = state.project.takes[takeId]; if (!t) return;
-    const later = takes().filter((x) => (x.status === "queued" || x.status === "rendering") && x.id !== takeId && x.created > t.created).length;
+    const later = descendantsOf(takeId).length;
     const msg = t.status === "queued" ? "Cancel this waiting take?" : "Stop this take now? The work done on it so far is lost.";
-    if (!confirm(msg + (later ? `\n\nQueued scenes that continue from it are cancelled too.` : ""))) return;
+    if (!confirm(msg + (later ? `\n\nThe ${later} queued take(s) that continue from it are cancelled too.` : ""))) return;
     const d = await call("/stop", { path: state.path, take_id: takeId }); toast(`Stopped ${d.stopped.length} take(s)`); setProject(d.project); pollLive();
   });
 }
@@ -1399,7 +1414,10 @@ function versionList(take, sceneNo) {
 function upscaleRow(take) {
   const ups = take.upscales || {};
   const active = jobs().filter((j) => j.kind === "upscale" && j.take === take.id && (j.status === "queued" || j.status === "running"));
-  const failed = jobs().filter((j) => j.kind === "upscale" && j.take === take.id && j.status === "failed").slice(0, 1);
+  // the newest upscale that did not finish (failed, or lost to a restart), unless a later one worked
+  const newestOk = Math.max(0, ...Object.values(ups).map((u) => Date.parse(u.created) || 0));
+  const failed = jobs().filter((j) => j.kind === "upscale" && j.take === take.id && (j.status === "failed" || j.status === "interrupted")
+    && (Date.parse(j.created) || 0) > newestOk).sort((a, b) => (b.created || "").localeCompare(a.created || "")).slice(0, 1);
   if (!Object.keys(ups).length && !active.length && !failed.length) return null;
   const sceneNo = scenes().findIndex((s) => s.id === take.scene) + 1;
   return h("div", { class: "versions" },
@@ -1412,7 +1430,11 @@ function upscaleRow(take) {
       h("span", {}, ` ${versionLabel({ method: j.inputs.method, strength: j.inputs.method === "redetail" ? j.inputs.strength : null, size: j.inputs.size })}`),
       h("span", { class: "spacer" }),
       h("button", { class: "danger", onclick: () => once(`cancel:${j.id}`, async () => setProject(await call("/tool/cancel", { path: state.path, job_id: j.id }))) }, "Cancel"))),
-    failed.length ? h("div", { class: "hint warn", title: failed[0].error }, "Upscale failed: " + (failed[0].error || "").slice(0, 100)) : null);
+    failed.length ? h("div", { class: "version" }, h("span", { class: "hint warn", title: failed[0].error || "" },
+      `${versionLabel({ method: failed[0].inputs.method, strength: failed[0].inputs.method === "redetail" ? failed[0].inputs.strength : null, size: failed[0].inputs.size })} `
+      + (failed[0].status === "interrupted" ? `did not finish${failed[0].error ? ` (${failed[0].error})` : " (ComfyUI was restarted or stopped)"}` : "failed: " + (failed[0].error || "").slice(0, 100))),
+      h("span", { class: "spacer" }),
+      h("button", { class: "ghost small", onclick: () => guard(async () => setProject(await call("/tool/dismiss", { path: state.path, job_id: failed[0].id }))) }, "Dismiss")) : null);
 }
 
 function playFile(file, title) {

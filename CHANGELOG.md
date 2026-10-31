@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Whole-app audit fixes** (Scenes, Studio, Finish, jobs):
+  - Nothing is saved into the wrong scene, the *Continue from* choice and per-render seed/steps behave, a text changed elsewhere is shown, every take shows what it was made from, and Restore works for every take.
+  - Changing a character's main look (or any reference picture) is flagged on the scenes that used the old one; renumbering scenes no longer looks like an edit.
+  - Removing an @name, a character or a library item that something uses says where and asks; hand-written definitions stay; the only main look cannot be taken out.
+  - Upscale runs never overwrite each other, a new one doesn't replace your choice, failed or lost upscales are shown; exports say when they are out of date, don't stretch other shapes, warn about mix problems and never collide.
+  - Finish mix edits after an autosave are no longer lost; a mix changed elsewhere reloads.
+  - Results finished before a ComfyUI restart are collected (Dismiss no longer deletes them); a slow ComfyUI answer no longer marks a queued take failed; cancelled jobs are *interrupted*; Re-queue works after a stopped chain; Render remaining checks every scene first and selects its new chain.
+  - A stale copy of the project (for example a long CLI `render --wait`) can no longer overwrite changes made meanwhile; settings and default toggles send only what changed.
+  - Manual GPU mode also covers images, speech and upscales; a render that stops the assistant says so.
 - **The assistant sees every take, not only the selected one**: a newer take that isn't selected, a failed take and its error, upscaled takes, what each take continued from and how its setup differs from the scene now (in `get_scene`, with repeated texts referred to instead of repeated). `view_take` shows the real text for takes made outside a scene. "Take 5 of scene 3" is paired correctly in sentences that name another scene first.
 - **Put back a take's version**: `edit_scene` with `from_take` restores exactly the text, references and length a take was made from.
 - **Cards no longer undo your edits**: a card whose scene text, title, definition, style or character you changed after it was made is refused with a note; the page asks before applying it anyway.

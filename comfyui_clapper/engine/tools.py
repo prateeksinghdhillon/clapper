@@ -302,8 +302,11 @@ def queue_tool(project: Project, client: ComfyClient, tool_id: str, inputs: dict
             src = project.assets.get(version_of) or {}
             if src.get("entity") in project.entities:   # a version of a character's look is filed under that character
                 job["entity"], job["look"] = src["entity"], (src.get("look") or "look") + " (version)"
+        from .comfy_client import ComfyTimeout
         try:
             job["prompt_id"] = client.submit(graph)
+        except ComfyTimeout as exc:   # may be queued: collect() finds it, or marks it interrupted
+            job["prompt_id"] = exc.prompt_id
         except Exception as exc:
             job.update(status="failed", error=str(exc)[:2000])
             jobs[job_id] = job
