@@ -87,3 +87,32 @@ def test_continuity_echo_quotes_the_first_sentence(project):
     echo = assistant.continuity_echo(project, s2["id"], FIVE_BEATS)
     assert 'Your text begins: "The bus is stopped at the shelter, its door is open."' in echo and "LAST frame of scene 1" in echo
     assert assistant.continuity_echo(project, s1["id"], FIVE_BEATS) == ""        # the first scene continues nothing
+
+
+def test_takes_and_their_own_text(project):
+    s1 = project.add_scene(text=STAGED, refs=["aoi"])
+    s2 = project.add_scene(text=STAGED, refs=["aoi"])
+    t1 = project.new_take(s1["id"], seed=1, scene_text="an older text"); project.update_take(t1["id"], status="done"); project.select_take(s1["id"], t1["id"])
+    t2 = project.new_take(s1["id"], seed=2); project.update_take(t2["id"], status="done")   # adopted: no scene_text, only meta.json
+    d = project.root / t2["dir"]; d.mkdir(parents=True)
+    labels = project.compile_prompt(s1)["labels"]
+    (d / "meta.json").write_text(json.dumps({"prompt": "Style.\n\nContinuation of Chunk 1. " + STAGED.replace("@aoi", labels["aoi"])}))
+    assert assistant.take_text(project, t2) == STAGED
+    out, _ = assistant.run_read_tool(project, "get_scene", {"scene": 1}, {"kind": "local"})
+    assert "Take 1: done (SELECTED" in out and "made from this text:\nan older text" in out and "Take 2: done, seed 2 — made from the scene's current text" in out
+    assert "continues from scene 1 Take 1" in assistant.snapshot(project)
+    plan = assistant.plan_proposal(project, "select_take", {"scene": 1, "take": 2})
+    assert plan["summary"] == "Use Take 2 for scene 1 (the next scene then continues from it)"
+    assistant.apply_proposal(project, {"id": "x", **plan})
+    assert project.scene(s1["id"])["selected_take"] == t2["id"]
+    with pytest.raises(ProjectError, match="already the selected take"):
+        assistant.plan_proposal(project, "select_take", {"scene": 1, "take": 2})
+
+
+def test_frames_for_a_named_take(project, monkeypatch):
+    s1 = project.add_scene(text=STAGED, refs=["aoi"])
+    t1 = project.new_take(s1["id"], seed=1); project.update_take(t1["id"], status="done"); project.select_take(s1["id"], t1["id"])
+    t2 = project.new_take(s1["id"], seed=2); project.update_take(t2["id"], status="done")
+    monkeypatch.setattr(assistant, "extract_frames", lambda p, take, count=4, end=False: [f"{take['number']}-{'end' if end else i}" for i in range(count)])
+    images, note = assistant.scene_frames_for(project, "Take 2 of scene 1 is the one I like, write the next scene from it")
+    assert images == ["2-1", "2-2", "2-end"] and "NOT the selected take" in note and "LAST frame" in note

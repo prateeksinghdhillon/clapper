@@ -244,10 +244,11 @@ def test_edits_of_one_scene_in_one_answer_become_one_card(project):
 def test_only_repeats_end_the_tool_loop(project):
     agent, _ = make_agent(project, [{"tools": [("edit_scene", {"scene": 1, "title": "A"})]},
                                     {"tools": [("edit_scene", {"scene": 1, "title": "A"})]},
+                                    {"tools": [("edit_scene", {"scene": 1, "title": "A"})]},
                                     {"content": "Proposed a new title."}])
     chat = assistant.new_chat(project)
-    agent.run_turn(chat, "rename")
-    assert agent.client.tools[:2] == [assistant.TOOLS, assistant.TOOLS] and agent.client.tools[2] is None
+    agent.run_turn(chat, "rename")   # two rounds of only repeats (one more chance to correct), then answer without tools
+    assert agent.client.tools[:3] == [assistant.TOOLS] * 3 and agent.client.tools[3] is None
     assert chat["messages"][-1]["text"] == "Proposed a new title."
 
 
@@ -450,3 +451,54 @@ def test_client_parses_streamed_tool_calls(monkeypatch):
     assert out["content"] == "Sure. " and out["reasoning"] == "hmm" and out["finish_reason"] == "tool_calls"
     assert out["tool_calls"] == [{"id": "a1", "name": "edit_scene", "arguments": "{\"scene\": 2}"}]
     assert out["usage"]["prompt_tokens"] == 50 and deltas == ["reasoning", "content"]
+
+
+def test_continuing_a_named_take_also_proposes_selecting_it(project):
+    s1 = project.scenes[0]["id"]
+    t1 = project.new_take(s1, seed=1); project.update_take(t1["id"], status="done"); project.select_take(s1, t1["id"])
+    t2 = project.new_take(s1, seed=2); project.update_take(t2["id"], status="done")
+    agent, _ = make_agent(project, [{"tools": [("add_scenes", {"after": 1, "scenes": [{"title": "Next", "text": S("@hero sips.")}]})]},
+                                    {"content": "done"}])
+    chat = assistant.new_chat(project)
+    agent.run_turn(chat, "Take 2 of scene 1 is the one I like; write the next scene continuing from it")
+    cards = sorted((p["tool"], p["summary"]) for p in chat["proposals"].values())
+    assert cards == [("add_scenes", "Add 1 scene after scene 1"), ("select_take", "Use Take 2 for scene 1 (the next scene then continues from it)")]
+    first = [m for m in chat["messages"] if m["role"] == "tool"][0]["text"]
+    assert "Clapper also proposed" in first and "scene 1 Take 2" in first   # the continuity check already uses Take 2
+    # a cut after it, or a take that is already selected, needs no card
+    assert assistant.named_take_to_select(project, "take 2 of scene 1", "add_scenes",
+                                          {"after": s1, "scenes": [{"join": "cut"}]}) is None
+    assert assistant.named_take_to_select(project, "take 1 of scene 1", "add_scenes", {"after": s1, "scenes": [{}]}) is None
+
+
+def test_one_scene_written_flat_or_as_a_string_is_repaired(project):
+    flat = {"after": 1, "title": "Next", "text": S("@hero sips."), "seconds": 5, "scenes": "[{\"title\": \"Ne"}
+    plan = assistant.plan_proposal(project, "add_scenes", flat)
+    assert plan["summary"] == "Add 1 scene after scene 1" and plan["args"]["scenes"][0]["title"] == "Next"
+    as_text = {"after": 1, "scenes": json.dumps([{"title": "Next", "text": S("@hero sips.")}])}
+    assert assistant.plan_proposal(project, "add_scenes", as_text)["args"]["scenes"][0]["title"] == "Next"
+    assert assistant.asks_for_one_scene("write a continuation, scene number 3") and not assistant.asks_for_one_scene("add two scenes")
+
+
+def test_a_tool_call_in_the_last_round_still_runs_and_extra_scenes_are_noted(project):
+    three = {"after": 2, "scenes": [{"title": t, "text": S(f"@hero {t}.")} for t in ("sips", "smiles", "leaves")]}
+    one = {"after": 2, "scenes": [{"title": "sips", "text": S("@hero sips.")}]}
+    agent, _ = make_agent(project, [{"tools": [("add_scenes", three)]}, {"tools": [("add_scenes", three)]},
+                                    {"tools": [("add_scenes", three)]}, {"tools": [("add_scenes", one)]}, {"content": "done"}])
+    chat = assistant.new_chat(project)
+    agent.run_turn(chat, "Write scene 3: the hero sips the coffee")
+    tool_texts = [m["text"] for m in chat["messages"] if m["role"] == "tool"]
+    assert "the user asked for one scene, and you proposed 3" in tool_texts[0]
+    assert agent.client.tools[3] is None and len(tool_texts) == 4   # asked without tools, called anyway: it ran
+    pending = [p for p in chat["proposals"].values() if p["status"] == "pending"]
+    assert [p["summary"] for p in pending] == ["Add 1 scene after scene 2"]
+
+
+def test_an_identical_continuing_scene_is_a_repeat(project):
+    s1 = project.scenes[0]["id"]
+    t1 = project.new_take(s1, seed=1); project.update_take(t1["id"], status="done"); project.select_take(s1, t1["id"])
+    one = {"after": 1, "scenes": [{"title": "Next", "text": S("@hero sips.")}]}
+    agent, _ = make_agent(project, [{"tools": [("add_scenes", one)]}, {"tools": [("add_scenes", one)]}, {"content": "done"}])
+    chat = assistant.new_chat(project)
+    agent.run_turn(chat, "add a scene")
+    assert assistant.REPEAT in [m for m in chat["messages"] if m["role"] == "tool"][1]["text"]
