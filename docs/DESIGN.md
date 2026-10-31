@@ -101,6 +101,8 @@ Key decisions:
 
 ## Roadmap
 
+The next version's plan (library, image and speech tools, start modes, finishing) is in [PLAN_0.2.md](PLAN_0.2.md).
+
 | Item | Status |
 |---|---|
 | Scenes, takes, selection, lineage badges, autosave, history | done |

@@ -89,6 +89,7 @@ Profiles keep projects private inside Clapper only; ComfyUI's own page has no lo
 | [Prompt guide](docs/PROMPT_GUIDE.md) | How to write scenes, references, dialogue and sound for H3 |
 | [Reference](docs/REFERENCE.md) | Settings, command line, HTTP API, project format, assistant setup, internals, troubleshooting |
 | [Design](docs/DESIGN.md) | Architecture, decisions, verified results, roadmap |
+| [Plan 0.2](docs/PLAN_0.2.md) | Draft plan for the next version |
 | [Contributing](CONTRIBUTING.md) | Dev setup, architecture map, project rules, tests, issues and pull requests |
 | [Security](SECURITY.md) | What profiles protect, where keys and passwords are stored, reporting a vulnerability |
 | [Changelog](CHANGELOG.md) | What changed |
