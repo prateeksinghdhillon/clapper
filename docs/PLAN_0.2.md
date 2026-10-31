@@ -85,7 +85,7 @@ Built-in adapters (to verify on a GPU as each is added):
 
 ### D. Finishing (M4)
 
-- **D1 Upscale** selected takes (B7), kept as a second version of the take; export uses it when present.
+- **D1 Upscale** selected takes, kept as versions of the take; export uses the chosen one (or the original) and resizes any scene that is not upscaled to the same size. Two methods: **Sharpen** (an image upscale model on each frame; the picture stays the same) and **Re-detail** (the H3 latent upscaler, then a short low-noise H3 pass in tiles, MMH3 Split Upscale, that draws new detail; strength light or strong). Both keep the take's own sound.
 - **D2 Overlays:** exact images (logo, product photo, end card) with position, timing and a simple fade/slide.
 - **D3 Audio tracks:** a music bed under the whole video with automatic ducking under speech, sound effects at chosen times, and dialogue clips laid over (the post-production alternative to C3).
 - **D4 Export presets:** 9:16, 1:1, 16:9; size and quality.
@@ -103,6 +103,19 @@ Stays as in 0.1 — local model through llama-swap or any OpenAI-compatible API 
 - **E5 Compiled prompt on scene cards** (0.1 roadmap).
 - **E6 Model per task** (local for small edits, online for planning/reviews), native Anthropic/Gemini adapters (0.1 roadmap).
 - GPU sharing stays as in 0.1: tool jobs and renders eject the local model; the next chat message loads it back.
+
+### F. Simple settings (M4)
+
+Settings must make sense to someone who has never heard of steps or megapixels, and still give experts everything.
+
+- **F1 Simple view (default)** with plain choices only, each showing what it changes and the time to expect:
+  - *Quality and speed* — **Draft** (Ref2VA, 4 steps) or **Standard** (FL2VA, 20 steps, the proven setup); *Custom* appears when Advanced values match neither.
+  - *Steps* per model in use, every value with its time per scene.
+  - *Picture size while rendering* (with the resulting width × height), *default scene length*, *joins between scenes* (Quick / Smooth / Strong) and *carry sound across joins*.
+  - A running total: one scene and the whole video.
+- **F2 Honest numbers.** Every time is marked **measured** (on the reference GPU, or from this project's own finished takes) or **estimate** (scaled from measurements). Real timings from the user's takes replace the defaults automatically.
+- **F3 Advanced view** — the full settings as before (sampler, scheduler, LoRAs, model files, patches, continuity method, reference size, the Ref2VA model and steps). The choice of view is remembered.
+- **F4 The same idea elsewhere** — the image tool's steps and the upscale dialog show expected times the same way.
 
 ## Interface
 
@@ -131,6 +144,6 @@ One **job tray** (the existing status pill and live bar) shows every kind of job
 | M1 | Library (A1–A3), start modes (C1), video model (C2), audio import + voice refs + sound clips (C3) | **done** — the job tray for tool jobs moves to M2, where the first tool jobs appear |
 | M2 | Adapter system, image tools B1–B4, batches B8, versions A4 | **done** except B4 (sheets) — an original anime character made, varied, combined with a location into a start frame and used in scenes |
 | M3 | Speech B5 (B6 if the model is present) | **B5 done** (built with M2) — a generated line used as a scene's sound clip; B6 needs the Voice Design model |
-| M4 | Finish screen D1–D4, then D5–D6 | an upscaled export with a logo overlay and music |
+| M4 | Upscale D1 (Sharpen, Re-detail) with export using upscaled takes and one export size; simple settings F1–F4 — **done**; then overlays D2, audio tracks D3, presets D4, timeline D5, undo D6 | an upscaled export; a new user picks Draft/Standard and knows how long a video will take |
 | M5 | Assistant E1–E5 across the above; E6 | the assistant plans a video including its assets |
 | later | Shared library (A5), video references (C4), more video models through adapters, lip-sync | — |

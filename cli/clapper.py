@@ -213,8 +213,12 @@ def cmd_render_rest(args) -> int:
 
 def cmd_refresh(args) -> int:
     p = _open(args)
-    changed = director.refresh(p, ComfyClient(args.url))
-    print(f"{len(changed)} take(s) updated")
+    from comfyui_clapper.engine import tools
+
+    client = ComfyClient(args.url)
+    changed = director.refresh(p, client)
+    jobs = tools.collect(p, client)
+    print(f"{len(changed)} take(s) updated" + (f", {len(jobs)} job(s) updated" if jobs else ""))
     return cmd_status(args)
 
 
@@ -256,8 +260,23 @@ def cmd_adopt(args) -> int:
     return cmd_status(args)
 
 
+def cmd_upscale(args) -> int:
+    from comfyui_clapper.engine import upscale
+
+    p = _open(args)
+    client = ComfyClient(args.url)
+    ids = []
+    for ref in args.scenes or [str(i + 1) for i in range(len(p.scenes))]:
+        take_id = p.scene(_scene_id(p, ref)).get("selected_take")
+        if take_id:
+            ids.append(take_id)
+    jobs = [upscale.queue_upscale(p, client, tid, method=args.method, size=args.size, strength=args.strength) for tid in ids]
+    print(f"queued {len(jobs)} upscale(s): " + ", ".join(j["id"] for j in jobs) + " — run `refresh` when they are done")
+    return 0
+
+
 def cmd_export(args) -> int:
-    out = export_video(_open(args), partial=args.partial)
+    out = export_video(_open(args), partial=args.partial, size=args.size, use_upscaled=not args.no_upscaled)
     print(f"exported {out}")
     return 0
 
@@ -440,6 +459,14 @@ def main() -> int:
     s.add_argument("--parent", help="take id this take continued from")
     s = proj("export", help="stitch the selected takes into one video")
     s.add_argument("--partial", action="store_true", help="export the ready scenes even if later ones have no take")
+    s.add_argument("--size", choices=["auto", "original", "720p", "1080p"], default="auto",
+                   help="auto = the largest scene (upscaled takes set it); others are resized to match")
+    s.add_argument("--no-upscaled", action="store_true", help="use the original takes even where an upscale exists")
+    s = proj("upscale", help="upscale the selected takes of the given scenes (all scenes if none given)")
+    s.add_argument("scenes", nargs="*")
+    s.add_argument("--method", choices=["sharpen", "redetail"], default="sharpen")
+    s.add_argument("--size", choices=["720p", "1080p"], default="1080p")
+    s.add_argument("--strength", choices=["light", "strong"], default="light", help="redetail only")
 
     pr = sub.add_parser("profile", help="profiles: who may log in to the web interface and which projects they see")
     psub = pr.add_subparsers(dest="action", required=True)
@@ -464,7 +491,7 @@ def main() -> int:
     args = ap.parse_args()
     return {"profile": cmd_profile, "import-timeline": cmd_import_timeline, "adopt": cmd_adopt, "export": cmd_export, "take": cmd_take, "new": cmd_new, "ref": cmd_ref, "scene": cmd_scene, "render": cmd_render,
             "refresh": cmd_refresh, "usage": cmd_usage, "delete": cmd_delete, "render-rest": cmd_render_rest, "status": cmd_status, "select": cmd_select,
-            "asset": cmd_asset, "frame": cmd_frame, "video-model": cmd_video_model}[args.cmd](args)
+            "asset": cmd_asset, "frame": cmd_frame, "video-model": cmd_video_model, "upscale": cmd_upscale}[args.cmd](args)
 
 
 if __name__ == "__main__":

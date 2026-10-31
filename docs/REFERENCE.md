@@ -58,7 +58,8 @@ Any Python ≥ 3.10 with Pillow works; the CLI talks to ComfyUI over HTTP. Scene
 | `delete PROJECT --confirm "NAME" [--keep-files]` | Delete the project folder for good (refused while takes are rendering); `--keep-files` only removes it from the project list |
 | `status PROJECT` | Scenes, takes (number, status, created, finished, parent) and badges |
 | `select PROJECT N TAKE_ID` | Select a take |
-| `export PROJECT [--partial]` | Join the selected takes; `--partial` exports the ready scenes if later ones have no take |
+| `export PROJECT [--partial] [--size auto\|original\|720p\|1080p] [--no-upscaled]` | Join the selected takes; `--partial` exports the ready scenes if later ones have no take. `auto` = the largest scene (upscaled takes set it), the others resized to match |
+| `upscale PROJECT [N…] [--method sharpen\|redetail] [--size 720p\|1080p] [--strength light\|strong]` | Upscale the selected takes of the given scenes (all if none); `refresh` records them when done |
 | `import-timeline PROJECT PROMPT_FILE --picture 1=name … [--audio 1=name …]` | Turn a Continuum Timeline prompt into scenes: the preamble becomes the style text, `<Picture N> is …` lines become reference definitions, each section becomes a scene |
 | `adopt PROJECT N TAKE_DIR [--parent TAKE_ID]` | Add an already-rendered take folder to a scene |
 | `take --prompt-file P [--start-image I] [--ref I …] [--continue-from TAKE_DIR] --out DIR …` | Render one take outside any project (testing) |
@@ -126,6 +127,8 @@ Served by ComfyUI under `/clapper/`. JSON in, JSON out; errors return `{"error":
 | `POST /clapper/api/ref/remove` | `path`, `name` | Remove an `@name` (refused while the style text or a scene's text mentions it); the item stays |
 | `GET /clapper/api/tools` | — | Tools with their form fields, `ok` and `missing` (node packs / model files), plus problems with your own tool folders |
 | `POST /clapper/api/tool/run` | `path`, `tool`, `inputs` {…}, `count` (1–8), `role`, `seed`, `title` | Queue one job per result; returns `{jobs, project}`. Results land in the library on the next `/refresh` |
+| `POST /clapper/api/upscale` | `path`, `take_ids` or `selected: true`, `method` (`sharpen`/`redetail`), `size` (`720p`/`1080p`), `strength` (`light`/`strong`), `seed` | Queue upscales (jobs of kind `upscale`); with `selected`, every scene's selected take without that version yet |
+| `POST /clapper/api/upscale/use` | `path`, `take_id`, `version` (a key of the take's `upscales`, or `null`) | Which version the export uses |
 | `POST /clapper/api/tool/cancel` | `path`, `job_id` or `all` | Stop a running job, take waiting ones out of the queue |
 | `POST /clapper/api/tool/dismiss` | `path`, `job_id` or `finished: true` | Remove jobs from the list (their library items stay) |
 | `POST /clapper/api/asset/frame` | `path`, `take_id`, `seconds` | Save a frame of a finished take to the library; returns `{project, asset}` |
@@ -168,7 +171,7 @@ Served by ComfyUI under `/clapper/`. JSON in, JSON out; errors return `{"error":
   chat/c_<id>.json        assistant chats; chat/frames/<take>/ frames used for take reviews
 ```
 
-`project.json` top level: `schema`, `name`, `created`, `updated`, `settings`, `style`, `notes`, `start_image`, `library` (`items` by name: `kind`, `file`, `sha256`, `description`, `definition`, `card`, `card_status`, `asset`; `defaults`), `assets` (by id: `kind`, `role`, `title`, `file`, `sha256`, `tags`, `transcript` (voice samples), `origin` — `{type: upload, source}`, `{type: frame, take, seconds}` or `{type: tool, tool, tool_title, job, seed, inputs}`, `parent`, `created`, `duration` / `width`, `height`), `scenes` (ordered: `id`, `title`, `text`, `seconds`, `join`, `refs` — `null` = defaults, `start_image` — absent/`null` = the project's start image for the first scene, `""` = none, or an image `@name`; `audio_clips` — `[{asset, at}]` with `at` in seconds of scene time; `selected_take`), `takes` (by id: `scene`, `number`, `status`, `created`, `finished`, `seed`, `parent_take`, `join`, `context_frames`, `frames`, `width`, `height`, `prompt_sha256`, `refs`, `scene_text`, `scene_refs`, `scene_join`, `scene_seconds`, `scene_start_image`, `scene_audio_clips`, `model` (`fl2va`/`ref2va`), `prompt_id`, `render_seconds`, `s_per_it`, `steps`, `error`).
+`project.json` top level: `schema`, `name`, `created`, `updated`, `settings`, `style`, `notes`, `start_image`, `library` (`items` by name: `kind`, `file`, `sha256`, `description`, `definition`, `card`, `card_status`, `asset`; `defaults`), `assets` (by id: `kind`, `role`, `title`, `file`, `sha256`, `tags`, `transcript` (voice samples), `origin` — `{type: upload, source}`, `{type: frame, take, seconds}` or `{type: tool, tool, tool_title, job, seed, inputs}`, `parent`, `created`, `duration` / `width`, `height`), `scenes` (ordered: `id`, `title`, `text`, `seconds`, `join`, `refs` — `null` = defaults, `start_image` — absent/`null` = the project's start image for the first scene, `""` = none, or an image `@name`; `audio_clips` — `[{asset, at}]` with `at` in seconds of scene time; `selected_take`), `takes` (by id: `scene`, `number`, `status`, `created`, `finished`, `seed`, `parent_take`, `join`, `context_frames`, `frames`, `width`, `height`, `prompt_sha256`, `refs`, `scene_text`, `scene_refs`, `scene_join`, `scene_seconds`, `scene_start_image`, `scene_audio_clips`, `model` (`fl2va`/`ref2va`), `upscales` (by version: `file`, `method`, `size`, `strength`, `width`, `height`, `created`, `job`), `upscaled` (the version export uses), `prompt_id`, `render_seconds`, `s_per_it`, `steps`, `error`).
 
 Take statuses: `queued`, `rendering`, `done`, `failed`, `interrupted`.
 
@@ -290,6 +293,15 @@ The continuation needs the parent's `latent.safetensors` and the same width and 
 A scene can carry audio clips anchored at a time (`spec.audio_guides`: `[{"path": …, "frame": N}]`; CLI `--anchor-audio FILE@SECONDS`). Each clip is encoded with the audio VAE and attached as an audio keyframe at that frame, the same mechanism as the core `MiniMaxH3AddGuide` audio input. The scene's soundtrack then *is* that clip from that point on (measured: envelope correlation 0.995, waveform correlation 0.95 against the input), and the picture is generated around it. A clip longer than the rest of the scene is cut at the scene's end. In a continued scene the clip must start after the carried frames.
 
 This differs from a **voice reference** (`<Audio N>`, `--ref-audio`): a voice reference gives the speaker's voice, and the words come from the prompt.
+
+### Upscaling
+
+A job of kind `upscale` per take; the result is `takes/<scene>/<take>/upscaled/<version>.mp4`, where the version is `sharpen-720p`, `sharpen-1080p`, `redetail-light-720p`, … Both methods write the frames with the take's own `audio.wav` (Clapper · Save Video).
+
+- **sharpen**: Clapper · Load Video Frames → `UpscaleModelLoader` `RealESRGAN_x2plus.pth` → `ImageUpscaleWithModel` → `ImageScale` lanczos to the target (short side 720 or 1080, aspect kept, even sizes). 4x-UltraSharp at 1080p took 4.4× longer with no visible gain, so ×2 is used for both sizes.
+- **redetail**: Clapper · Load Take Latent → `LTXVSeparateAVLatent` → `MinimaxH3LatentUpscaler3D` (*target dimensions*, multiples of 32 — 720p becomes 704 on the short side) → `LTXVConcatAVLatent` → `MMH3SplitUpscale` (512 px tiles, 25% overlap, 73-frame chunks with 22 overlapping, seam polish auto, colour match) with Ref2VA + its Turbo LoRA + Chunk FeedForward, the take's own prompt and references (no continuation, nothing pinned), euler, sigmas `0.6316, 0.3158, 0` (light) or `0.9035, 0.6316, 0.3158, 0` (strong) → `VAEDecode`. Needs the [Minimax H3 latent upscaler](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler) node pack and `latent_upscale_models/minimax_h3_latent_upscaler_3d_fp16.safetensors`, `LTXVSeparateAVLatent`/`LTXVConcatAVLatent` (ComfyUI core) and the take's `latent.safetensors`.
+
+Export uses each take's chosen version and resizes the others (`scale=…:flags=lanczos`) to the export size.
 
 ### Export
 

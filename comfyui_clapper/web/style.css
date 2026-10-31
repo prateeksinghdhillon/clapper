@@ -408,3 +408,32 @@ body.chat-open main { padding-left: min(460px, 100vw); }
 .tool-run label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
 .tool-run .grow { flex: 1; min-width: 160px; }
 .lib-item .transcript { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+
+/* ---------------------------------------------------------------- settings: simple view */
+.view-switch { margin-bottom: 12px; }
+.choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(190px, 100%), 1fr)); gap: 8px; }
+.choices.steps { grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr)); }
+.choice { text-align: left; display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border: 1.5px solid var(--line); border-radius: 10px; background: var(--panel-2); font-size: 12.5px; color: var(--text); cursor: pointer; position: relative; }
+.choice b { font-size: 14px; }
+.choice span { color: var(--muted); }
+.choice.on { border-color: var(--accent); background: var(--accent-2); }
+.choice.on b { color: var(--accent); }
+.est { align-self: flex-start; font-size: 10.5px; padding: 1px 7px; border-radius: 99px; margin-top: 3px; border: 1px solid currentColor; }
+.est.m { color: var(--ok) !important; } .est.e { color: var(--warn) !important; }
+.est-total { padding: 10px 12px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); font-size: 13.5px; }
+.up-dlg { width: min(720px, 96vw); }
+.up-dlg h3 { margin: 10px 0 6px; }
+.up-row { gap: 6px; margin-top: 4px; } .up-row select { font-size: 12px; padding: 2px 6px; }
+.export-up { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; background: var(--panel-2); margin: 8px 0; }
+.export-up label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.versions { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; border-top: 1px solid var(--line); padding-top: 6px; }
+.version { display: flex; align-items: center; gap: 6px; font-size: 12.5px; padding: 2px 4px; border-radius: 6px; }
+.version.used { background: var(--accent-2); }
+.version button, .version .btn { padding: 2px 8px; font-size: 12px; }
+a.btn { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; color: var(--text); text-decoration: none; background: var(--panel); }
+.up-all { margin: 8px 0; } .up-all summary { cursor: pointer; font-weight: 600; }
+.up-scene { margin: 8px 0; }
+.up-pick { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 9px; padding: 6px; }
+.up-pick-row { display: flex; flex-direction: row; align-items: center; gap: 6px; font-size: 13px; flex-wrap: wrap; padding: 3px 4px; }
+.up-pick-row input { margin: 0; width: auto; }
+.up-pick-row .badge { margin-left: auto; }

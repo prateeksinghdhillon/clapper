@@ -119,7 +119,7 @@
       <div>
         <div class="board-stats" id="boardStats"></div>
       </div>
-      <div class="board-actions"><button class="ghost" id="storageBtn" title="Disk space used by this project, and delete">Storage</button><button class="primary" id="renderRestBtn" hidden></button></div>
+      <div class="board-actions"><button class="ghost" id="storageBtn" title="Disk space used by this project, and delete">Storage</button><button class="ghost" id="upscaleScenesBtn" hidden title="Upscale the scenes you have finished, each on its own">⤢ Upscale scenes…</button><button class="primary" id="renderRestBtn" hidden></button></div>
     </div>
     <div class="board" id="board"></div>
   </section>
@@ -276,7 +276,7 @@
 <dialog id="settingsDlg" class="dlg">
   <div class="dlg-head"><h2>Generation settings</h2><button class="icon" data-close>✕</button></div>
   <div class="dlg-body" id="settingsBody"></div>
-  <div class="dlg-foot"><button class="ghost" id="settingsReset">Reset to Continuum defaults</button><button class="primary" id="settingsSave">Save settings</button></div>
+  <div class="dlg-foot"><button class="ghost" id="settingsReset">Reset to defaults</button><button class="primary" id="settingsSave">Save settings</button></div>
 </dialog>
 
 <dialog id="pwDlg" class="dlg pw-dlg">
@@ -295,6 +295,12 @@
   <div class="dlg-head"><h2>Assistant settings</h2><button class="icon" data-close>✕</button></div>
   <div class="dlg-body" id="aiBody"></div>
   <div class="dlg-foot"><button class="ghost" id="aiAdd">+ Add an online provider</button><button class="primary" id="aiSave">Save</button></div>
+</dialog>
+
+<dialog id="upDlg" class="dlg up-dlg">
+  <div class="dlg-head"><h2 id="upTitle">Upscale</h2><button class="icon" data-close>✕</button></div>
+  <div class="dlg-body" id="upBody"></div>
+  <div class="dlg-foot"><button class="ghost" data-close>Cancel</button><button class="primary" id="upGo">Upscale</button></div>
 </dialog>
 
 <dialog id="exportDlg" class="dlg">

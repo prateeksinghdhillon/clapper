@@ -47,6 +47,8 @@ ComfyUI server ── comfyui_clapper ──────────────
       project.py   project store, asset library, @name compile, definitions, start images, sound clips, badges, take numbering
       media.py     ffprobe / ffmpeg helpers for library files (durations, sizes, frames of takes)
       tools.py     Create tools (FLUX.2 image, Qwen3-TTS speech, user workflows) and their jobs
+      upscale.py   Sharpen / Re-detail upscales of takes (jobs), versions on the take
+      estimates.py render-time model for Settings (measured defaults, learns from the project's takes)
       director.py  plan / queue / chain / refresh / requeue
       graph.py     ComfyUI API graph for one take
       export.py    export plan, checks, ffmpeg join
@@ -111,6 +113,8 @@ Key decisions:
 | Image tool with references (character + location) | an original anime character and an empty location combined into a start frame: character, outfit, umbrella and the exact shelter kept |
 | Speech tool: Qwen3-TTS 1.7B Base clone, English line, 7 s voice sample | 4.6 s line in 8–10 s |
 | End to end, original anime short: character and location made with the image tool, line with the speech tool, 7 s scene from the start frame with the line as a sound clip, then a continued scene, Ref2VA for both | line placed exactly (envelope 0.97 at zero lag); scene 1 179 s, scene 2 123 s; join clean (5.2 vs ≈3 in-take); story beats followed (headlights, she stands, umbrella snaps open, bus arrives) |
+| Upscale a 7 s take (172 frames, 416×736) — Sharpen | 720p (Real-ESRGAN ×2 + lanczos) 69 s; 1080p with 4x-UltraSharp 305 s, with ×2 + lanczos 82 s, no visible difference between the two → ×2 for both. Lines crisper; the take's own blur in faces stays |
+| Upscale — Re-detail light (latent upscaler 3D + MMH3 Split Upscale, 512 px tiles, Ref2VA + Turbo LoRA, sigmas 0.63/0.32) | 720p (704×1248) 448 s, peak VRAM 14.0 GB on 16 GB; 1080p (1056×1888) 1162 s; faces, eyes and hair redrawn cleanly, composition and motion kept, small details change |
 | Ref2VA: Ref2V Turbo LoRA at 4 vs 20 steps (same seed, start image) | 114 s vs 396 s; frames nearly identical, no visible gain at 20 — 4 steps is the Ref2VA default |
 
 ## Roadmap
@@ -146,7 +150,8 @@ The next version's plan (library, image and speech tools, start modes, finishing
 | Overlays in export (exact logos, product photos, text cards with position, timing, simple animation) | planned |
 | Seam correction at joins (port Continuum's audio/video seam logic) | planned if joins show flicker |
 | Speed comparison: 8 vs 20 steps (FL2VA); SageAttention via ComfyUI's `--use-sage-attention` (needs `sageattention` 1.0.6) | planned |
-| Upscaling pass for selected takes (an H3 latent upscaler exists) | planned |
+| Upscaling selected takes: Sharpen and Re-detail, versions per take, export size | done |
+| Simple settings view with measured / estimated times; Advanced view | done |
 | Scene reordering in the interface (the API supports `move`) | planned |
 | Undo in the interface (history files exist) | planned |
 | Shared voice/character library across projects | planned |

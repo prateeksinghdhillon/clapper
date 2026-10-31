@@ -17,7 +17,7 @@ from aiohttp import web
 from server import PromptServer
 
 from . import gpu, live, sysstats
-from .engine import director, media as media_tools, profiles, registry, repeats, tools
+from .engine import director, estimates, media as media_tools, profiles, registry, repeats, tools, upscale
 from .engine.comfy_client import ComfyClient
 from .engine.export import export_check, export_video
 from .engine.project import ASSET_ROLES, Project, ProjectError, delete_project_folder, disk_usage, folder_name
@@ -106,6 +106,7 @@ def _view(project: Project) -> dict:
         except ProjectError as exc:
             compiled[scene["id"]] = {"prompt": None, "labels": {}, "start": None, "mode": None, "error": str(exc)}
     data["compiled"] = compiled
+    data["timing"] = estimates.timing(project)
     data["asset_roles"] = list(ASSET_ROLES)
     data["video_model_modes"] = list(VIDEO_MODEL_MODES)
     return data
@@ -591,6 +592,67 @@ async def run_tool(request):
         return _err(exc)
 
 
+@routes.post("/clapper/api/upscale")
+async def upscale_takes(request):
+    """path, take_ids [..] or selected: true (every scene's selected take without that upscale yet),
+    method sharpen|redetail, size 720p|1080p, strength light|strong."""
+    body = await _body(request)
+    try:
+        loop = asyncio.get_running_loop()
+        async with _lock:
+            project = _open(body["path"], request)
+            method, size, strength = body.get("method", "sharpen"), body.get("size", "1080p"), body.get("strength", "light")
+            if body.get("selected"):
+                label = method if method == "sharpen" else f"redetail-{strength}"
+                ids = []
+                for scene in project.scenes:
+                    take = project.data["takes"].get(scene.get("selected_take") or "")
+                    if take and take.get("status") == "done" and f"{label}-{size}" not in (take.get("upscales") or {}):
+                        ids.append(take["id"])
+            else:
+                ids = list(body["take_ids"])
+            if not ids:
+                raise ProjectError("nothing to upscale: every selected take already has this version")
+            jobs = []
+            for tid in ids:
+                jobs.append(await loop.run_in_executor(None, lambda tid=tid: upscale.queue_upscale(
+                    project, _client(), tid, method=method, size=size, strength=strength, seed=body.get("seed"))))
+        return _ok({"jobs": [j["id"] for j in jobs], "project": _view(project)})
+    except (KeyError, ProjectError, OSError, ValueError, RuntimeError) as exc:
+        return _err(exc)
+
+
+@routes.post("/clapper/api/upscale/use")
+async def upscale_use(request):
+    """path, take_id, version (a key of take.upscales, or null = the original): which one export uses."""
+    body = await _body(request)
+    try:
+        async with _lock:
+            project = _open(body["path"], request)
+            take = project.data["takes"][body["take_id"]]
+            version = body.get("version")
+            if version is not None and version not in (take.get("upscales") or {}):
+                raise ProjectError("unknown upscaled version")
+            take["upscaled"] = version
+            project.save()
+        return _ok(_view(project))
+    except (KeyError, ProjectError, OSError) as exc:
+        return _err(exc)
+
+
+@routes.post("/clapper/api/upscale/delete")
+async def upscale_delete(request):
+    """path, take_id, version: delete that upscaled file (the take itself stays)."""
+    body = await _body(request)
+    try:
+        async with _lock:
+            project = _open(body["path"], request)
+            upscale.delete_version(project, body["take_id"], body["version"])
+        return _ok(_view(project))
+    except (KeyError, ProjectError, OSError) as exc:
+        return _err(exc)
+
+
 @routes.post("/clapper/api/tool/cancel")
 async def cancel_tool(request):
     """path, job_id (or all: true): stop running tool jobs, take waiting ones out of the queue."""
@@ -798,7 +860,9 @@ async def export(request):
     try:
         project = _open(body["path"], request)
         loop = asyncio.get_running_loop()
-        out = await loop.run_in_executor(None, lambda: export_video(project, partial=bool(body.get("partial"))))
+        out = await loop.run_in_executor(None, lambda: export_video(project, partial=bool(body.get("partial")),
+                                                                   size=body.get("size") or "auto",
+                                                                   use_upscaled=body.get("use_upscaled", True) is not False))
         manifest = json.loads(out.with_suffix(".json").read_text(encoding="utf-8"))
         return _ok({"file": str(out.relative_to(project.root)), "manifest": manifest})
     except (KeyError, ProjectError, OSError) as exc:

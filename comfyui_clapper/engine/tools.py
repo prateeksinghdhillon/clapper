@@ -334,6 +334,23 @@ def collect(project: Project, client: ComfyClient) -> list[str]:
             continue
         entry = client.history(pid) if pid else None
         status = (entry or {}).get("status", {})
+        if job.get("kind") == "upscale":
+            from . import upscale
+            ok = entry and status.get("status_str") != "error" and upscale.finish_job(project, job)
+            if ok:
+                stamps = {m[0]: m[1].get("timestamp") for m in status.get("messages", [])}
+                if stamps.get("execution_start") and stamps.get("execution_success"):
+                    job["seconds"] = round((stamps["execution_success"] - stamps["execution_start"]) / 1000, 1)
+                job.update(status="done", finished=_now())
+            elif entry and status.get("status_str") == "error":
+                msgs = [m[1] for m in status.get("messages", []) if m[0] == "execution_error"]
+                job.update(status="failed", error=str(msgs[-1].get("exception_message") if msgs else "execution error")[:2000])
+            elif entry:
+                job.update(status="failed", error="the upscale finished without writing a video")
+            else:
+                job["status"] = "interrupted"
+            changed.append(job["id"])
+            continue
         folder = project.root / job["dir"]
         files = sorted(p for p in folder.iterdir() if p.is_file() and not p.name.endswith(".tmp")) if folder.is_dir() else []
         if entry and status.get("status_str") != "error" and files:
@@ -373,6 +390,7 @@ def dismiss(project: Project, job_id: str) -> None:
         raise ProjectError(f"unknown job {job_id}")
     if job["status"] in ("queued", "running"):
         raise ProjectError("cancel the job first")
-    shutil.rmtree(project.root / job["dir"], ignore_errors=True)
+    if job.get("kind") != "upscale":  # an upscale's folder holds the result next to its take
+        shutil.rmtree(project.root / job["dir"], ignore_errors=True)
     del project.data["jobs"][job_id]
     project.save()

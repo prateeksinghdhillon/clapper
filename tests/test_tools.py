@@ -159,3 +159,17 @@ def test_batch_titles_are_numbered(project):
     jobs = tools.queue_tool(project, c, "image", {"prompt": "x"}, count=3, title="Hero waving", seed=1)
     assert [j["title"] for j in jobs] == ["Hero waving 1", "Hero waving 2", "Hero waving 3"]
     assert tools.queue_tool(project, c, "image", {"prompt": "x"}, title="Solo", seed=1)[0]["title"] == "Solo"
+
+
+def test_timing_from_takes(project):
+    from comfyui_clapper.engine import estimates
+    t = estimates.timing(project)
+    assert t["ref2va"]["measured_here"] is False and t["fl2va"]["s_per_step"] == 13.6
+    s = project.add_scene(text="x")
+    for steps, secs in ((4, 120.0), (4, 110.0)):
+        take = project.new_take(s["id"], seed=1)
+        project.update_take(take["id"], status="done", steps=steps, render_seconds=secs, s_per_it=18.0, model="ref2va",
+                            width=416, height=736, frames=124)
+    t = estimates.timing(project)
+    assert t["ref2va"]["takes"] == 2 and t["ref2va"]["s_per_step"] == 18.0 and t["ref2va"]["overhead"] == 43.0
+    assert round(estimates.estimate_seconds(t["ref2va"], steps=4, width=416, height=736, frames=124)) == 115

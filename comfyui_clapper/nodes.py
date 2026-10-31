@@ -417,6 +417,72 @@ class ClapperSaveAudio:
         return {"ui": {"text": names}}
 
 
+class ClapperLoadTakeLatent:
+    """A take's saved audio-video latent (for latent upscaling or re-sampling)."""
+
+    CATEGORY = "Clapper"
+    RETURN_TYPES = ("LATENT",)
+    FUNCTION = "load"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"take_dir": ("STRING", {"default": ""})}}
+
+    def load(self, take_dir):
+        video, audio = _load_take_latent(take_dir)
+        return ({"samples": comfy.nested_tensor.NestedTensor((video, audio))},)
+
+
+class ClapperLoadVideoFrames:
+    """All frames of a video file as an IMAGE batch (RGB, 0–1)."""
+
+    CATEGORY = "Clapper"
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "load"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"path": ("STRING", {"default": ""})}}
+
+    def load(self, path):
+        import av
+
+        frames = []
+        with av.open(path) as container:
+            for frame in container.decode(video=0):
+                frames.append(torch.from_numpy(frame.to_ndarray(format="rgb24")).float().div_(255.0))
+        if not frames:
+            raise ValueError(f"no video frames in {path}")
+        return (torch.stack(frames),)
+
+
+class ClapperSaveVideo:
+    """Writes frames as an H.264 mp4 at 24 fps with the sound of an existing audio file (kept as-is)."""
+
+    CATEGORY = "Clapper"
+    RETURN_TYPES = ()
+    FUNCTION = "save"
+    OUTPUT_NODE = True
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"images": ("IMAGE",), "audio_path": ("STRING", {"default": ""}),
+                             "out_path": ("STRING", {"default": ""})}}
+
+    def save(self, images, audio_path, out_path):
+        out = Path(out_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if images.ndim == 5:
+            images = images.reshape(-1, *images.shape[-3:])
+        h, w = int(images.shape[1]), int(images.shape[2])
+        if w % 2 or h % 2:  # H.264 needs even sizes
+            images = images[:, : h - h % 2, : w - w % 2]
+        tmp = out.with_name(out.stem + ".part.mp4")
+        _write_mp4(tmp, images, Path(audio_path))
+        os.replace(tmp, out)
+        return {"ui": {"text": [str(out)]}}
+
+
 NODE_CLASS_MAPPINGS = {
     "ClapperSceneConditioning": ClapperSceneConditioning,
     "ClapperSaveTake": ClapperSaveTake,
@@ -424,6 +490,9 @@ NODE_CLASS_MAPPINGS = {
     "ClapperLoadAudio": ClapperLoadAudio,
     "ClapperSaveImages": ClapperSaveImages,
     "ClapperSaveAudio": ClapperSaveAudio,
+    "ClapperLoadTakeLatent": ClapperLoadTakeLatent,
+    "ClapperLoadVideoFrames": ClapperLoadVideoFrames,
+    "ClapperSaveVideo": ClapperSaveVideo,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "ClapperSceneConditioning": "Clapper · Scene Conditioning",
@@ -432,4 +501,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ClapperLoadAudio": "Clapper · Load Audio (path)",
     "ClapperSaveImages": "Clapper · Save Images (job)",
     "ClapperSaveAudio": "Clapper · Save Audio (job)",
+    "ClapperLoadTakeLatent": "Clapper · Load Take Latent",
+    "ClapperLoadVideoFrames": "Clapper · Load Video Frames (path)",
+    "ClapperSaveVideo": "Clapper · Save Video (with original sound)",
 }

@@ -25,6 +25,8 @@ Storyboard ──► Scene editor ──► Render take ──► Takes (numbere
 - **✨ Create** images with FLUX.2 Klein (new, or the same character in a new pose or place, several references combined) and speech with Qwen3-TTS voice cloning. Add your own ComfyUI workflows as tools with a small `tool.json`.
 - **Sound clips**: a recorded or generated line placed in a scene becomes its soundtrack, word for word, and the picture is made around it.
 - **Start any scene** by continuing the previous one, from a library image, or fresh from the references; render with MiniMax H3 FL2VA or Ref2VA.
+- **Upscale** the chosen takes to 720p or 1080p: fast *Sharpen*, or *Re-detail* where H3 redraws fine detail (fits in 16 GB). Export picks the upscaled versions.
+- **Simple settings** with the time to expect for every choice (measured or estimated, learning from your own takes), and every option under *Advanced*.
 
 **Working with it**
 - **Web interface** served by ComfyUI: storyboard, scene editor, references, settings, export. It works on a phone too.
@@ -56,6 +58,7 @@ Storyboard ──► Scene editor ──► Render take ──► Takes (numbere
 - **Optional, for the Create tools** (each tool says what it is missing):
   - images: FLUX.2 Klein 9B (`diffusion_models/flux-2-klein-9b-fp8.safetensors`, `text_encoders/qwen_3_8b_fp8mixed.safetensors`, `vae/flux2-vae.safetensors`; for changing images also `loras/Flux2-Klein-9B-consistency-V2.safetensors`);
   - speech: the [qwen3-tts-comfyui](https://github.com/flybirdxx/ComfyUI-Qwen-TTS) node pack with its 1.7B Base model.
+- **Optional, for upscaling:** `upscale_models/RealESRGAN_x2plus.pth` (Sharpen); the [Minimax H3 latent upscaler](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler) node pack with `latent_upscale_models/minimax_h3_latent_upscaler_3d_fp16.safetensors` and the Ref2VA model (Re-detail).
 - **Optional, for the Ref2VA video model:** `diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors` and `loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors`.
 - **Optional, for the assistant:**
   - a local model: [llama-swap](https://github.com/mostlygeek/llama-swap) in front of llama.cpp, with a model that fits your GPU (plus its vision projector if it should see images). It takes turns with H3 on the GPU. See [Reference › Local model](docs/REFERENCE.md#local-model-with-llama-swap).

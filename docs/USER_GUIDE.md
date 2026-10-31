@@ -173,11 +173,38 @@ Limits per scene: up to 9 images and 3 audio references. Video references are no
 
 ### Settings dialog
 
-Quick presets (*20 steps* default, *8 steps* to match the Turbo LoRA — about 2.5× faster sampling; compare results before switching), sampler and scheduler, default scene length, size (megapixels from the start image's shape, or a fixed width/height), continuity (carried frames 5 / 22 / 39, method, carry sound), reference image size, LoRAs, model names and the memory patch. **Reset to Continuum defaults** restores the defaults. Settings apply to takes rendered afterwards; every take records the settings it used. See [Reference § Settings](REFERENCE.md#settings).
+Two views; Clapper remembers which one you use.
+
+**Simple** — plain choices, each with what it changes and how long to expect:
+
+| Choice | Options | What it changes |
+|---|---|---|
+| Quality and speed | **⚡ Draft** (Ref2VA, 4 steps, ≈2 min per 5 s scene) · **★ Standard** (FL2VA, 20 steps, ≈5.5 min — the most tested setup) | the model and its steps; *Custom* shows when Advanced values match neither |
+| Steps | per model in use, each with its time per scene | time; with these Turbo LoRAs more steps made no visible difference in testing |
+| Picture size while rendering | 416×736 (tested on 16 GB) and two larger sizes | time and memory; larger sizes are untested on 16 GB cards and may run out — upscale the finished takes instead |
+| Default scene length | 3 · 5 · 7 · 10 s | time per scene (each scene can still set its own) |
+| Joins between scenes | Quick (5 frames) · Smooth (22, default) · Strong (39); carry sound across joins | how much of the previous scene each continued scene starts from |
+
+Each time is marked **measured** (on the reference card, an RTX 5060 Ti 16 GB, or from this project's own finished takes) or **estimate** (scaled from measurements). Once you have rendered takes, their real timings replace the defaults. A line at the bottom gives the time for one scene and for the whole video.
+
+**Advanced** — everything: FL2VA steps presets, sampler and scheduler, default scene length, size (megapixels from the start image's shape, or a fixed width/height), continuity (carried frames, method, carry sound), reference image size, LoRAs, model names, the memory patch, and the video model with the Ref2VA model, LoRA and steps.
+
+**Reset to defaults** restores the proven setup. Settings apply to takes rendered afterwards; every take records the settings it used. See [Reference § Settings](REFERENCE.md#settings).
+
+### Upscale
+
+Render at the small, fast size, pick the best takes, then upscale them for the final video. **⤢ Upscale…** on a take, or in Export for every selected take that is not upscaled yet:
+
+| How | What it does | Time (7 s take, 16 GB card) |
+|---|---|---|
+| **Sharpen** | Real-ESRGAN ×2 on every frame, then an exact resize. Crisp edges; the picture stays exactly the same, including its flaws | 720p ≈ 1.2 min · 1080p ≈ 1.4 min |
+| **Re-detail** | The H3 latent upscaler, then H3 (Ref2VA) redraws fine detail at the new size, in tiles so it fits in 16 GB. Faces, eyes and hair become clean; small details can change. *Light* stays closest to the take, *Strong* redraws more | light 720p ≈ 7.5 min · light 1080p ≈ 19 min |
+
+Both keep the take's sound exactly. The original take stays; each method and size is kept as its own version of the take (a new run never replaces another). The take card lists every version with **▶** play, **⤓** download and **✕** delete, and a choice of which one the export uses (or the *Original*). **Export › Upscaled videos** lists all versions of all scenes in one place. The upscale dialog shows the expected time for the takes you chose.
 
 ### Export dialog
 
-Shows what will be exported (*Scenes 1–5 of 10 · 25.0 s*), says clearly when the full video is not ready and offers a **partial video** of the ready scenes (it always stops before the first scene without a take — skipping a middle scene would leave a jump), and lists **Check before exporting** warnings with the time where they happen. Nothing is written until you press the export button. The result opens in a player with a download link and is saved in the project's `exports/` folder together with a JSON list of exactly which takes were used.
+Shows what will be exported (*Scenes 1–5 of 10 · 25.0 s*), which scenes are upscaled (with **⤢ Upscale the other N…** to do the rest) and the **video size**: the largest scene (scenes that are not upscaled are resized to match, which looks softer), 720p, 1080p, or the original takes without upscales. It says clearly when the full video is not ready and offers a **partial video** of the ready scenes (it always stops before the first scene without a take — skipping a middle scene would leave a jump), and lists **Check before exporting** warnings with the time where they happen. Nothing is written until you press the export button. The result opens in a player with its size and a download link and is saved in the project's `exports/` folder together with a JSON list of exactly which takes were used.
 
 ### Storage and deleting a project
 

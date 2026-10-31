@@ -336,6 +336,14 @@ function thumbFor(take, num, join) {
   return box;
 }
 
+function upscaleBadge(take) {
+  if (!take) return null;
+  const busy = jobs().find((j) => j.kind === "upscale" && j.take === take.id && (j.status === "queued" || j.status === "running"));
+  if (busy) return h("span", { class: "badge info" }, busy.status === "running" ? "⤢ upscaling…" : "⤢ upscale waiting");
+  const u = take.upscaled && (take.upscales || {})[take.upscaled];
+  return u ? h("span", { class: "badge ok", title: `Export uses the ${versionLabel(u)} version (${u.width}×${u.height})` }, `⤢ ${u.size}`) : null;
+}
+
 function renderBoard() {
   const board = $("board"); board.replaceChildren();
   const list = scenes();
@@ -351,6 +359,8 @@ function renderBoard() {
   const avg = timed.length ? timed.reduce((a, t) => a + t.render_seconds, 0) / timed.length : 360;
   const btn = $("renderRestBtn");
   btn.hidden = !rest || busy;
+  const ready = list.filter((s) => (state.project.takes[s.selected_take] || {}).status === "done");
+  $("upscaleScenesBtn").hidden = !ready.length;
   btn.textContent = `Render remaining ${rest} scene${rest === 1 ? "" : "s"} (≈${Math.round(rest * avg / 60)} min)`;
   btn.title = `Queues scenes ${firstMissing + 1}–${list.length} in order; each continues from the one before. You can still retake any of them later.`;
 
@@ -364,7 +374,7 @@ function renderBoard() {
         h("div", { class: "scene-name" }, scene.title || firstLine(scene.text) || "Untitled scene"),
         h("div", { class: "scene-sub" }, `${sceneSeconds(scene)}s · ` + (take ? `${takeLabel(take)} of ${takesFor(scene.id).length} selected` : `${takesFor(scene.id).length} take(s)`) +
           ((scene.audio_clips || []).length ? ` · ♪ ${scene.audio_clips.length}` : "")),
-        h("div", { class: "badges" }, badgeEls(state.project.badges[scene.id] || []))));
+        h("div", { class: "badges" }, badgeEls(state.project.badges[scene.id] || []), upscaleBadge(take))));
     board.append(card);
   });
   if (list.length) board.append(h("div", { class: "gap" }));
@@ -441,6 +451,13 @@ function renderEditor() {
   $("edStartImage").replaceChildren(...(images.length ? images.map(([n]) => h("option", { value: n, selected: n === startName }, "@" + n))
     : [h("option", { value: "" }, "no image references yet — name one in the Library")]));
   renderBadges(); renderCompiled(); renderClips(scene);
+  try {
+    const st = effective(); const fresh = mode === "fresh" || mode === "image"; const model = usedModel(st, fresh);
+    const steps = stepsFor(st, model);
+    const e = estimateTake(st, { model, steps, seconds: sceneSeconds(scene), continued: !fresh });
+    $("edSteps").placeholder = `${steps} (${model === "ref2va" ? "Ref2VA" : "FL2VA"}) ≈ ${fmtMin(e.sec)}`;
+    $("edRender").title = `≈ ${fmtMin(e.sec)} with ${model === "ref2va" ? "Ref2VA" : "FL2VA"} at ${steps} steps (${e.measured ? "measured" : "estimate"})`;
+  } catch (err) { /* settings not loaded yet */ }
 
   // references
   const lib = library(); const active = activeRefs(scene); const usesDefaults = scene.refs === null || scene.refs === undefined;
@@ -541,12 +558,15 @@ function takeCard(scene, take) {
     h("div", { class: "row" },
       take.status === "done" && !selected ? h("button", { class: "primary", onclick: () => selectTake(scene.id, take.id) }, "Use this take") : null,
       take.status === "done" ? h("button", { onclick: () => play(take, `Scene ${scenes().indexOf(scene) + 1} · ${takeLabel(take)}`) }, "Play") : null,
+      take.status === "done" ? h("button", { title: "Make a sharper 720p / 1080p version of this take for the export", onclick: () => openUpscale([take.id], `Upscale scene ${scenes().indexOf(scene) + 1} · ${takeLabel(take)}`) }, "⤢ Upscale…") : null,
       take.status === "done" ? h("button", { title: "The assistant looks at frames of this take and compares them with the scene", onclick: () =>
         askAssistant(`Review scene ${scenes().indexOf(scene) + 1} ${takeLabel(take)}: does it match the scene? What should change?`, true, { take: take.id }) }, "✨ Review") : null,
       take.scene_text !== undefined && (take.scene_text !== scene.text || JSON.stringify(take.scene_refs ?? null) !== JSON.stringify(scene.refs ?? null))
         ? h("button", { title: "Put this take's text and references back into the scene editor", onclick: () => restorePrompt(take.id) }, "Restore its prompt") : null,
       take.status === "interrupted" || take.status === "failed" ? h("button", { ...busyAttr(`requeue:${take.id}`), onclick: () => requeue(take.id) }, "Re-queue") : null,
       take.status === "queued" || take.status === "rendering" ? h("button", { class: "danger", ...busyAttr("stop"), onclick: () => stopTake(take.id) }, take.status === "queued" ? "Cancel" : "Stop") : null));
+  const up = take.status === "done" ? upscaleRow(take) : null;
+  if (up) info.append(up);
   return h("div", { class: "take" + (selected ? " selected" : "") }, thumbFor(take), info);
 }
 
@@ -1119,8 +1139,134 @@ function field(label, value, onchange, opts = {}) {
   return opts.check ? h("label", { class: "switch" }, input, label) : h("label", {}, label, input);
 }
 
+// ------------------------------------------------------------------ settings: simple view + estimates
+
+let settingsView = (() => { try { return localStorage.getItem("clapper.settingsView") || "simple"; } catch (e) { return "simple"; } })();
+const MEASURED_STEPS = { fl2va: [20], ref2va: [4, 20] };   // step counts with a measured time on the reference GPU
+const STEP_CHOICES = { fl2va: [8, 12, 20, 30], ref2va: [4, 8, 12, 20] };
+const STEP_NOTES = {
+  fl2va: { 8: "the Turbo LoRA's design point; quality not compared yet", 12: "in between", 20: "the proven setup", 30: "slower; no gain measured" },
+  ref2va: { 4: "the Turbo LoRA's design point; looked the same as 20", 8: "in between", 12: "slower", 20: "no visible gain in testing" },
+};
+const MP_CHOICES = [0.3, 0.45, 0.6];
+const JOIN_CHOICES = [[5, "Quick", "shortest overlap; fastest, joins may show a small jump"], [22, "Smooth", "the tested default"], [39, "Strong", "longest overlap; more motion carried over, slightly slower"]];
+
+function usedModel(s, fresh) {
+  const mode = s.video_model?.mode || "fl2va";
+  return mode === "ref2va" || (mode === "ref2va_fresh" && fresh) ? "ref2va" : "fl2va";
+}
+function stepsFor(s, model) { return model === "ref2va" ? s.video_model.ref2va.steps : s.sampling.steps; }
+function canvasFor(s, mp) {
+  // aspect of the start image when there is one, else of the width/height setting
+  const start = state.project?.start_image && library()[state.project.start_image];
+  const a = assets()[start?.asset] || {};
+  const w0 = a.width || s.resolution.width, h0 = a.height || s.resolution.height;
+  const k = Math.sqrt((mp * 1e6) / (w0 * h0)), m = s.resolution.multiple || 32;
+  return [Math.max(m, Math.round((w0 * k) / m) * m), Math.max(m, Math.round((h0 * k) / m) * m)];
+}
+function sceneFrames(seconds, continued, ctx) {
+  const n = Math.max(1, Math.round(seconds * 24)) + (continued ? ctx : 0);
+  return n <= 5 ? 5 : 5 + Math.ceil((n - 5) / 17) * 17;
+}
+// seconds for one take: overhead + steps × s/step, s/step scaled by the amount of video
+function estimateTake(s, { model, steps, mp, seconds, continued }) {
+  const t = (state.project?.timing || {})[model] || { s_per_step: 15, overhead: 50 };
+  const [w, h] = canvasFor(s, mp ?? s.resolution.megapixels);
+  const frames = sceneFrames(seconds ?? s.scene_seconds, continued, s.continuity.frames);
+  const norm = (w * h * frames) / (416 * 736 * 124);
+  const sec = t.overhead + steps * t.s_per_step * norm;
+  // "measured" only for a step count that was actually rendered at this size (here, or on the reference GPU)
+  const atBase = Math.abs((mp ?? s.resolution.megapixels) - 0.3) < 0.01;
+  const measured = atBase && (MEASURED_STEPS[model].includes(steps) || (t.steps_seen || []).includes(steps));
+  return { sec, measured, w, h, basedOn: t.measured_here ? `your ${t.takes} take(s)` : "the reference GPU" };
+}
+const fmtMin = (sec) => (sec < 90 ? `${Math.round(sec)} s` : `${(sec / 60).toFixed(sec < 600 ? 1 : 0)} min`);
+const tag = (measured) => h("span", { class: "est " + (measured ? "m" : "e"), title: measured ? "measured" : "estimate — real times replace it after your first takes" }, measured ? "measured" : "estimate");
+
+function presetOf(s) {
+  const vm = s.video_model?.mode || "fl2va";
+  const base = s.resolution.megapixels === 0.3 && s.continuity.frames === 22;
+  if (vm === "ref2va" && s.video_model.ref2va.steps === 4 && base) return "draft";
+  if (vm === "fl2va" && s.sampling.steps === 20 && base) return "standard";
+  return "custom";
+}
+function applyPreset(s, p) {
+  s.resolution.megapixels = 0.3; s.continuity.frames = 22;
+  if (p === "draft") { s.video_model.mode = "ref2va"; s.video_model.ref2va.steps = 4; }
+  if (p === "standard") { s.video_model.mode = "fl2va"; s.sampling.steps = 20; }
+}
+
+function choiceCard(on, title, lines, onclick, extra) {
+  return h("button", { class: "choice" + (on ? " on" : ""), type: "button", onclick }, h("b", {}, title), ...lines.map((l) => h("span", {}, l)), extra || null);
+}
+
+function renderSimpleSettings(body) {
+  const s = draft;
+  s.video_model = s.video_model || structuredClone(state.defaults.video_model);
+  const secs = s.scene_seconds || 5;
+  const preset = presetOf(s);
+  const draftEst = estimateTake(s, { model: "ref2va", steps: 4, mp: 0.3, seconds: secs });
+  const stdEst = estimateTake(s, { model: "fl2va", steps: 20, mp: 0.3, seconds: secs });
+  body.append(h("section", { class: "settings-section" }, h("h3", {}, "Quality and speed"),
+    h("div", { class: "choices" },
+      choiceCard(preset === "draft", "⚡ Draft", ["Ref2VA model · 4 steps", `≈ ${fmtMin(draftEst.sec)} per ${secs} s scene`, "Fast. Use it to get the story, characters and sound right."], () => { applyPreset(s, "draft"); renderSettings(); }, tag(draftEst.measured)),
+      choiceCard(preset === "standard", "★ Standard", ["FL2VA model · 20 steps", `≈ ${fmtMin(stdEst.sec)} per ${secs} s scene`, "The most tested setup. Choose it when the story is settled."], () => { applyPreset(s, "standard"); renderSettings(); }, tag(stdEst.measured)),
+      preset === "custom" ? choiceCard(true, "⚙ Custom", ["Your own settings (see Advanced)"], () => {}) : null),
+    h("p", { class: "hint" }, "Both models follow references and start images and continue scenes (tested); a side-by-side quality comparison of the two has not been made yet. For a sharp final video, render at this size and ", h("b", {}, "upscale the selected takes"), " (⤢ Upscale scenes… on the storyboard, or ⤢ Upscale… on a take) — much faster than rendering large.")));
+
+  // steps for the model(s) in use
+  const models = [...new Set([usedModel(s, true), usedModel(s, false)])];
+  for (const model of models) {
+    const cur = stepsFor(s, model);
+    body.append(h("section", { class: "settings-section" }, h("h3", {}, `Steps — ${model === "ref2va" ? "Ref2VA" : "FL2VA"}`),
+      h("p", { class: "hint" }, "More steps = more time. With these Turbo LoRAs, more steps did not make a visible difference in testing."),
+      h("div", { class: "choices steps" }, STEP_CHOICES[model].map((n) => {
+        const e = estimateTake(s, { model, steps: n, seconds: secs });
+        return choiceCard(n === cur, `${n} steps`, [`≈ ${fmtMin(e.sec)}`, STEP_NOTES[model][n] || ""], () => {
+          if (model === "ref2va") s.video_model.ref2va.steps = n; else s.sampling.steps = n; renderSettings();
+        }, tag(e.measured));
+      }))));
+  }
+
+  // picture size
+  const model = usedModel(s, true), steps = stepsFor(s, model);
+  body.append(h("section", { class: "settings-section" }, h("h3", {}, "Picture size while rendering"),
+    h("div", { class: "choices" }, MP_CHOICES.map((mp) => {
+      const e = estimateTake(s, { model, steps, mp, seconds: secs });
+      return choiceCard(s.resolution.megapixels === mp, `${e.w} × ${e.h}`, [`≈ ${fmtMin(e.sec)} per scene`, mp === 0.3 ? "tested on a 16 GB card" : "more memory; untested on 16 GB — may run out"], () => { s.resolution.megapixels = mp; renderSettings(); }, tag(e.measured));
+    })),
+    h("p", { class: "hint" }, "The shape follows the start image. Upscaling later gives 720p or 1080p.")));
+
+  // scene length + joins
+  body.append(h("section", { class: "settings-section" }, h("h3", {}, "Default scene length"),
+    h("div", { class: "choices" }, [3, 5, 7, 10].map((sec) => {
+      const e = estimateTake(s, { model, steps, seconds: sec });
+      return choiceCard(secs === sec, `${sec} seconds`, [`≈ ${fmtMin(e.sec)} per scene`, sec > 7 ? "long shots can drift; H3 makes up to about 15 s" : ""], () => { s.scene_seconds = sec; renderSettings(); });
+    })),
+    h("p", { class: "hint" }, "Each scene can still have its own length in the scene editor.")));
+  body.append(h("section", { class: "settings-section" }, h("h3", {}, "Joins between scenes"),
+    h("div", { class: "choices" }, JOIN_CHOICES.map(([f, name, note]) => choiceCard(s.continuity.frames === f, name, [`${f} frames carried over`, note], () => { s.continuity.frames = f; renderSettings(); }))),
+    field("Carry the sound across joins too (music and ambience flow on)", s.continuity.audio, (v) => (s.continuity.audio = v), { check: true })));
+
+  // total
+  const n = Math.max(1, scenes().length);
+  const first = estimateTake(s, { model: usedModel(s, true), steps: stepsFor(s, usedModel(s, true)), seconds: secs });
+  const rest = estimateTake(s, { model: usedModel(s, false), steps: stepsFor(s, usedModel(s, false)), seconds: secs, continued: true });
+  const total = first.sec + (n - 1) * rest.sec;
+  body.append(h("div", { class: "est-total" }, h("b", {}, `One ${secs} s scene ≈ ${fmtMin(first.sec)}`), ` · ${n} scene${n === 1 ? "" : "s"} ≈ ${fmtMin(total)} in all`,
+    h("span", { class: "hint" }, ` (based on ${first.basedOn}${(state.project?.timing?.[model] || {}).measured_here ? "" : "; your own takes replace this"})`)));
+}
+
 function renderSettings() {
-  const s = draft; const body = $("settingsBody"); body.replaceChildren();
+  const body = $("settingsBody"); body.replaceChildren();
+  body.append(h("div", { class: "seg view-switch" }, ...[["simple", "Simple"], ["advanced", "Advanced"]].map(([v, label]) =>
+    h("button", { class: settingsView === v ? "on" : "", onclick: () => { settingsView = v; try { localStorage.setItem("clapper.settingsView", v); } catch (e) { /* blocked */ } renderSettings(); } }, label))));
+  if (settingsView === "simple") return renderSimpleSettings(body);
+  renderAdvancedSettings(body);
+}
+
+function renderAdvancedSettings(body) {
+  const s = draft;
   s.video_model = s.video_model || structuredClone(state.defaults.video_model);
   const VM = { fl2va: "FL2VA for every scene (proven default)", ref2va: "Ref2VA for every scene (one model, 4 steps)",
     ref2va_fresh: "Ref2VA for fresh scenes, FL2VA when continuing" };
@@ -1138,7 +1284,7 @@ function renderSettings() {
     h("div", { class: "profile-row" },
       h("button", { onclick: () => { s.sampling.steps = 20; renderSettings(); } }, "Continuum current (20 steps)"),
       h("button", { onclick: () => { s.sampling.steps = 8; renderSettings(); } }, "Turbo matched (8 steps)")),
-    h("p", { class: "hint" }, "Your current Continuum workflow runs the 8-step Turbo LoRA at 20 steps. 8 steps is about 2.5× faster sampling; compare the results before switching.")));
+    h("p", { class: "hint" }, "These change FL2VA\u2019s steps only. The 8-step Turbo LoRA runs at 20 steps in the proven setup; 8 steps is about 2.5× faster sampling — compare before switching.")));
   body.append(h("section", { class: "settings-section" }, h("h3", {}, "Sampling"), h("div", { class: "settings-grid" },
     field("Steps", s.sampling.steps, (v) => (s.sampling.steps = v), { min: 1, max: 60 }),
     field("Sampler", s.sampling.sampler, (v) => (s.sampling.sampler = v), { options: SAMPLERS }),
@@ -1170,6 +1316,128 @@ function renderSettings() {
 
 // ------------------------------------------------------------------ export
 
+// ------------------------------------------------------------------ upscale (Finish)
+
+// Seconds per frame of a take, measured on an RTX 5060 Ti 16 GB from 416×736 (docs/DESIGN.md).
+// Measured: Sharpen 720p 69 s and 1080p 82 s, Re-detail light 720p 448 s and 1080p 1162 s, for a 172-frame take
+// (model loads included). Strong redraws 3 steps instead of 2 — an estimate until measured.
+const UPSCALE_SPEED = { "sharpen-720p": 0.40, "sharpen-1080p": 0.48, "redetail-light-720p": 2.6, "redetail-strong-720p": 3.6,
+  "redetail-light-1080p": 6.75, "redetail-strong-1080p": 9.5 };
+const UPSCALE_MEASURED = new Set(["sharpen-720p", "sharpen-1080p", "redetail-light-720p", "redetail-light-1080p"]);
+const upChoice = { method: "sharpen", size: "1080p", strength: "light" };
+const upKey = (c) => (c.method === "sharpen" ? `sharpen-${c.size}` : `redetail-${c.strength}-${c.size}`);
+
+// The scenes whose selected take can be upscaled, in story order.
+function upscalableScenes() {
+  return scenes().map((sc, i) => ({ scene: sc, n: i + 1, take: state.project.takes[sc.selected_take] }))
+    .filter((x) => x.take && x.take.status === "done");
+}
+
+function openUpscale(takeIds, title) {
+  const chosen = new Set(takeIds);
+  // takes that are not a scene's selected take (an older take) stay in the list too
+  const rows = upscalableScenes();
+  for (const id of takeIds) if (!rows.some((r) => r.take.id === id) && state.project.takes[id]) {
+    const t = state.project.takes[id];
+    rows.push({ scene: sceneById(t.scene), n: scenes().findIndex((s) => s.id === t.scene) + 1, take: t, older: true });
+  }
+  const render = () => {
+    const list = rows.filter((r) => chosen.has(r.take.id)).map((r) => r.take);
+    const frames = list.reduce((n, t) => n + (t.frames || 124), 0);
+    const est = (c) => frames * (UPSCALE_SPEED[upKey(c)] || 5);
+    const body = $("upBody"); body.replaceChildren();
+    body.append(h("h3", {}, "Scenes"), h("div", { class: "up-pick" }, rows.map((r) => {
+      const box = h("input", { type: "checkbox", checked: chosen.has(r.take.id), onchange: () => { box.checked ? chosen.add(r.take.id) : chosen.delete(r.take.id); render(); } });
+      const has = Object.values(r.take.upscales || {}).map(versionLabel);
+      const busy = jobs().some((j) => j.kind === "upscale" && j.take === r.take.id && (j.status === "queued" || j.status === "running"));
+      return h("label", { class: "up-pick-row" }, box, h("b", {}, `Scene ${r.n}`), h("span", {}, ` ${r.scene?.title || firstLine(r.scene?.text || "")}`.slice(0, 60)),
+        h("span", { class: "hint" }, ` · ${takeLabel(r.take)}${r.older ? " (not selected)" : ""} · ${((r.take.frames || 124) / 24).toFixed(1)} s`),
+        busy ? h("span", { class: "badge info" }, "upscaling…") : has.length ? h("span", { class: "badge ok", title: has.join(", ") }, has.length === 1 ? has[0] : `${has.length} versions`) : null);
+    })), h("div", { class: "row" },
+      h("button", { class: "ghost small", onclick: () => { rows.forEach((r) => chosen.add(r.take.id)); render(); } }, "All"),
+      h("button", { class: "ghost small", onclick: () => { chosen.clear(); rows.filter((r) => !Object.keys(r.take.upscales || {}).length).forEach((r) => chosen.add(r.take.id)); render(); } }, "Not upscaled yet"),
+      h("button", { class: "ghost small", onclick: () => { chosen.clear(); render(); } }, "None")));
+    $("upGo").disabled = !list.length || isBusy("upscale");
+    $("upGo").textContent = list.length ? `Upscale ${list.length} scene${list.length === 1 ? "" : "s"}` : "Choose scenes";
+    const card = (on, title, lines, onclick, measured) => choiceCard(on, title, lines, onclick, measured === undefined ? null : tag(measured));
+    body.append(h("p", { class: "hint" }, `${list.length} scene${list.length === 1 ? "" : "s"} · ${(frames / 24).toFixed(1)} s of video. Each scene is upscaled on its own, one after another, so memory use stays the same however many you choose. The original takes stay; each scene keeps every version.`),
+      h("h3", {}, "How"),
+      h("div", { class: "choices" },
+        card(upChoice.method === "sharpen", "Sharpen", ["Crisp edges at the new size; the picture stays exactly the same. Sound unchanged.", `≈ ${fmtMin(est({ ...upChoice, method: "sharpen" }))}`], () => { upChoice.method = "sharpen"; render(); }, UPSCALE_MEASURED.has(upKey({ ...upChoice, method: "sharpen" }))),
+        card(upChoice.method === "redetail", "Re-detail", ["H3 redraws fine detail (hair, eyes, textures) at the new size. Small details can change. Sound unchanged.", `≈ ${fmtMin(est({ ...upChoice, method: "redetail" }))}`], () => { upChoice.method = "redetail"; render(); }, UPSCALE_MEASURED.has(upKey({ ...upChoice, method: "redetail" })))),
+      h("h3", {}, "Size"),
+      h("div", { class: "choices" }, ["720p", "1080p"].map((sz) => card(upChoice.size === sz, sz === "720p" ? "720p (HD)" : "1080p (Full HD)", [`short side ${sz === "720p" ? 720 : 1080} px`, `≈ ${fmtMin(est({ ...upChoice, size: sz }))}`], () => { upChoice.size = sz; render(); }, UPSCALE_MEASURED.has(upKey({ ...upChoice, size: sz }))))),
+      upChoice.method === "redetail" ? h("div", {}, h("h3", {}, "How much to redraw"), h("div", { class: "choices" },
+        card(upChoice.strength === "light", "Light", ["Stays closest to the take.", `≈ ${fmtMin(est({ ...upChoice, strength: "light" }))}`], () => { upChoice.strength = "light"; render(); }, UPSCALE_MEASURED.has(upKey({ ...upChoice, strength: "light" }))),
+        card(upChoice.strength === "strong", "Strong", ["More new detail; faces and small objects may change more.", `≈ ${fmtMin(est({ ...upChoice, strength: "strong" }))}`], () => { upChoice.strength = "strong"; render(); }, UPSCALE_MEASURED.has(upKey({ ...upChoice, strength: "strong" }))))) : null,
+      h("p", { class: "hint" }, "Upscales wait in ComfyUI's queue with everything else. Sharpen needs the Real-ESRGAN ×2 model; Re-detail needs the H3 latent upscaler node pack, the Ref2VA model and the take's saved latents."));
+  };
+  $("upTitle").textContent = title || "Upscale";
+  render();
+  const go = $("upGo"); go.dataset.once = "upscale";
+  go.onclick = () => once("upscale", async () => {
+    const ids = rows.filter((r) => chosen.has(r.take.id)).map((r) => r.take.id);
+    if (!ids.length) return;
+    const d = await call("/upscale", { path: state.path, take_ids: ids, ...upChoice });
+    setProject(d.project); $("upDlg").close();
+    toast(`${d.jobs.length} scene upscale(s) queued — each appears on its scene when done`);
+  });
+  $("upDlg").showModal();
+}
+
+const versionLabel = (u) => `${u.method === "redetail" ? "Re-detail" + (u.strength ? " " + u.strength : "") : "Sharpen"} ${u.size}`;
+
+// Every upscaled version of a take: play, download, delete, and which one the export uses.
+function versionList(take, sceneNo) {
+  const ups = take.upscales || {};
+  return Object.entries(ups).map(([key, u]) => {
+    const used = take.upscaled === key;
+    return h("div", { class: "version" + (used ? " used" : "") },
+      h("label", { class: "switch", title: "Use this version in the export" },
+        h("input", { type: "radio", name: `use-${take.id}`, checked: used, onchange: () => guard(async () => setProject(await call("/upscale/use", { path: state.path, take_id: take.id, version: key }))) }),
+        h("b", {}, versionLabel(u)), h("span", { class: "hint" }, ` ${u.width}×${u.height}`)),
+      h("span", { class: "spacer" }),
+      h("button", { title: "Play", onclick: () => playFile(u.file, `Scene ${sceneNo} · ${takeLabel(take)} · ${versionLabel(u)}`) }, "▶"),
+      h("a", { class: "btn", href: media(u.file), download: `scene${sceneNo}-take${take.number}-${key}.mp4`, title: "Download" }, "⤓"),
+      h("button", { class: "icon", title: "Delete this upscaled file (the take stays)", onclick: () => guard(async () => {
+        if (!confirm(`Delete the ${versionLabel(u)} version of this take?`)) return;
+        setProject(await call("/upscale/delete", { path: state.path, take_id: take.id, version: key }));
+      }) }, "✕"));
+  });
+}
+
+function upscaleRow(take) {
+  const ups = take.upscales || {};
+  const active = jobs().filter((j) => j.kind === "upscale" && j.take === take.id && (j.status === "queued" || j.status === "running"));
+  const failed = jobs().filter((j) => j.kind === "upscale" && j.take === take.id && j.status === "failed").slice(0, 1);
+  if (!Object.keys(ups).length && !active.length && !failed.length) return null;
+  const sceneNo = scenes().findIndex((s) => s.id === take.scene) + 1;
+  return h("div", { class: "versions" },
+    Object.keys(ups).length ? h("div", { class: "version" + (take.upscaled ? "" : " used") },
+      h("label", { class: "switch", title: "Use the original take in the export" },
+        h("input", { type: "radio", name: `use-${take.id}`, checked: !take.upscaled, onchange: () => guard(async () => setProject(await call("/upscale/use", { path: state.path, take_id: take.id, version: null }))) }),
+        h("b", {}, "Original"), h("span", { class: "hint" }, ` ${take.width}×${take.height}`))) : null,
+    ...versionList(take, sceneNo),
+    ...active.map((j) => h("div", { class: "version" }, h("span", { class: "badge info" }, j.status === "running" ? "upscaling…" : "waiting"),
+      h("span", {}, ` ${versionLabel({ method: j.inputs.method, strength: j.inputs.method === "redetail" ? j.inputs.strength : null, size: j.inputs.size })}`),
+      h("span", { class: "spacer" }),
+      h("button", { class: "danger", onclick: () => once(`cancel:${j.id}`, async () => setProject(await call("/tool/cancel", { path: state.path, job_id: j.id }))) }, "Cancel"))),
+    failed.length ? h("div", { class: "hint warn", title: failed[0].error }, "Upscale failed: " + (failed[0].error || "").slice(0, 100)) : null);
+}
+
+function playFile(file, title) {
+  playing = null;
+  $("playerTitle").textContent = title;
+  $("playerVideo").src = media(file);
+  $("playerInfo").textContent = file;
+  $("playerDlg").showModal(); $("playerVideo").play().catch(() => {});
+}
+
+$("upscaleScenesBtn").onclick = () => {
+  const todo = upscalableScenes().filter((r) => !Object.keys(r.take.upscales || {}).length).map((r) => r.take.id);
+  openUpscale(todo, "Upscale scenes");
+};
+
 $("exportBtn").onclick = () => guard(async () => {
   const c = await call(`/export/check?path=${encodeURIComponent(state.path)}`);
   const body = $("exportBody"); body.replaceChildren();
@@ -1185,6 +1453,20 @@ $("exportBtn").onclick = () => guard(async () => {
     if (!c.complete) body.append(h("p", { class: "note" },
       `The full video is not ready: scene${c.missing.length > 1 ? "s" : ""} ${c.missing.length > 1 ? c.missing[0] + "–" + c.missing[c.missing.length - 1] : c.missing[0]} ${c.missing.length > 1 ? "have" : "has"} no finished take yet. `,
       `You can export the ${c.ready} ready scene${c.ready > 1 ? "s" : ""} now as a partial video, or render the rest first.`));
+    const sizeSel = h("select", { id: "exportSize" }, [["auto", c.size ? `Largest scene (${c.size[0]}×${c.size[1]})` : "Largest scene"], ["720p", "720p"], ["1080p", "1080p"], ["original", "Original takes, no upscales"]].map(([v, l]) => h("option", { value: v }, l)));
+    const selectedIds = scenes().slice(0, c.ready).map((s) => s.selected_take).filter(Boolean);
+    const notUp = c.not_upscaled.map((n) => scenes()[n - 1].selected_take);
+    body.append(h("div", { class: "export-up" },
+      h("p", {}, c.upscaled.length ? `Upscaled: scene${c.upscaled.length > 1 ? "s" : ""} ${c.upscaled.join(", ")}.` : "No scene is upscaled yet.",
+        c.upscaled.length && c.not_upscaled.length ? ` Scene${c.not_upscaled.length > 1 ? "s" : ""} ${c.not_upscaled.join(", ")} ${c.not_upscaled.length > 1 ? "are" : "is"} resized to match (softer).` : ""),
+      h("div", { class: "row" }, h("label", {}, "Video size", sizeSel),
+        notUp.length ? h("button", { onclick: () => { $("exportDlg").close(); openUpscale(notUp, c.upscaled.length ? `Upscale the ${notUp.length} remaining scene(s)` : `Upscale all ${notUp.length} scene(s)`); } }, c.upscaled.length ? `⤢ Upscale the other ${notUp.length}…` : `⤢ Upscale all ${selectedIds.length} first…`) : null)));
+    const withVersions = scenes().map((sc, i) => [sc, i + 1, state.project.takes[sc.selected_take]]).filter(([, , t]) => t && Object.keys(t.upscales || {}).length);
+    const others = takes().filter((t) => Object.keys(t.upscales || {}).length && !withVersions.some(([, , x]) => x.id === t.id));
+    if (withVersions.length || others.length) body.append(h("details", { class: "up-all" },
+      h("summary", {}, `Upscaled videos (${[...withVersions.map(([, , t]) => t), ...others].reduce((n, t) => n + Object.keys(t.upscales).length, 0)})`),
+      ...withVersions.map(([sc, n, t]) => h("div", { class: "up-scene" }, h("div", { class: "hint" }, `Scene ${n}${sc.title ? " · " + sc.title : ""} · ${takeLabel(t)} (selected)`), upscaleRow(t))),
+      ...others.map((t) => h("div", { class: "up-scene" }, h("div", { class: "hint" }, `Scene ${scenes().findIndex((s) => s.id === t.scene) + 1} · ${takeLabel(t)} (not selected)`), upscaleRow(t)))));
     if (c.warnings.length) body.append(h("div", {}, h("b", {}, "Check before exporting"),
       h("ul", { class: "warn-list" }, c.warnings.map((w) => h("li", {}, `${w.message} (at ${w.at_seconds.toFixed(1)} s).`)))));
     const label = c.complete ? "Export full video" : `Export partial video (${c.ready} scene${c.ready > 1 ? "s" : ""})`;
@@ -1193,12 +1475,12 @@ $("exportBtn").onclick = () => guard(async () => {
     go.onclick = () => once("export", async () => {
       go.textContent = "Exporting…";
       try {
-        const data = await call("/export", { path: state.path, partial: !c.complete });
+        const data = await call("/export", { path: state.path, partial: !c.complete, size: $("exportSize").value });
         $("exportDlg").close();
         const m = data.manifest;
         $("playerTitle").textContent = m.scenes_exported < m.scenes_total ? "Partial export" : "Exported video";
         $("playerVideo").src = media(data.file);
-        $("playerInfo").innerHTML = `${m.total_seconds.toFixed(1)} s · scenes 1–${m.scenes_exported} of ${m.scenes_total}<br>Saved in the project: <code>${data.file}</code> · <a href="${media(data.file)}" download>download</a>`;
+        $("playerInfo").innerHTML = `${m.total_seconds.toFixed(1)} s · ${m.width}×${m.height} · scenes 1–${m.scenes_exported} of ${m.scenes_total}<br>Saved in the project: <code>${data.file}</code> · <a href="${media(data.file)}" download>download</a>`;
         $("playerDlg").showModal();
       } finally { go.textContent = label; }
     });
