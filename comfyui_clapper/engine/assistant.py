@@ -64,9 +64,10 @@ INSTRUCTIONS = """You are the director's assistant inside Clapper, a studio for 
 # Steps for each kind of request
 - A question: answer from the project block and the attached frames.
 - Write a scene after a particular take ("continue from Take 5 of scene 3"): the next scene always continues from the SELECTED take. If that take is not selected, propose select_take first, then write the next scene from that take's last frame (attached, or view_take with take and part=end). get_scene shows the text each take was made from.
+- Go back to an earlier take's version ("Take 2's prompt was better"): to use that take's video, select_take; to change or re-render that version, edit_scene with from_take (it puts back the take's text, references and length exactly — don't retype it).
 - Fix or rewrite a scene: (1) read it and the scenes before and after it in <project>; (2) look at how the previous take really ends — the attached last frame, or view_take with part=end; (3) decide the four things in the scene checklist at the end; (4) one edit_scene with the new text (and refs, start, seconds if they change). If its selected take was rendered from an earlier text, say so.
 - A new scene: the same steps, then add_scenes with `after`.
-- A take that looks wrong: compare its frames with its text, say first what already matches, then what differs, then propose an edit_scene that makes the text clearer — usually less action, a clearer camera position, or fewer references.
+- A take that looks wrong: when the user means a newer take than the selected one (the project lists it as "newest"), look at that take (view_take with its number). Compare its frames with its text, say first what already matches, then what differs, then propose an edit_scene that makes the text clearer — usually less action, a clearer camera position, or fewer references.
 - New material: create_character for a new character or place (a precise description, without repeating its name); make_images for new looks, angles or start frames; speak_line for exact dialogue in a character's voice; edit_character to change a description or voice.
 - A new video: agree on length, shape (portrait 9:16 or landscape 16:9), language and characters if unclear; style text (edit_project, with a line "subject_definitions:"); the cast with create_character; once they have main looks, start frames and lines; then all scenes in one add_scenes call.
 """
@@ -159,7 +160,7 @@ def system_prompt(chat: dict) -> str:
 
 BADGE_WORDS = {
     "no_take": "no take yet", "rendering": "a take is rendering now",
-    "prompt_changed": "its selected take was rendered from an EARLIER version of this text (the video shows the old version)",
+    "prompt_changed": "its selected take was rendered from an EARLIER version of this text (the video shows the old version; get_scene shows that text)",
     "refs_changed": "its selected take was rendered with other references",
     "continuity_changed": "the scene before it now has another selected take, so the join may jump",
     "parent_missing": "the scene before it has no take", "prompt_error": "its text does not compile",
@@ -173,8 +174,22 @@ def scene_fingerprints(project: Project) -> dict:
         take = project.data["takes"].get(sc.get("selected_take") or "") or {}
         out[sc["id"]] = {"n": i, "title": sc.get("title") or "", "text": hashlib_sha(sc.get("text") or ""),
                          "setup": hashlib_sha(json.dumps([sc.get("refs"), sc.get("join"), sc.get("start_image"), sc.get("audio_clips"), sc.get("seconds")])),
-                         "take": take.get("id"), "take_number": take.get("number"), "take_status": take.get("status")}
+                         "take": take.get("id"), "take_number": take.get("number"), "take_status": take.get("status"),
+                         "takes": {t["id"]: [t.get("number"), t.get("status"), bool(t.get("upscaled"))] for t in project.takes_for(sc["id"])}}
+    d = project.data
+    h = lambda v: hashlib_sha(json.dumps(v, sort_keys=True, default=str))   # noqa: E731
+    out[PROJECT_KEY] = {
+        "style": h(d.get("style") or ""), "notes": h(d.get("notes") or ""), "defaults": h(d["library"]["defaults"]),
+        "start": h(d.get("start_image")), "settings": h(d.get("settings") or {}), "finish": h(d.get("finish") or {}),
+        "refs": {n: h([it.get("definition"), it.get("asset") or it.get("file"), it.get("card")]) for n, it in d["library"]["items"].items()},
+        "cast": {e["id"]: [e["name"], h([e.get("description"), e.get("main"), e.get("voice")])] for e in project.entities.values()}}
     return out
+
+
+PROJECT_KEY = "_project"
+_PROJECT_WORDS = {"style": "the style text was edited", "notes": "the story notes were edited", "defaults": "the default references changed",
+                  "start": "the project start image changed", "settings": "the generation settings changed",
+                  "finish": "the Finish (music, overlays, title cards) changed"}
 
 
 def hashlib_sha(text: str) -> str:
@@ -187,7 +202,24 @@ def changes_since(before: dict | None, after: dict) -> list[str]:
     if before is None:
         return []
     out = []
+    pa, pb = after.get(PROJECT_KEY), before.get(PROJECT_KEY)
+    if pa and pb:
+        out += [words for key, words in _PROJECT_WORDS.items() if pa[key] != pb[key]]
+        for name in pa["refs"]:
+            if name not in pb["refs"]:
+                out.append(f"reference @{name} was added")
+            elif pa["refs"][name] != pb["refs"][name]:
+                out.append(f"reference @{name} changed (its picture, definition or card)")
+        out += [f"reference @{name} was removed" for name in pb["refs"] if name not in pa["refs"]]
+        for eid, (name, fp) in pa["cast"].items():
+            if eid not in pb["cast"]:
+                out.append(f"{name} was added to the cast")
+            elif pb["cast"][eid] != [name, fp]:
+                out.append(f"{name} changed (name, description, main look or voice)")
+        out += [f"{name} was removed from the cast" for eid, (name, _) in pb["cast"].items() if eid not in pa["cast"]]
     for sid, a in after.items():
+        if sid == PROJECT_KEY:
+            continue
         b = before.get(sid)
         label = f"scene {a['n']}" + (f" \"{a['title']}\"" if a["title"] else "")
         if b is None:
@@ -201,7 +233,21 @@ def changes_since(before: dict | None, after: dict) -> list[str]:
             out.append(f"{label}: Take {a['take_number']} is now its finished, selected take")
         if b["n"] != a["n"] and b["text"] == a["text"]:
             out.append(f"{label} moved (it was scene {b['n']})")
+        if b.get("takes") is not None:
+            for tid, (number, status, upscaled) in a["takes"].items():
+                old = b["takes"].get(tid)
+                if tid == a["take"] and status == "done" and (old is None or old[1] != "done"):
+                    continue   # reported above as its finished, selected take
+                if (old is None or old[1] != status) and status in ("done", "failed", "interrupted"):
+                    out.append(f"{label}: Take {number} " + {"done": "finished (not selected)", "failed": "FAILED",
+                                                            "interrupted": "was interrupted"}[status])
+                elif old is None and status in ("queued", "rendering"):
+                    out.append(f"{label}: Take {number} is rendering")
+                if upscaled and old is not None and not old[2]:
+                    out.append(f"{label}: Take {number} was upscaled")
     for sid, b in before.items():
+        if sid == PROJECT_KEY:
+            continue
         if sid not in after:
             out.append(f"scene {b['n']}" + (f" \"{b['title']}\"" if b["title"] else "") + " was removed")
     return out
@@ -282,8 +328,15 @@ def snapshot(project: Project, chat: dict | None = None) -> str:
         cont = f"continues from scene {i - 1} Take {prev_take.get('number')}" if prev_take else "continues the scene before (which has no take yet)"
         start_label = {"continue": cont, "bridge": "bridges to the next scene", "fresh": "a fresh shot",
                        "image": f"opens on the image @{project.scene_start(sc)}"}.get(mode, mode)
+        if take and take.get("upscaled"):
+            take_label += ", upscaled"
         lines.append(f"{i}. \"{sc.get('title') or ''}\" · {sc.get('seconds') or s['scene_seconds']}s · {start_label}"
                      f" · refs: {_scene_refs_label(project, sc)} · {len(takes)} take(s), {take_label} · {badges}")
+        newest = takes[-1] if takes else None
+        if newest and take and newest["id"] != take["id"] and newest.get("number", 0) > take.get("number", 0):
+            lines.append(f"   newest: Take {newest.get('number')} {take_status_words(newest)}, NOT selected (the video still uses Take {take.get('number')})")
+        elif newest and not take and newest.get("status") in ("failed", "interrupted"):
+            lines.append(f"   newest: Take {newest.get('number')} {take_status_words(newest)}")
         clips = sc.get("audio_clips") or []
         if clips:
             lines.append("   sound clips (the soundtrack becomes the clip from that time): " + ", ".join(
@@ -291,6 +344,15 @@ def snapshot(project: Project, chat: dict | None = None) -> str:
         lines.append('   text: """' + (sc.get("text") or "").strip() + '"""')
     if not scenes:
         lines.append("(no scenes yet)")
+    fin = d.get("finish") or {}
+    if fin.get("tracks") or fin.get("overlays"):
+        def _t(x):
+            return (project.assets.get(x["asset"]) or {}).get("title") or x["asset"]
+        lines.append("Finish (added on top when exporting; the user edits it in Finish): "
+                     + "; ".join([f"track \"{_t(t)}\" from {t.get('start', 0):g}s at volume {t.get('volume', 0.6):g}" for t in fin.get("tracks") or []]
+                                 + [f"overlay \"{_t(o)}\" {o.get('start', 0):g}–{o['end'] if o.get('end') is not None else 'end'}s, {o.get('position')}"
+                                    for o in fin.get("overlays") or []])
+                     + (f"; scene sound at {fin.get('scene_volume', 1):g}" if fin.get("scene_volume", 1) != 1 else ""))
     pending = [p for p in (chat or {}).get("proposals", {}).values() if p["status"] == "pending"]
     if pending:
         lines.append("Your proposals waiting for the user (not applied yet; their new scenes get numbers only when applied):")
@@ -436,7 +498,9 @@ TOOLS = [
         {"scenes": {"type": "array", "items": {"type": "object", "properties": _SCENE_FIELDS, "required": ["title", "text"]}},
          "after": {"type": "integer", "description": "insert after this scene number; omit to add at the end"}}, ["scenes"]),
     _fn("edit_scene", "Propose changes to one scene. Give only the fields that change.",
-        {"scene": _SCENE, **_SCENE_FIELDS}, ["scene"]),
+        {"scene": _SCENE, **_SCENE_FIELDS,
+         "from_take": {"type": "integer", "description": "a take of THIS scene: put back the text, references, length and start it "
+                       "was made from (other fields you give change on top). Not for continuing from another scene's take: that is select_take"}}, ["scene"]),
     _fn("remove_scene", "Propose removing a scene from the timeline (its takes stay on disk).", {"scene": _SCENE}, ["scene"]),
     _fn("move_scene", "Propose moving a scene to another position.",
         {"scene": _SCENE, "position": {"type": "integer", "description": "new scene number"}}, ["scene", "position"]),
@@ -807,6 +871,7 @@ def plan_proposal(project: Project, tool: str, args: dict, pending: list[dict] |
                 _apply(dry, earlier)
             except (ProjectError, KeyError, ValueError, StopIteration):
                 pass
+    pre = copy.deepcopy(dry.data)   # with the waiting cards applied: what this card was written against
     resolved: dict = {}
     details: list[dict] = []
     numbers = {s["id"]: i + 1 for i, s in enumerate(project.scenes)}
@@ -885,7 +950,29 @@ def plan_proposal(project: Project, tool: str, args: dict, pending: list[dict] |
     elif tool == "edit_scene":
         sid = _scene_id(project, args.get("scene"))
         notes = []
-        fields = _scene_fields(dry, {k: v for k, v in args.items() if k != "scene"}, notes)
+        fields = {}
+        if args.get("from_take") not in (None, "", 0):
+            take = next((t for t in project.takes_for(sid) if t.get("number") == int(args["from_take"])), None)
+            if not take:
+                n = numbers[sid]
+                raise ProjectError(f"scene {n} has no Take {args['from_take']} (from_take puts back a take of the same scene). "
+                                   + (f"To continue scene {n} from a take of scene {n - 1}, propose select_take for scene {n - 1}, "
+                                      "and edit_scene with only the new text" if n > 1 else ""))
+            text = take_text(project, take)
+            if text is None:
+                raise ProjectError(f"Take {take['number']} has no recorded prompt to put back")
+            fields["text"] = text
+            if "scene_text" in take:   # recorded setup (takes made outside Clapper's scenes have only their prompt)
+                fields.update(refs=take.get("scene_refs"), seconds=take.get("scene_seconds"))
+                if take.get("scene_join"):
+                    fields["join"] = take["scene_join"]
+                for key in ("start_image", "audio_clips"):
+                    if f"scene_{key}" in take:
+                        fields[key] = take[f"scene_{key}"]
+        fields.update(_scene_fields(dry, {k: v for k, v in args.items() if k not in ("scene", "from_take")}, notes))
+        current = dry.scene(sid) if any(s["id"] == sid for s in dry.scenes) else {}
+        if args.get("from_take") not in (None, "", 0):   # only what really differs from the scene now
+            fields = {k: v for k, v in fields.items() if current.get(k) != v or k in args}
         if not fields:
             raise ProjectError("edit_scene needs at least one field to change")
         if not any(s["id"] == sid for s in dry.scenes):
@@ -895,7 +982,8 @@ def plan_proposal(project: Project, tool: str, args: dict, pending: list[dict] |
         _check_prompts(dry, [sid])
         resolved = {"scene": sid, "fields": fields}
         warn = [f"added {notes[0]} to the scene's refs, because the style text names it"] if notes else []
-        if "text" in fields:
+        restoring = args.get("from_take") not in (None, "", 0) and "text" not in args
+        if "text" in fields and not restoring:   # a take's own text was already rendered: no advice on it
             d = density_warning(fields["text"], dry.scene(sid).get("seconds") or 5)
             if d:
                 warn.append(d)
@@ -1016,7 +1104,43 @@ def plan_proposal(project: Project, tool: str, args: dict, pending: list[dict] |
             summary = "Render a take of scene " + ", ".join(str(project.scene_index(i) + 1) for i in ids)
     else:
         raise ProjectError(f"unknown tool {tool}")
-    return {"tool": tool, "args": resolved, "summary": summary, "details": details}
+    plan = {"tool": tool, "args": resolved, "summary": summary, "details": details}
+    base_now, base_pending = _card_fields(project.data, tool, resolved), _card_fields(pre, tool, resolved)
+    if base_now is not None:
+        plan["base"] = {"now": base_now, "pending": base_pending}
+    return plan
+
+
+def _card_fields(data: dict, tool: str, args: dict) -> dict | None:
+    """The current values of what a card changes (to notice when the user changed them after it was made)."""
+    try:
+        if tool == "edit_scene":
+            scene = next((s for s in data["scenes"] if s["id"] == args["scene"]), None)
+            return {k: (scene or {}).get(k) for k in args["fields"]}
+        if tool == "edit_project":
+            return {k: data["library"]["defaults"] if k == "defaults" else data.get(k) for k in args}
+        if tool == "set_reference_definition":
+            return {"definition": (data["library"]["items"].get(args["name"]) or {}).get("definition")}
+        if tool == "edit_character":
+            e = (data.get("entities") or {}).get(args["entity"]) or {}
+            return {k: e.get(k) for k in args["fields"]}
+    except (KeyError, TypeError):
+        return None
+    return None
+
+
+def stale_card(project: Project, proposal: dict) -> str:
+    """What the user changed after this card was made ('' if nothing): applying it would overwrite that."""
+    base = proposal.get("base")
+    if not base:
+        return ""
+    now = _card_fields(project.data, proposal["tool"], proposal["args"]) or {}
+    changed = [k for k, v in now.items() if v != base["now"].get(k) and v != (base.get("pending") or {}).get(k)]
+    if not changed:
+        return ""
+    what = {"edit_scene": "the scene", "edit_project": "the project", "set_reference_definition": "the reference",
+            "edit_character": "the character"}[proposal["tool"]]
+    return f"{what} was changed after this card was made ({', '.join(changed)})"
 
 
 def find_entity(project: Project, name: str) -> dict:
@@ -1112,12 +1236,17 @@ def _plan_studio(project: Project, tool: str, args: dict) -> tuple[dict, str]:
             f"Speak {count} take(s) in {who}'s voice: “{text[:60]}”")
 
 
-def apply_proposal(project: Project, proposal: dict, *, render=None, client=None) -> str:
+def apply_proposal(project: Project, proposal: dict, *, render=None, client=None, force: bool = False) -> str:
     """Carry out an applied proposal on the real project. render(project, scene_ids | None) queues takes.
 
     The project may have changed since the proposal was checked (other proposals applied or rejected, the
     user's own edits), so it is tried on a dry copy first: it is refused if a scene it adds or rewrites, or
-    one that rendered before, would no longer compile."""
+    one that rendered before, would no longer compile. A card whose fields the user changed after it was made is
+    refused too (it would silently undo their edit), unless force=True."""
+    stale = "" if force else stale_card(project, proposal)
+    if stale:
+        raise ProjectError(f"not applied: {stale}, and applying it would undo that change. Ask the assistant for a new version "
+                           "(it sees your change), or apply it anyway")
     if proposal["tool"] not in ("render_scenes", "change_settings", "edit_character", "select_take") and proposal["tool"] not in GENERATE_TOOLS:
         dry = _dry(project)
         ok_before = {s["id"] for s in dry.scenes if _compiles(dry, s)}
@@ -1229,6 +1358,59 @@ def take_text(project: Project, take: dict) -> str | None:
     return re.sub(r"<(Picture|Audio) \d+>", lambda mm: "@" + labels[mm.group(0)] if mm.group(0) in labels else mm.group(0), body).strip()
 
 
+TAKE_STATUS_WORDS = {"done": "finished", "queued": "waiting to render", "rendering": "rendering now",
+                     "interrupted": "interrupted (lost to a restart; no video)"}
+
+
+def take_status_words(take: dict) -> str:
+    if take.get("status") == "failed":
+        return "FAILED" + (f" ({str(take.get('error') or '').strip().splitlines()[-1][:200]})" if (take.get("error") or "").strip() else "")
+    return TAKE_STATUS_WORDS.get(take.get("status"), take.get("status") or "?")
+
+
+def describe_take(project: Project, scene: dict, take: dict, shown: dict | None = None) -> str:
+    """One take as the assistant reads it: status, what it continued from, how its setup differs from the scene
+    now, and the text it was made from (texts already shown for an earlier take are referred to, not repeated)."""
+    shown = {} if shown is None else shown
+    bits = [take_status_words(take)]
+    if take["id"] == scene.get("selected_take"):
+        bits.append("SELECTED: the video and the next scene use this one")
+    if take.get("seed") is not None:
+        bits.append(f"seed {take['seed']}")
+    parent = project.data["takes"].get(take.get("parent_take") or "")
+    if parent:
+        where = next((i for i, s in enumerate(project.scenes, 1) if s["id"] == parent["scene"]), None)
+        label = f"scene {where} Take {parent.get('number')}" if where else f"Take {parent.get('number')} of a removed scene"
+        prev = project.previous_selected_take(scene["id"]) if any(s["id"] == scene["id"] for s in project.scenes) else None
+        bits.append(f"continued from {label}" + (f" (that scene now uses Take {prev.get('number')}, so this take's start no longer matches)"
+                                                 if prev and prev["id"] != parent["id"] else ""))
+    elif take.get("join") == "cut" and take.get("status") == "done":
+        bits.append("a fresh shot")
+    diffs = []
+    if take.get("refs") is not None and take["refs"] != project.scene_refs(scene):
+        diffs.append("references " + (", ".join("@" + r for r in take["refs"]) or "none"))
+    if "scene_seconds" in take and take["scene_seconds"] != scene.get("seconds"):
+        diffs.append(f"length {take.get('seconds')}s")
+    if "scene_start_image" in take and (take["scene_start_image"] or None) != (scene.get("start_image") or None):
+        diffs.append("start image " + (f"@{take['scene_start_image']}" if take["scene_start_image"] else "none (from the references)"))
+    if "scene_audio_clips" in take and (take["scene_audio_clips"] or []) != (scene.get("audio_clips") or []):
+        diffs.append("other sound clips")
+    if diffs:
+        bits.append("made with " + "; ".join(diffs) + " (differs from the scene now)")
+    if take.get("upscaled"):
+        bits.append(f"upscaled ({take['upscaled']}; the export uses that version)")
+    head = f"Take {take.get('number')}: " + ", ".join(bits)
+    text = take_text(project, take)
+    if text is None:
+        return head + " — its prompt is not recorded"
+    if text == (scene.get("text") or ""):
+        return head + " — made from the scene's current text"
+    if text in shown:
+        return head + f" — made from the same text as Take {shown[text]}"
+    shown[text] = take.get("number")
+    return head + " — made from this text:\n" + text
+
+
 def extract_frames(project: Project, take: dict, count: int = 4, *, end: bool = False) -> list[str]:
     video = project.root / take["dir"] / "take.mp4"
     if not video.is_file():
@@ -1263,16 +1445,9 @@ def run_read_tool(project: Project, tool: str, args: dict, provider: dict) -> tu
             compiled = project.compile_prompt(sc)["prompt"]
         except ProjectError as exc:
             compiled = f"ERROR: {exc}"
-        lines = []
+        lines, shown = [], {}
         for t in project.takes_for(sid):
-            head = f"Take {t.get('number')}: {t['status']}{' (SELECTED: the video and the next scene use this one)' if t['id'] == sc.get('selected_take') else ''}, seed {t.get('seed')}"
-            text = take_text(project, t)
-            if text is None:
-                lines.append(head + " — its prompt is not recorded")
-            elif text == (sc.get("text") or ""):
-                lines.append(head + " — made from the scene's current text")
-            else:
-                lines.append(head + " — made from this text:\n" + text)
+            lines.append(describe_take(project, sc, t, shown))
         return (f"Scene {project.scene_index(sid) + 1} \"{sc.get('title') or ''}\" · {sc.get('seconds') or 'default'}s · join {sc['join']}"
                 f" · refs: {_scene_refs_label(project, sc)}\nText:\n{sc.get('text') or ''}\n\nPrompt sent to H3:\n{compiled}\n\n"
                 "Takes (each with the text it was made from):\n" + ("\n".join(lines) or "none")), []
@@ -1293,8 +1468,12 @@ def run_read_tool(project: Project, tool: str, args: dict, provider: dict) -> tu
             take = next((t for t in takes if t.get("number") == int(args["take"])), None)
         else:
             take = project.data["takes"].get(project.scene(sid).get("selected_take") or "")
-        if not take or take.get("status") != "done":
-            raise ProjectError("that take does not exist or is not finished")
+        if not take:
+            numbers = ", ".join(str(t.get("number")) for t in takes) or "none"
+            raise ProjectError(f"scene {project.scene_index(sid) + 1} has no " + (f"Take {args['take']}" if args.get("take") else "selected take")
+                               + f" (its takes: {numbers})")
+        if take.get("status") != "done":
+            raise ProjectError(f"Take {take.get('number')} of scene {project.scene_index(sid) + 1} has no video: it is {take_status_words(take)}")
         if not provider.get("vision"):
             return "This model cannot see images.", []
         if args.get("part") == "end":
@@ -1304,7 +1483,7 @@ def run_read_tool(project: Project, tool: str, args: dict, provider: dict) -> tu
                     "describe that state first, then the one action that follows."), frames
         frames = extract_frames(project, take)
         return (f"Showing 4 frames, start to end, of scene {project.scene_index(sid) + 1} Take {take.get('number')} "
-                f"({take.get('frames')} frames at 24 fps). The scene text it was made from:\n{take.get('scene_text', '')}"), frames
+                f"({take.get('frames')} frames at 24 fps). The scene text it was made from:\n{take_text(project, take) or '(not recorded)'}"), frames
     raise ProjectError(f"unknown tool {tool}")
 
 
@@ -1369,6 +1548,27 @@ BIG_TASK = re.compile(r"\b(plan|storyboard|whole (video|story|ad)|all (the )?sce
 
 TAKE_REF = re.compile(r"\btake\s*(?:no\.?|number|#)?\s*(\d+)", re.I)
 SCENE_REF = re.compile(r"\bscenes?\s*(?:no\.?|number|#)?\s*(\d+)", re.I)
+_NUM = r"\s*(?:no\.?|number|#)?\s*(\d+)"
+TAKE_OF_SCENE = re.compile(r"\btake" + _NUM + r"\s+(?:of|from|in|on)\s+(?:the\s+)?scene" + _NUM
+                           + r"|\bscene" + _NUM + r"(?:'s)?\s*[,:]?\s*(?:its\s+)?take" + _NUM, re.I)
+
+
+def named_take(project: Project, text: str) -> tuple[int, dict] | None:
+    """(scene number, take) a message names: "take 5 of scene 3", "scene 3, take 5", or a take number when only
+    one scene is named. "write scene 4 from take 5 of scene 3" is Take 5 of scene 3, not of scene 4."""
+    m = TAKE_OF_SCENE.search(text or "")
+    if m:
+        number, n = (int(m.group(1)), int(m.group(2))) if m.group(1) else (int(m.group(4)), int(m.group(3)))
+    else:
+        tk = TAKE_REF.search(text or "")
+        scenes = {int(x.group(1)) for x in SCENE_REF.finditer(text or "")}
+        if not tk or len(scenes) != 1 or re.search(r"\bscenes\b", text, re.I):
+            return None
+        number, n = int(tk.group(1)), scenes.pop()
+    if not 1 <= n <= len(project.scenes):
+        return None
+    take = next((t for t in project.takes_for(project.scenes[n - 1]["id"]) if t.get("number") == number), None)
+    return (n, take) if take else None
 WRITES_SCENE = re.compile(r"\b(fix|rewrite|re-write|write|redo|change|edit|improve|add|insert|new|make|extend|continue|shorten|longer|"
                           r"doesn'?t work|wrong|instead)\b", re.I)
 
@@ -1382,14 +1582,14 @@ def scene_frames_for(project: Project, text: str) -> tuple[list[str], str]:
         if 1 <= n <= len(project.scenes) and n not in numbers:
             numbers.append(n)
     images, notes = [], []
-    named = TAKE_REF.search(text or "")
-    if named and numbers:   # "take 5 of scene 3" / "scene 3 take 5": that take's middle and its last frame
-        scene = project.scenes[numbers[0] - 1]
-        take = next((t for t in project.takes_for(scene["id"]) if t.get("number") == int(named.group(1))), None)
-        if take and take.get("status") == "done":
+    named = named_take(project, text)
+    if named:   # "take 5 of scene 3" / "scene 3 take 5": that take's middle and its last frame
+        n, take = named
+        scene = project.scenes[n - 1]
+        if take.get("status") == "done":
             images = extract_frames(project, take, 4)[1:3] + extract_frames(project, take, 1, end=True)
             sel = "" if take["id"] == scene.get("selected_take") else f" (NOT the selected take: the selected one is Take {(project.data['takes'].get(scene.get('selected_take') or '') or {}).get('number', '—')})"
-            return images, (f"[Attached, in this order: two frames from the middle of scene {numbers[0]} Take {take['number']}{sel}, "
+            return images, (f"[Attached, in this order: two frames from the middle of scene {n} Take {take['number']}{sel}, "
                             f"and its LAST frame — a scene that continues Take {take['number']} starts from exactly this picture.]")
     for n in numbers[:2]:
         scene = project.scenes[n - 1]
@@ -1421,12 +1621,10 @@ def named_take_to_select(project: Project, text: str, tool: str, args: dict) -> 
     """The take a new or edited scene should continue from, when the user's message named a take of the scene
     just before it ("take 5 of scene 3 … write scene 4") and that take is not selected: the next scene always
     continues from the selected take, so the card alone would not do what was asked. Returns the take or None."""
-    named, scene_ref = TAKE_REF.search(text or ""), SCENE_REF.search(text or "")
-    if not named or not scene_ref or tool not in ("add_scenes", "edit_scene"):
+    named = named_take(project, text)
+    if not named or tool not in ("add_scenes", "edit_scene"):
         return None
-    n = int(scene_ref.group(1))
-    if not 1 <= n <= len(project.scenes):
-        return None
+    n, take = named
     before = project.scenes[n - 1]
     if tool == "add_scenes":
         first = (args.get("scenes") or [{}])[0]
@@ -1439,8 +1637,7 @@ def named_take_to_select(project: Project, text: str, tool: str, args: dict) -> 
         join = (args.get("fields") or {}).get("join") or (project.scene(sid).get("join") if i >= 0 else None)
     if prev != before["id"] or join not in ("continue", "bridge"):
         return None
-    take = next((t for t in project.takes_for(before["id"]) if t.get("number") == int(named.group(1))), None)
-    if not take or take.get("status") != "done" or take["id"] == before.get("selected_take"):
+    if take.get("status") != "done" or take["id"] == before.get("selected_take"):
         return None
     return take
 

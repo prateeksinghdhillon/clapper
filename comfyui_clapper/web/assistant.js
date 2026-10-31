@@ -236,7 +236,14 @@ function proposalCard(p) {
 async function decide(p, action) {
   await once(`proposal:${p.id}`, async () => {
     if (action === "apply" && p.tool === "render_scenes" && !confirm(`${p.summary}?\n\nThe GPU switches to video generation (the assistant is ejected).`)) return;
-    const r = await call("/assistant/proposal", { path: state.path, id: chat.id, proposal: p.id, action });
+    const body = { path: state.path, id: chat.id, proposal: p.id, action };
+    let r;
+    try { r = await call("/assistant/proposal", body); } catch (e) {
+      // the user edited what this card changes after it was made: applying it would undo that edit
+      if (action !== "apply" || !/changed after this card was made/.test(e.message)) throw e;
+      if (!confirm(`${e.message.replace(/^not applied: /, "").split(", and applying")[0]}.\n\nApply the card anyway and replace your change?`)) return;
+      r = await call("/assistant/proposal", { ...body, force: true });
+    }
     setProject(r.project); renderChat(r.chat);
     if (action === "apply") toast(p.tool === "render_scenes" ? "Queued" : "Applied");
     if (p.tool === "render_scenes") { pollLive(); pollGpu(); }

@@ -345,7 +345,7 @@ def _render(project: Project, scene_ids):
 
 @routes.post("/clapper/api/assistant/proposal")
 async def proposal_action(request):
-    """{path, id, proposal, action: apply | reject}."""
+    """{path, id, proposal, action: apply | reject, force?}. force applies a card whose fields the user changed after it was made."""
     body = await _body(request)
     loop = asyncio.get_running_loop()
     try:
@@ -366,11 +366,12 @@ async def proposal_action(request):
                         prop["result"] = await loop.run_in_executor(None, lambda: assistant.apply_proposal(project, prop, render=_render))
                     elif prop["tool"] in assistant.GENERATE_TOOLS:   # queues image / speech jobs in ComfyUI
                         prop["result"] = await loop.run_in_executor(None, lambda: assistant.apply_proposal(project, prop, client=_client()))
-                    else:
-                        prop["result"] = assistant.apply_proposal(project, prop)
+                    else:   # force: the user confirmed replacing a change they made after the card was written
+                        prop["result"] = assistant.apply_proposal(project, prop, force=bool(body.get("force")))
                 except (ProjectError, RuntimeError) as exc:
                     prop["error"] = str(exc)
                     raise
+                prop.pop("error", None)
                 prop["status"] = "applied"
                 event = f"The user applied: {prop['summary']}."
             chat["messages"].append({"role": "event", "text": event, "proposal": prop["id"], "t": assistant._now()})

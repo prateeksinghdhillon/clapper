@@ -99,7 +99,7 @@ def test_takes_and_their_own_text(project):
     (d / "meta.json").write_text(json.dumps({"prompt": "Style.\n\nContinuation of Chunk 1. " + STAGED.replace("@aoi", labels["aoi"])}))
     assert assistant.take_text(project, t2) == STAGED
     out, _ = assistant.run_read_tool(project, "get_scene", {"scene": 1}, {"kind": "local"})
-    assert "Take 1: done (SELECTED" in out and "made from this text:\nan older text" in out and "Take 2: done, seed 2 — made from the scene's current text" in out
+    assert "Take 1: finished, SELECTED" in out and "made from this text:\nan older text" in out and "Take 2: finished, seed 2 — made from the scene's current text" in out
     assert "continues from scene 1 Take 1" in assistant.snapshot(project)
     plan = assistant.plan_proposal(project, "select_take", {"scene": 1, "take": 2})
     assert plan["summary"] == "Use Take 2 for scene 1 (the next scene then continues from it)"
@@ -116,3 +116,76 @@ def test_frames_for_a_named_take(project, monkeypatch):
     monkeypatch.setattr(assistant, "extract_frames", lambda p, take, count=4, end=False: [f"{take['number']}-{'end' if end else i}" for i in range(count)])
     images, note = assistant.scene_frames_for(project, "Take 2 of scene 1 is the one I like, write the next scene from it")
     assert images == ["2-1", "2-2", "2-end"] and "NOT the selected take" in note and "LAST frame" in note
+
+
+def _done(project, scene, **fields):
+    t = project.new_take(scene["id"], **fields)
+    project.update_take(t["id"], status="done")
+    return project.data["takes"][t["id"]]
+
+
+def test_a_take_is_paired_with_its_own_scene(project):
+    s1 = project.add_scene(text=STAGED, refs=["aoi"]); project.add_scene(text=STAGED, refs=["aoi"])
+    _done(project, s1, seed=1); t2 = _done(project, s1, seed=2)
+    for msg in ("write scene 2 from take 2 of scene 1", "Scene 1, take 2 is better", "scene 1's take 2", "take 2 in scene 1 please"):
+        assert assistant.named_take(project, msg) == (1, t2), msg
+    assert assistant.named_take(project, "take 2 of scene 2") is None          # scene 2 has no Take 2
+    assert assistant.named_take(project, "take 2, scenes 1 and 2") is None     # which scene is unclear
+
+
+def test_takes_say_how_they_were_made(project):
+    s1 = project.add_scene(text=STAGED, refs=["aoi"]); s2 = project.add_scene(text=STAGED, refs=["aoi"])
+    a = _done(project, s1, seed=1); b = _done(project, s1, seed=2); project.select_take(s1["id"], b["id"])
+    c = _done(project, s2, seed=3, parent_take=a["id"], refs=["aoi", "ren"], scene_text="old", scene_seconds=8, seconds=8)
+    d = _done(project, s2, seed=4, parent_take=b["id"], refs=["aoi"], scene_text="old")
+    f = project.new_take(s2["id"], seed=5); project.update_take(f["id"], status="failed", error="Traceback…\nOutOfMemoryError: CUDA out of memory")
+    project.select_take(s2["id"], d["id"])
+    out, _ = assistant.run_read_tool(project, "get_scene", {"scene": 2}, {"kind": "local"})
+    take1, take2, take3 = out.split("Takes (each with the text it was made from):\n")[1].split("\nTake ")
+    assert "continued from scene 1 Take 1 (that scene now uses Take 2" in take1 and "references @aoi, @ren; length 8s" in take1
+    assert "made from this text:\nold" in take1 and "continued from scene 1 Take 2 —" in take2 and "same text as Take 1" in take2
+    assert take3.startswith("3: FAILED (OutOfMemoryError: CUDA out of memory)")
+    with pytest.raises(ProjectError, match="Take 3 of scene 2 has no video: it is FAILED"):
+        assistant.run_read_tool(project, "view_take", {"scene": 2, "take": 3}, {"kind": "local", "vision": True})
+    snap = assistant.snapshot(project)
+    assert "newest: Take 3 FAILED (OutOfMemoryError" in snap and "NOT selected (the video still uses Take 2)" in snap
+
+
+def test_changes_outside_the_chat_beyond_scene_text(project):
+    s1 = project.add_scene(text=STAGED, refs=["aoi"])
+    a = _done(project, s1, seed=1); project.select_take(s1["id"], a["id"])
+    before = assistant.scene_fingerprints(project)
+    project.data["style"] = "Anime."; project.save()
+    project.update_entity(next(iter(project.entities)), description="taller now")
+    t = project.new_take(s1["id"], seed=2); project.update_take(t["id"], status="failed")
+    project.update_take(a["id"], upscaled="sharpen-720p")
+    changes = assistant.changes_since(before, assistant.scene_fingerprints(project))
+    assert "the style text was edited" in changes and "Aoi changed (name, description, main look or voice)" in changes
+    assert "scene 1: Take 2 FAILED" in changes and "scene 1: Take 1 was upscaled" in changes
+    old_format = {k: {kk: vv for kk, vv in v.items() if kk != "takes"} for k, v in before.items() if k != assistant.PROJECT_KEY}
+    assert assistant.changes_since(old_format, assistant.scene_fingerprints(project)) == []   # chats saved before this: no false reports
+
+
+def test_a_card_does_not_undo_the_users_later_edit(project):
+    project.add_scene(text=STAGED, refs=["aoi"])
+    plan = assistant.plan_proposal(project, "edit_scene", {"scene": 1, "title": "Boarding"})
+    project.update_scene(project.scenes[0]["id"], title="My own title")
+    with pytest.raises(ProjectError, match=r"the scene was changed after this card was made \(title\)"):
+        assistant.apply_proposal(project, {"id": "x", **plan})
+    assistant.apply_proposal(project, {"id": "x", **plan}, force=True)
+    assert project.scenes[0]["title"] == "Boarding"
+    # a card written on top of another waiting card applies after that card, too
+    first = assistant.plan_proposal(project, "edit_scene", {"scene": 1, "title": "A"})
+    second = assistant.plan_proposal(project, "edit_scene", {"scene": 1, "title": "B"}, [{"id": "f", **first}])
+    assistant.apply_proposal(project, {"id": "f", **first}); assistant.apply_proposal(project, {"id": "s", **second})
+    assert project.scenes[0]["title"] == "B"
+
+
+def test_put_back_a_takes_version(project):
+    s1 = project.add_scene(text=STAGED, refs=["aoi"], seconds=5)
+    _done(project, s1, seed=1, scene_text=FIVE_BEATS, scene_refs=["aoi", "ren"], scene_seconds=8, scene_join="continue")
+    plan = assistant.plan_proposal(project, "edit_scene", {"scene": 1, "from_take": 1, "title": "Older"})
+    assert plan["args"]["fields"] == {"text": FIVE_BEATS, "refs": ["aoi", "ren"], "seconds": 8, "title": "Older"}
+    assert "warning" not in plan["args"]   # the take's own (already rendered) text gets no density advice
+    with pytest.raises(ProjectError, match="has no Take 4"):
+        assistant.plan_proposal(project, "edit_scene", {"scene": 1, "from_take": 4})
