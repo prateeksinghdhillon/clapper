@@ -764,7 +764,8 @@ async def entity_action(request):
 @routes.post("/clapper/api/entity/generate")
 async def entity_generate(request):
     """id, action first|look|angle|place|sheet, text, place (for place), count, seed, aspect, prompt (optional override),
-    source (an image to start from instead of the main look)."""
+    source (an image to start from instead of the main look), refs [{asset, use}] (more images to take an outfit,
+    a pose, the lighting … from; use is one of tools.REF_USES or free words)."""
     body = await _body(request)
     try:
         loop = asyncio.get_running_loop()
@@ -773,7 +774,7 @@ async def entity_generate(request):
             jobs = await loop.run_in_executor(None, lambda: _guarded(tools.queue_entity)(
                 project, _client(), body["id"], body["action"], body.get("text", ""), place_id=body.get("place"),
                 count=int(body.get("count") or 2), seed=body.get("seed"), aspect=body.get("aspect"),
-                prompt=body.get("prompt") or None, source=body.get("source") or None))
+                prompt=body.get("prompt") or None, source=body.get("source") or None, refs=body.get("refs") or None))
         return _ok({"jobs": [j["id"] for j in jobs], "project": _view(project)})
     except (KeyError, ProjectError, OSError, ValueError, RuntimeError) as exc:
         return _err(exc)
@@ -786,7 +787,8 @@ async def entity_preview(request):
     try:
         project = _open(body["path"], request)
         inputs, _ = tools.entity_inputs(project, body["id"], body["action"], body.get("text", "") or "…",
-                                        place_id=body.get("place"), aspect=body.get("aspect"), source=body.get("source") or None)
+                                        place_id=body.get("place"), aspect=body.get("aspect"), source=body.get("source") or None,
+                                        refs=body.get("refs") or None)
         return _ok({"prompt": inputs["prompt"], "images": inputs["images"], "aspect": inputs["aspect"]})
     except (KeyError, ProjectError, OSError) as exc:
         return _err(exc)

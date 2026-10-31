@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from pathlib import Path
 
 REGISTRY = Path.home() / ".clapper" / "projects.json"
@@ -23,7 +24,7 @@ def register(path: str | Path) -> None:
     items = [p for p in known() if p != path]
     items.insert(0, path)
     REGISTRY.parent.mkdir(parents=True, exist_ok=True)
-    tmp = REGISTRY.with_suffix(".tmp")
+    tmp = REGISTRY.with_name(f"{REGISTRY.name}.{os.getpid()}.{secrets.token_hex(3)}.tmp")
     tmp.write_text(json.dumps(items, indent=2), encoding="utf-8")
     os.replace(tmp, REGISTRY)
 
@@ -32,14 +33,14 @@ def unregister(path: str | Path) -> None:
     path = str(Path(path).resolve())
     items = [p for p in known() if p != path]
     REGISTRY.parent.mkdir(parents=True, exist_ok=True)
-    tmp = REGISTRY.with_suffix(".tmp")
+    tmp = REGISTRY.with_name(f"{REGISTRY.name}.{os.getpid()}.{secrets.token_hex(3)}.tmp")
     tmp.write_text(json.dumps(items, indent=2), encoding="utf-8")
     os.replace(tmp, REGISTRY)
 
 
 def _write_json(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(3)}.tmp")
     tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
     os.replace(tmp, path)
 

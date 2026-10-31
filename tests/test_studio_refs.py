@@ -48,7 +48,7 @@ def test_cast_brings_images_and_names_after_the_users_own(project):
 def test_character_sheet_from_a_chosen_look(project):
     inputs, extra = tools.entity_inputs(project, project.aoi["id"], "sheet", "", source=project.coat["id"])
     assert inputs["images"] == [project.coat["id"]] and inputs["aspect"] == "16:9" and "front view, three-quarter view, side view, back view" in inputs["prompt"]
-    assert extra == {"entity": project.aoi["id"], "look": "sheet · winter coat", "sheet": True}
+    assert extra == {"entity": project.aoi["id"], "look": "sheet · winter coat", "sheet": True, "sheet_of": project.coat["id"]}
     with pytest.raises(ProjectError, match="for characters and props"):
         tools.entity_inputs(project, project.stop["id"], "sheet", "")
 
@@ -95,3 +95,51 @@ def test_a_hand_written_definition_is_told_about_the_sheet(project):
     assert project.data["library"]["items"][e["ref"]]["definition"] == "@aoi is Aoi (shown from the front, side and back), always in a yellow raincoat."
     project.update_entity(e["id"], ref_use="main")
     assert project.data["library"]["items"][e["ref"]]["definition"] == "@aoi is Aoi, always in a yellow raincoat."
+
+
+def test_references_take_only_what_they_are_for(project, tmp_path):
+    (tmp_path / "jacket.png").write_bytes(PNG)
+    jacket = project.add_asset(tmp_path / "jacket.png", role="character", title="jacket")
+    inputs, extra = tools.entity_inputs(project, project.aoi["id"], "look", "", refs=[{"asset": jacket["id"], "use": "outfit"}])
+    assert inputs["images"] == [project.aoi["main"], jacket["id"]]
+    assert "From image 2 take the outfit and clothes only (not the face, hair or body). Keep image 1's face, hair and body." in inputs["prompt"]
+    assert extra["look"] == "outfit from jacket"
+    # a place variation with a lighting reference; free words work too
+    inputs, _ = tools.entity_inputs(project, project.stop["id"], "look", "at night", refs=[{"asset": jacket["id"]}, {"asset": project.coat["id"], "use": "the puddles"}])
+    assert "From image 2 take the lighting, time of day and weather only." in inputs["prompt"] and "From image 3 take only the puddles." in inputs["prompt"]
+    # put in a place uses two images already: at most two references
+    (tmp_path / "pose.png").write_bytes(PNG)
+    pose = project.add_asset(tmp_path / "pose.png", role="character", title="pose")
+    three = [{"asset": a} for a in (jacket["id"], project.coat["id"], pose["id"])]
+    with pytest.raises(ProjectError, match="already uses 2, so add at most 2"):
+        tools.entity_inputs(project, project.aoi["id"], "place", "", place_id=project.stop["id"], refs=three)
+    # an image that is already in use is not counted twice (the place's own image as a "reference")
+    inputs, _ = tools.entity_inputs(project, project.aoi["id"], "place", "", place_id=project.stop["id"], refs=three[:2] + [{"asset": project.stop["main"]}])
+    assert len(inputs["images"]) == 4
+    with pytest.raises(ProjectError, match="describe what changes, or add a reference"):
+        tools.entity_inputs(project, project.aoi["id"], "angle", "")
+
+
+def test_several_sheets_and_the_one_in_use_follows_the_main_look(project, tmp_path):
+    e = project.aoi
+    sheets = []
+    for n, of in (("s1", e["main"]), ("s2", project.coat["id"])):
+        (tmp_path / f"{n}.png").write_bytes(PNG)
+        a = project.add_asset(tmp_path / f"{n}.png", role="character", title=n)
+        project.add_to_entity(a["id"], e["id"], look="sheet")
+        a["sheet"], a["sheet_of"] = True, of
+        sheets.append(a)
+    project.set_entity_sheet(e["id"], sheets[0]["id"]); project.update_entity(e["id"], ref_use="sheet")
+    assert [a["id"] for a in project.entity_sheets(e["id"])] == [s["id"] for s in sheets]
+    project.set_entity_main(e["id"], project.coat["id"])       # the winter coat becomes the main look …
+    assert project.entities[e["id"]]["sheet"] == sheets[1]["id"]   # … and scenes get the winter coat's sheet
+    assert project.data["library"]["items"][e["ref"]]["asset"] == sheets[1]["id"]
+
+
+def test_the_description_goes_in_only_when_it_matches_the_picture(project):
+    angle, _ = tools.entity_inputs(project, project.aoi["id"], "angle", "from the side")
+    assert "(Aoi: a girl in a yellow raincoat)" in angle["prompt"]                    # the main look: it matches
+    sheet, _ = tools.entity_inputs(project, project.aoi["id"], "sheet", "", source=project.coat["id"])
+    assert "(Aoi, winter coat)" in sheet["prompt"] and "raincoat" not in sheet["prompt"]   # another look: name and label
+    swap, _ = tools.entity_inputs(project, project.aoi["id"], "angle", "sitting", refs=[{"asset": project.coat["id"], "use": "outfit"}])
+    assert "raincoat" not in swap["prompt"]                                            # its clothes come from the reference

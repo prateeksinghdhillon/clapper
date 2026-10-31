@@ -44,13 +44,14 @@ def test_ref_name_does_not_steal_an_existing_name(project):
     assert e["ref"] == "aoi_2" and project.data["library"]["items"]["aoi"]["asset"] == project.loose["id"]
 
 
-def test_new_look_uses_description_and_main_image(project):
+def test_new_look_uses_the_main_image_and_only_the_name(project):
     e = project.create_entity("character", "Aoi", description="indigo bob, amber eyes", from_asset=project.aoi_img["id"])
     c = FakeComfy()
     jobs = tools.queue_entity(project, c, e["id"], "look", "wearing a winter coat and a red scarf", count=2, seed=4)
     g = c.graphs[0]
     prompt = nodes_of(g, "CLIPTextEncode")[0]["inputs"]["text"]
-    assert "The same character as image 1 (Aoi: indigo bob, amber eyes), now wearing a winter coat" in prompt
+    # the description describes the old look; with it, the change lost (tested): the picture carries who it is
+    assert "The same character as image 1 (Aoi), now wearing a winter coat" in prompt and "indigo bob" not in prompt
     assert nodes_of(g, "ClapperLoadImage")[0]["inputs"]["path"].endswith(project.aoi_img["file"])
     a = finish(project, c, jobs[0])
     assert a["entity"] == e["id"] and a["look"] == "wearing a winter coat and a red scarf" and a["role"] == "character"

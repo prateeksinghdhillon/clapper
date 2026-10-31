@@ -610,3 +610,16 @@ label.mini.slider input { width: 150px; padding: 0; }
 .sheet-row .sheet-thumb { width: 150px; padding: 0; border-radius: 8px; overflow: hidden; flex: none; }
 .sheet-row .sheet-thumb .thumb-box { aspect-ratio: 16 / 9; }
 .sheet-row .sheet-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* reference images in the action box; the list of character sheets */
+.refs-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.ref-chip { display: flex; gap: 8px; align-items: center; border: 1px solid var(--line); border-radius: 10px; padding: 4px 6px; background: var(--panel); }
+.ref-chip .ref-thumb { width: 44px; height: 44px; border-radius: 6px; overflow: hidden; flex: none; }
+.ref-chip .ref-thumb .thumb-box, .ref-chip .ref-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ref-chip .ref-body { display: flex; flex-direction: column; gap: 2px; }
+.ref-chip select, .ref-chip input { font-size: 12.5px; padding: 3px 6px; }
+.sheet-row { display: flex; flex-direction: column; gap: 8px; }
+.sheet-list { display: flex; gap: 8px; flex-wrap: wrap; }
+.sheet-list .sheet-thumb { display: flex; flex-direction: column; align-items: stretch; gap: 2px; }
+.sheet-list .sheet-thumb.on { outline: 2px solid var(--accent); }
+.sheet-cap { font-size: 11.5px; padding: 0 4px 3px; text-align: left; }

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Making characters, places and props**:
+  - **＋ Reference image** in every action (new look, angle, put in a place, character sheet, designs): take its outfit, pose, hairstyle, accessories, colours, lighting, background, materials or style, or your own words. Any image works, also another character's look.
+  - **Start from** any of its outfits for new angles and sheets.
+  - **Several character sheets** (one per outfit), the one in use chosen on the page. A sheet in use follows the main look to that look's sheet.
+  - The prompt uses only the name when the picture changes, so a new outfit or a sunny version is no longer pulled back to the description (tested).
+  - The assistant's `make_images` takes `references`.
+- **Saving is safe across programs**: every save writes its own temporary file, and project saves hold a lock other programs respect (the app, the command line, scripts). Two saves at the same moment could make one fail before.
 - **Studio: the assistant describes images, characters go into image making, character sheets**:
   - **Start from an image** fills in the name and description from the picture (✨ Describe it); **✨ Describe from its main look** on a character's page; uploaded images get a title and *What it shows* in the background (when the assistant can see images and the GPU is free), or with ✨ Describe.
   - The image tool's **Who and where** adds characters, places and props as references with their names and descriptions; **Save results under** files the results into a character as a look. New looks, angles and sheets can **Start from** any of its looks.

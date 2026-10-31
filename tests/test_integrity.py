@@ -216,3 +216,24 @@ def test_a_slow_comfyui_answer_does_not_fail_a_queued_take(project):
     project.data["takes"][t["id"]]  # the next refresh: no history, not queued → interrupted (re-queueable), not failed
     director.refresh(project, Client())
     assert project.data["takes"][t["id"]]["status"] == "interrupted"
+
+
+def test_two_programs_saving_at_once_never_break_the_file(project):
+    import threading
+    errors = []
+
+    def writer(n):
+        for i in range(25):
+            try:
+                p = Project.open(project.root)
+                p.data["notes"] = f"{n}-{i}"
+                p.save(snapshot=False)
+            except ProjectError:
+                pass   # the other one saved first: refused, as it should be
+            except Exception as exc:   # noqa: BLE001
+                errors.append(exc)
+    threads = [threading.Thread(target=writer, args=(n,)) for n in range(4)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert not errors and Project.open(project.root).data["notes"]
+    assert not list(project.root.glob("project.json*.tmp"))

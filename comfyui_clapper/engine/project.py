@@ -61,12 +61,40 @@ def _sha256(path: Path) -> str:
 
 
 def _atomic_write_json(path: Path, data: dict) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2, ensure_ascii=False)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    # a temporary name of its own: two programs saving at once never use (and remove) the same file
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(3)}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, ensure_ascii=False)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+class _FileLock:
+    """A lock other programs see too (the app, the command line, scripts): held while a save checks that nobody
+    else saved meanwhile and writes. On systems without fcntl it does nothing (the stamp check still runs)."""
+
+    def __init__(self, path: Path):
+        self.path = path
+
+    def __enter__(self):
+        try:
+            import fcntl
+        except ImportError:
+            self.fh = None
+            return self
+        self.fh = open(self.path, "a")
+        fcntl.flock(self.fh, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        if self.fh:
+            import fcntl
+            fcntl.flock(self.fh, fcntl.LOCK_UN)
+            self.fh.close()
 
 
 def _strip_name(name: str, description: str) -> str:
@@ -200,15 +228,16 @@ class Project:
             shutil.copy2(path, hist / f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 10**9:09d}.json")
             for old in sorted(hist.glob("*.json"))[:-HISTORY_KEEP]:
                 old.unlink()
-        current = self._file_stamp()
-        if self._stamp is not None and current is not None and current != self._stamp:
-            # another program (the app, the CLI, a second ComfyUI) saved since this copy was read: writing now
-            # would silently undo its changes
-            raise ProjectError("the project was changed elsewhere after it was opened here (another window, the assistant "
-                               "or the command line); nothing was saved — open it again and repeat the change")
-        self.data["updated"] = _now()
-        _atomic_write_json(path, self.data)
-        self._stamp = self._file_stamp()
+        with _FileLock(self.root / ".project.lock"):
+            current = self._file_stamp()
+            if self._stamp is not None and current is not None and current != self._stamp:
+                # another program (the app, the CLI, a second ComfyUI) saved since this copy was read: writing now
+                # would silently undo its changes
+                raise ProjectError("the project was changed elsewhere after it was opened here (another window, the assistant "
+                                   "or the command line); nothing was saved — open it again and repeat the change")
+            self.data["updated"] = _now()
+            _atomic_write_json(path, self.data)
+            self._stamp = self._file_stamp()
 
     # ------------------------------------------------------------ library
 
@@ -497,10 +526,18 @@ class Project:
         if asset.get("entity") != entity_id or asset["kind"] != "image":
             raise ProjectError("the main image must be one of its own images")
         entity["main"] = asset_id
+        # scenes that use the sheet follow the look: the sheet made of this look, when there is one
+        match = [a for a in self.entity_looks(entity_id) if a.get("sheet") and a.get("sheet_of") == asset_id]
+        if match:
+            entity["sheet"] = match[-1]["id"]
         self._sync_entity_ref(entity)
         if save:
             self.save()
         return entity
+
+    def entity_sheets(self, entity_id: str) -> list[dict]:
+        """All character sheets of an entity, oldest first (one per outfit or look, or several of one)."""
+        return [a for a in self.entity_looks(entity_id) if a.get("sheet")]
 
     def set_entity_sheet(self, entity_id: str, asset_id: str | None, *, save: bool = True) -> dict:
         """The character sheet (every side in one picture) of this entity; scenes use it when ref_use is "sheet"."""

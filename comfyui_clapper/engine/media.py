@@ -51,7 +51,7 @@ def poster(project: Project, rel: str, seconds: float = 0.5, width: int = 360) -
     if out.is_file():
         return out
     out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_suffix(".tmp.jpg")
+    tmp = out.with_name(f"{out.stem}.{os.getpid()}.{os.urandom(3).hex()}.tmp.jpg")
     for at in (seconds, 0.0):  # very short clips: fall back to the first frame
         proc = subprocess.run([FFMPEG, "-v", "error", "-y", "-ss", f"{at:.2f}", "-i", str(src), "-frames:v", "1",
                                "-vf", f"scale={width}:-2", "-q:v", "4", str(tmp)], capture_output=True, timeout=60)

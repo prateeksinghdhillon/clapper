@@ -202,20 +202,55 @@ const ENTITY_HINT = {
 
 function openEntity(eid) { studio.page = "entity"; studio.entity = eid; studio.sel = null; renderStudio(); window.scrollTo({ top: 0 }); }
 
+// Reference images for an action: take only the outfit / pose / lighting … from each (another character's look,
+// any library image). They come after image 1 (the character itself), so the prompt can name them.
+const REF_USE_LABEL = { outfit: "its outfit", pose: "its pose", hair: "its hairstyle", accessory: "its accessories", colours: "its colours",
+  lighting: "its lighting & weather", background: "its background", material: "its materials", style: "its art style" };
+const REF_DEFAULT_USE = { character: "outfit", place: "lighting", prop: "material", style: "style" };
+function refsRow(e, changed) {
+  const refs = entityAct.refs;
+  const max = entityAct.action === "place" ? 2 : 3;   // the image model takes 4 in all
+  const box = h("div", { class: "refs-row" });
+  const draw = () => box.replaceChildren(
+    h("span", { class: "hint grow-0" }, "References"),
+    ...refs.map((r, i) => {
+      const a = assets()[r.asset]; if (!a) return null;
+      const known = Object.keys(REF_USE_LABEL);
+      const use = h("select", {}, ...known.map((k) => h("option", { value: k, selected: r.use === k }, "take " + REF_USE_LABEL[k])),
+        h("option", { value: "_other", selected: !known.includes(r.use) }, "take… (type)"));
+      const other = h("input", { placeholder: "e.g. the red scarf", value: known.includes(r.use) ? "" : r.use, hidden: known.includes(r.use) });
+      use.onchange = () => { if (use.value === "_other") { other.hidden = false; other.focus(); r.use = other.value || "the details"; } else { other.hidden = true; r.use = use.value; } changed(); };
+      other.oninput = () => { r.use = other.value || "the details"; changed(); };
+      const owner = entities()[a.entity]?.name;
+      return h("div", { class: "ref-chip" }, h("span", { class: "ref-thumb", title: a.title }, tileThumb(a)),
+        h("div", { class: "ref-body" }, h("span", { class: "hint" }, `image ${i + 2}` + (owner ? ` · ${owner}` : "")), use, other),
+        h("button", { class: "icon", title: "Remove", onclick: () => { refs.splice(i, 1); changed(); draw(); } }, "✕"));
+    }),
+    refs.length < max ? h("button", { class: "ghost", onclick: () => pickAssets({ kind: "image", title: "Choose reference images — another character's outfit, a pose, a lighting mood …", exclude: refs.map((r) => r.asset) },
+      (ids) => { for (const id of ids.slice(0, max - refs.length)) refs.push({ asset: id, use: REF_DEFAULT_USE[e.kind] || "outfit" }); changed(); draw(); }) }, "＋ Reference image") : null,
+    refs.length ? null : h("span", { class: "hint" }, e.kind === "character" ? "e.g. another character's jacket, or a pose to copy — for one of its own outfits, choose it in Start from (more reliable)" : e.kind === "place" ? "e.g. a photo with the light you want" : "optional"),
+    refs.some((r) => r.use === "outfit" && assets()[r.asset]?.entity === e.id) ? h("span", { class: "hint warn" }, `This outfit is one of ${e.name}'s own looks: choosing it in “Start from” keeps it more reliably than a reference.`) : null);
+  draw();
+  return box;
+}
+
 // The character sheet: every side in one picture; scenes can send it to the video model instead of the main look.
 function sheetRow(e) {
   if (e.kind !== "character" && e.kind !== "prop") return null;
   const sheet = e.sheet && assets()[e.sheet];
   const use = h("select", {}, [["main", "its main look"], ["sheet", "its character sheet (every side)"]].map(([v, l]) => h("option", { value: v, selected: (e.ref_use || "main") === v, disabled: v === "sheet" && !sheet }, l)));
   use.onchange = () => guard(async () => { setProject(await call("/entity", { path: state.path, action: "update", id: e.id, ref_use: use.value })); toast(`Scenes now use ${use.value === "sheet" ? "the character sheet" : "the main look"} as @${e.ref}`); });
-  return h("div", { class: "row sheet-row" },
-    sheet ? h("button", { class: "sheet-thumb", title: "The character sheet", onclick: () => select("asset", sheet.id) }, tileThumb(sheet)) : null,
-    h("label", {}, `@${e.ref} in scenes is`, use),
-    h("button", { ...busyAttr("sheet"), title: "One picture with the front, three-quarter, side and back views, in the main look (or the look chosen below as “Start from”)",
-      onclick: () => once("sheet", async () => {
-        const d = await call("/entity/generate", { path: state.path, id: e.id, action: "sheet", count: 1, source: entityAct.source || null });
-        setProject(d.project); toast("Making the character sheet — it appears under Looks (▦)");
-      }) }, sheet ? "▦ New character sheet" : "▦ Make a character sheet"));
+  const sheets = Object.values(assets()).filter((a) => a.entity === e.id && a.sheet).sort((x, y) => (x.created || "").localeCompare(y.created || ""));
+  return h("div", { class: "sheet-row" },
+    h("div", { class: "row" },
+      h("label", {}, `@${e.ref} in scenes is`, use),
+      h("button", { title: "Front, three-quarter, side and back in one picture — of the main look or any look, with references if you like",
+        onclick: () => { entityAct.action = "sheet"; entityAct.prompt = null; renderStudio(); document.querySelector("#studioMain .actions-card")?.scrollIntoView({ behavior: "smooth", block: "center" }); } },
+        sheets.length ? "▦ Another character sheet…" : "▦ Make a character sheet…")),
+    sheets.length ? h("div", { class: "sheet-list" }, ...sheets.map((x) => h("button", { class: "sheet-thumb" + (x.id === e.sheet ? " on" : ""),
+      title: (x.id === e.sheet ? "The sheet in use. " : "Click to use this sheet. ") + (x.look || x.title),
+      onclick: () => x.id === e.sheet ? select("asset", x.id) : guard(async () => { setProject(await call("/entity", { path: state.path, action: "sheet", id: e.id, asset: x.id })); toast(`${x.look || "This sheet"} is now ${e.name}'s character sheet`); }) },
+      tileThumb(x), h("span", { class: "sheet-cap" }, (x.id === e.sheet ? "✓ " : "") + (x.look || "sheet").replace(/^sheet · /, ""))))) : null);
 }
 
 function renderEntityPage(e) {
@@ -281,15 +316,21 @@ const entityAct = { action: "look", text: "", place: "", count: 2, prompt: null,
 function entityActions(e) {
   const kind = e.kind;
   // what was typed (and a hand-edited prompt) belongs to this character only
-  if (entityAct.for !== e.id) Object.assign(entityAct, { text: "", prompt: null, edited: false, for: e.id, source: null });
+  if (entityAct.for !== e.id) Object.assign(entityAct, { text: "", prompt: null, edited: false, for: e.id, source: null, refs: [] });
+  entityAct.refs = entityAct.refs || [];
   // start from another of its looks (an outfit) instead of the main look: for new looks, angles and the sheet
-  const ownImages = looksOf(e.id).filter((a) => a.kind === "image" && !a.sheet);   // a sheet is not a look to start from
+  // outfits and looks only: not sheets, poses (angles) or start frames, which are not a look to start from
+  const madeBy = (a) => (state.project.jobs || {})[a.origin?.job]?.entity_action;
+  const ownImages = looksOf(e.id).filter((a) => a.kind === "image" && !a.sheet && !["angle", "place", "sheet"].includes(madeBy(a)));
+  const seen = {};
   const sourceSel = ownImages.length > 1 ? h("select", {}, h("option", { value: "" }, "its main look"),
-    ...ownImages.filter((a) => a.id !== e.main).map((a) => h("option", { value: a.id, selected: a.id === entityAct.source }, a.look || a.title))) : null;
+    ...ownImages.filter((a) => a.id !== e.main).map((a) => { const label = a.look || a.title; seen[label] = (seen[label] || 0) + 1;
+      return h("option", { value: a.id, selected: a.id === entityAct.source }, seen[label] > 1 ? `${label} (${seen[label]})` : label); })) : null;
   if (sourceSel) sourceSel.onchange = () => { entityAct.source = sourceSel.value || null; entityAct.prompt = entityAct.edited ? entityAct.prompt : null; };
-  const acts = [["look", kind === "character" ? "New outfit / look" : kind === "place" ? "Variation (time, weather)" : "Variation"], ["angle", "New angle / pose"], ...(kind === "character" ? [["place", "Put in a place"]] : []), ["first", e.main ? "More designs" : "Design it"]];
+  const acts = [["look", kind === "character" ? "New outfit / look" : kind === "place" ? "Variation (time, weather)" : "Variation"], ["angle", "New angle / pose"], ...(kind === "character" ? [["place", "Put in a place"]] : []),
+    ...(kind === "character" || kind === "prop" ? [["sheet", "▦ Character sheet"]] : []), ["first", e.main ? "More designs" : "Design it"]];
   if (!e.main && entityAct.action !== "first") entityAct.action = "first";
-  const ph = { look: kind === "character" ? "wearing a winter coat and a red scarf" : "at night in the rain", angle: kind === "character" ? "from the side, walking" : "from above", place: "sitting on the bench, looking down the road", first: "anything to add to the description (optional)" };
+  const ph = { look: kind === "character" ? "wearing a winter coat and a red scarf (or only references below)" : "at night in the rain", angle: kind === "character" ? "from the side, walking" : "from above", place: "sitting on the bench, looking down the road", first: "anything to add to the description (optional)", sheet: "optional, e.g. without the umbrella, hands empty" };
   const text = h("input", { value: entityAct.text, placeholder: ph[entityAct.action] });
   text.oninput = () => { entityAct.text = text.value; if (!entityAct.edited) entityAct.prompt = null; };   // a prompt edited by hand is kept
   const places = Object.values(entities()).filter((x) => x.kind === "place" && x.main);
@@ -302,20 +343,22 @@ function entityActions(e) {
   const preview = h("details", { class: "adv" }, h("summary", {}, "See / edit the prompt"), promptBox, h("p", { class: "hint" }, "Built from the description and what you typed; the main look is attached as image 1. Edit it to take full control."));
   preview.addEventListener("toggle", () => {
     if (!preview.open || entityAct.prompt) { promptBox.value = entityAct.prompt || promptBox.value; return; }
-    guard(async () => { const r = await call("/entity/preview", { path: state.path, id: e.id, action: entityAct.action, text: entityAct.text, place: entityAct.place, source: entityAct.source }); promptBox.value = r.prompt; });
+    guard(async () => { const r = await call("/entity/preview", { path: state.path, id: e.id, action: entityAct.action, text: entityAct.text, place: entityAct.place, source: entityAct.source, refs: entityAct.refs }); promptBox.value = r.prompt; });
   });
   promptBox.oninput = () => { entityAct.prompt = promptBox.value; entityAct.edited = true; };
   const go = h("button", { class: "primary", ...busyAttr("entity-gen"), onclick: () => once("entity-gen", async () => {
     const d = await call("/entity/generate", { path: state.path, id: e.id, action: entityAct.action, text: entityAct.text, place: entityAct.place, count: entityAct.count, prompt: entityAct.prompt,
-      source: entityAct.action === "first" || entityAct.action === "place" ? null : entityAct.source });
+      source: entityAct.action === "first" || entityAct.action === "place" ? null : entityAct.source, refs: entityAct.refs });
     entityAct.text = ""; entityAct.prompt = null; entityAct.edited = false; setProject(d.project);
-    toast(entityAct.action === "place" ? "Making start frames — they appear in Start images & frames" : `Making ${d.jobs.length} — they appear under Looks`);
+    toast(entityAct.action === "place" ? "Making start frames — they appear in Start images & frames"
+      : entityAct.action === "sheet" ? "Making the character sheet — it appears under Looks (▦)" : `Making ${d.jobs.length} — they appear under Looks`);
   }) }, "Generate");
   return h("section", { class: "card actions-card" },
     h("div", { class: "seg act-tabs" }, acts.map(([v, l]) => h("button", { class: entityAct.action === v ? "on" : "", disabled: !e.main && v !== "first", onclick: () => { entityAct.action = v; entityAct.prompt = null; renderStudio(); } }, l))),
     h("div", { class: "act-row" }, entityAct.action === "place" ? h("label", { class: "grow-0" }, "Place", placeSel) : null,
-      sourceSel && (entityAct.action === "look" || entityAct.action === "angle") ? h("label", { class: "grow-0", title: "Also used by ▦ Make a character sheet" }, "Start from", sourceSel) : null,
-      h("label", { class: "grow" }, entityAct.action === "first" ? "Extra details" : entityAct.action === "place" ? "What happens there" : "What changes", text), h("label", { class: "grow-0" }, "Results", count), go),
+      sourceSel && ["look", "angle", "sheet"].includes(entityAct.action) ? h("label", { class: "grow-0" }, "Start from", sourceSel) : null,
+      h("label", { class: "grow" }, entityAct.action === "first" || entityAct.action === "sheet" ? "Extra details" : entityAct.action === "place" ? "What happens there" : "What changes", text), h("label", { class: "grow-0" }, "Results", count), go),
+    refsRow(e, () => { entityAct.prompt = entityAct.edited ? entityAct.prompt : null; }),
     preview,
     h("p", { class: "hint" }, entityAct.action === "place" ? "Makes start frames for scenes (Files › Start images & frames), with this character and the place's main image as references." : `About 4–10 s per image. Results are filed under ${e.name}'s looks.`));
 }

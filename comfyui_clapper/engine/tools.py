@@ -370,10 +370,13 @@ _FIRST = {
     "prop": "A single object on a plain light grey background, centred, no text: {who}. {extra}",
     "style": "A style sheet showing the art style: {who}. {extra} No text.",
 }
+# {who} is the name and the usual description; a change must win over it (the description may say "raincoat" or
+# "in the rain"), so the prompt says the change replaces the usual look.
 _LOOK = {
-    "character": "The same character as image 1 ({who}), now {change}. Full body, front view, plain light grey background, the same face, hair and art style, no text.",
-    "place": "The same place as image 1 ({who}), now {change}. The same layout and art style, no text.",
-    "prop": "The same object as image 1 ({who}), now {change}. Plain light grey background, no text.",
+    "character": ("The same character as image 1 ({who}), now {change}. Keep the face, hair, body and art style. Full body, "
+                  "front view, plain light grey background, no text."),
+    "place": "The same place as image 1 ({who}), {change}. Keep the same layout, buildings and art style. No text.",
+    "prop": "The same object as image 1 ({who}), {change}. Plain light grey background, no text.",
     "style": "The same art style as image 1 ({who}), {change}. No text.",
 }
 _ANGLE = {
@@ -393,10 +396,64 @@ def _label(text: str, limit: int = 48) -> str:
     return cut.rstrip(",.;:") + "…"
 
 
+# What a reference image is for, as told to the image model ("From image 2 take …").
+REF_USES = {
+    "outfit": "the outfit and clothes only (not the face, hair or body)",
+    "pose": "the pose and body position only",
+    "hair": "the hairstyle only",
+    "accessory": "the accessories only (bag, umbrella, jewellery …)",
+    "colours": "the colour palette only",
+    "lighting": "the lighting, time of day and weather only",
+    "background": "the background and setting only",
+    "material": "the materials and textures only",
+    "style": "the art style only",
+}
+REF_DEFAULT = {"character": "outfit", "place": "lighting", "prop": "material", "style": "style"}
+MAX_IMAGES = 4   # what the image model takes
+
+
+def _with_references(project: Project, kind: str, inputs: dict, refs: list[dict] | None) -> tuple[dict, list[str]]:
+    """Add reference images after the ones an action already uses (image 1 stays the character / place itself), each
+    with what to take from it. Returns the inputs and short labels ("outfit from Ren") for the look's name."""
+    if not refs:
+        return inputs, []
+    images = list(inputs.get("images") or [])
+    lines, labels = [], []
+    for ref in refs:
+        aid = ref.get("asset") if isinstance(ref, dict) else ref
+        a = project.asset(aid)
+        if a["kind"] != "image":
+            raise ProjectError(f"{a['title']} is not an image")
+        if aid not in images:
+            images.append(aid)
+        n = images.index(aid) + 1
+        use = str((ref.get("use") if isinstance(ref, dict) else "") or REF_DEFAULT.get(kind, "outfit")).strip()
+        phrase = REF_USES.get(use, f"only {use}")
+        lines.append(f"From image {n} take {phrase}.")
+        if use == "outfit" and kind == "character":
+            lines.append("Keep image 1's face, hair and body.")
+        owner = project.entities.get(a.get("entity") or "", {}).get("name") or a.get("title") or "a reference"
+        labels.append(f"{use if use in REF_USES else 'reference'} from {owner}")
+    if len(images) > MAX_IMAGES:
+        used = len(images) - len(refs)
+        raise ProjectError(f"at most {MAX_IMAGES} images in all: this action already uses {used}, so add at most {MAX_IMAGES - used} reference(s)")
+    return {**inputs, "images": images, "prompt": inputs["prompt"].rstrip() + " " + " ".join(lines)}, labels
+
+
 def entity_inputs(project: Project, entity_id: str, action: str, text: str, *, place_id: str | None = None,
-                  aspect: str | None = None, source: str | None = None) -> tuple[dict, dict]:
+                  aspect: str | None = None, source: str | None = None, refs: list[dict] | None = None) -> tuple[dict, dict]:
     """Image-tool inputs for an entity action, and the job fields that file the results into the entity.
-    source: the image to start from (default: its main look) — e.g. an outfit look for a sheet of that outfit."""
+    source: the image to start from (default: its main look) — e.g. an outfit look for a sheet of that outfit.
+    refs: [{asset, use}] more images to take something from (an outfit, a pose, the lighting …; see REF_USES)."""
+    inputs, extra = _entity_inputs(project, entity_id, action, text, place_id=place_id, aspect=aspect, source=source, refs=refs)
+    inputs, labels = _with_references(project, project.entity(entity_id)["kind"], inputs, refs)
+    if labels and not (text or "").strip() and action in ("look", "angle", "sheet"):
+        extra["look"] = _label(("sheet · " if action == "sheet" else "") + ", ".join(labels))
+    return inputs, extra
+
+
+def _entity_inputs(project: Project, entity_id: str, action: str, text: str, *, place_id: str | None = None,
+                   aspect: str | None = None, source: str | None = None, refs: list[dict] | None = None) -> tuple[dict, dict]:
     if action not in ENTITY_ACTIONS:
         raise ProjectError(f"action must be one of {ENTITY_ACTIONS}")
     e = project.entity(entity_id)
@@ -408,7 +465,14 @@ def entity_inputs(project: Project, entity_id: str, action: str, text: str, *, p
         source_look = src.get("look") if src.get("entity") == entity_id else (src.get("title") or "")
     else:
         source_look = (project.assets.get(e.get("main") or "") or {}).get("look") or ""
+    # The description says what the main look shows ("a yellow raincoat", "at dusk in the rain"). It helps when the
+    # picture is the main look and nothing changes it; otherwise it fights the change (tested: with it, a new outfit
+    # kept the raincoat on top and a sunny version kept the rain), so then only the name and the look's label go in.
+    outfit_ref = any(str((r or {}).get("use") or REF_DEFAULT.get(e["kind"], "")) == "outfit" for r in refs or []) and e["kind"] == "character"
+    own_picture = not source or source == project.entity(entity_id).get("main")
     who = e["name"] + (f": {e['description']}" if e.get("description") else "")
+    if action == "look" or outfit_ref or not own_picture:
+        who = e["name"] + (f", {source_look}" if source_look and not own_picture and source_look not in ("default", "design", "look") else "")
     text = (text or "").strip()
     from .director import video_aspect
 
@@ -419,16 +483,26 @@ def entity_inputs(project: Project, entity_id: str, action: str, text: str, *, p
     if not e.get("main"):
         raise ProjectError(f"{e['name']} has no main image yet — make or choose one first")
     if not text and action not in ("place", "sheet"):
-        raise ProjectError("describe what changes")
+        if not refs:
+            raise ProjectError("describe what changes, or add a reference image to take it from")
+        uses = [str((r or {}).get("use") or REF_DEFAULT.get(project.entity(entity_id)["kind"], "")) for r in refs]
+        if "outfit" in uses and project.entity(entity_id)["kind"] == "character":   # the reference brings the clothes
+            n = uses.index("outfit") + 2   # references follow image 1 (the character)
+            text = (f"wearing exactly the clothes, shoes and accessories from image {n} instead of their own (take off everything "
+                    "they wore in image 1)")
+        else:
+            text = "changed as the reference images below show"
     if action == "sheet":
         if e["kind"] not in _SHEET:
             raise ProjectError("a turnaround sheet is for characters and props")
         prompt = _SHEET[e["kind"]].format(who=who) + (f" {text}" if text else "")
         label = "sheet" + (f" · {source_look}" if source_look and source_look not in ("default", "design", "look") else "")
         return ({"prompt": prompt, "images": [e["main"]], "aspect": aspect or "16:9"},
-                {"entity": entity_id, "look": _label(label), "sheet": True})
+                {"entity": entity_id, "look": _label(label), "sheet": True, "sheet_of": e["main"]})
     if action in ("look", "angle"):
         template = (_LOOK if action == "look" else _ANGLE)[e["kind"]]
+        if outfit_ref and action == "angle":   # the clothes come from the reference: image 1 gives only who they are
+            template = template.replace("The same outfit, face, hair and art style", "The same face, hair, body and art style as image 1, in the outfit described below")
         return ({"prompt": template.format(who=who, change=text), "images": [e["main"]], "aspect": aspect or kind_aspect},
                 {"entity": entity_id, "look": _label(text)})
     place = project.entity(place_id or "")
@@ -443,10 +517,10 @@ def entity_inputs(project: Project, entity_id: str, action: str, text: str, *, p
 
 def queue_entity(project: Project, client: ComfyClient, entity_id: str, action: str, text: str = "", *,
                  place_id: str | None = None, count: int = 2, seed: int | None = None, aspect: str | None = None,
-                 prompt: str | None = None, source: str | None = None) -> list[dict]:
+                 prompt: str | None = None, source: str | None = None, refs: list[dict] | None = None) -> list[dict]:
     """Generate from a character / place: its first design, a new look or angle, or it placed in a place.
     `prompt` replaces the built prompt (the references stay)."""
-    inputs, extra = entity_inputs(project, entity_id, action, text, place_id=place_id, aspect=aspect, source=source)
+    inputs, extra = entity_inputs(project, entity_id, action, text, place_id=place_id, aspect=aspect, source=source, refs=refs)
     if prompt:
         inputs["prompt"] = prompt
     role = extra.pop("role", None) or project.entity(entity_id)["kind"]
@@ -528,6 +602,8 @@ def collect(project: Project, client: ComfyClient) -> list[str]:
                     project.add_to_entity(asset["id"], job["entity"], look=job.get("look") or "", save=False)
                     if job.get("sheet"):
                         asset["sheet"] = True
+                        if job.get("sheet_of"):
+                            asset["sheet_of"] = job["sheet_of"]   # the look this sheet shows
                         if not project.entities[job["entity"]].get("sheet"):   # the first sheet becomes its sheet
                             project.set_entity_sheet(job["entity"], asset["id"], save=False)
                 if job.get("uses"):

@@ -200,6 +200,14 @@ The action box makes more of it, using the description and the main look (or the
 | **Put in a place** (characters) | a place, and "sitting on the bench, looking down the road" | start frames for scenes, with both as references (Files › Start images & frames) |
 | **Design it** / **More designs** | optional extra details | first designs from the description alone |
 
+**Start from** (new look, new angle, character sheet) picks which of its looks to start from instead of the main look — the reliable way to pose a character in one of its own outfits (tested: "sitting on a bench" from the winter look kept the winter outfit; the same outfit given as a reference only partly did).
+
+**＋ Reference image** adds up to three more images to take one thing from each — **its outfit, pose, hairstyle, accessories, colours, lighting & weather, background, materials, art style**, or a few words of your own ("the red scarf"). Any library image works, also another character's look: *Ren, New outfit, reference = Aoi's main look, take its outfit* gave Ren in Aoi's yellow raincoat. Image 1 stays the character itself; the references are images 2–4 and the prompt says what to take from each. With references, the text may stay empty.
+
+When the picture changes (a new look, another look as the start, clothes from a reference), the prompt uses only the name — the description describes the main look, and mixing it in kept the old raincoat on top of a new outfit and the rain in a "sunny morning" (tested). Write in the description what never changes, and put outfits, weather and time of day in looks.
+
+**▦ Character sheet** (a tab of the action box, for characters and props) works with **Start from** and references too, so each outfit can have its own sheet. All sheets are listed on the page with the one in use marked ✓; click another to use it. With *@name in scenes is: its character sheet*, choosing another main look also switches to the sheet made of that look, when there is one.
+
 **See / edit the prompt** shows the exact prompt that will be used; edit it to take full control. Each image takes about 4–10 s on a 16 GB card; running jobs show as tiles you can cancel.
 
 ### New

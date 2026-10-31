@@ -17,6 +17,7 @@ import base64
 import copy
 import difflib
 import io
+import os
 import json
 import re
 import secrets
@@ -145,7 +146,7 @@ def save_chat(project: Project, chat: dict) -> None:
     folder = chat_dir(project)
     folder.mkdir(exist_ok=True)
     chat["updated"] = _now()
-    tmp = folder / f"{chat['id']}.json.tmp"
+    tmp = folder / f"{chat['id']}.json.{os.getpid()}.{secrets.token_hex(3)}.tmp"   # never shared by two writers
     tmp.write_text(json.dumps(chat, indent=1, ensure_ascii=False), encoding="utf-8")
     tmp.replace(folder / f"{chat['id']}.json")
 
@@ -574,6 +575,11 @@ TOOLS = [
          "action": {"type": "string", "enum": ["look", "angle", "place", "more", "sheet"]},
          "change": {"type": "string", "description": "look: 'wearing a winter coat'; angle: 'from the side, walking'; place: what happens there"},
          "place": {"type": "string", "description": "action place: the place's name or @name"},
+         "references": {"type": "array", "description": "optional: up to 3 more images to take something from, e.g. another character's outfit",
+                        "items": {"type": "object", "properties": {
+                            "image": {"type": "string", "description": "a library id (a_…), an @name, or a character/place name (its main look)"},
+                            "use": {"type": "string", "description": "outfit, pose, hair, accessory, colours, lighting, background, material, style — or a few words"}},
+                            "required": ["image"]}},
          "count": {"type": "integer", "description": "1-4 (default 2)"}}, ["character", "action"]),
     _fn("speak_line", "Propose generating a spoken line in a voice (Qwen3-TTS). The result is an audio item you can then add to a scene as a sound clip.",
         {"text": {"type": "string", "description": "exactly what is said"},
@@ -1243,8 +1249,8 @@ def _plan_studio(project: Project, tool: str, args: dict) -> tuple[dict, str]:
         if action == "sheet" and e["kind"] not in ("character", "prop"):
             raise ProjectError("a character sheet is for characters and props")
         change = str(args.get("change") or "").strip()
-        if action in ("look", "angle") and not change:
-            raise ProjectError("describe the change (e.g. 'wearing a winter coat')")
+        if action in ("look", "angle") and not change and not args.get("references"):
+            raise ProjectError("describe the change (e.g. 'wearing a winter coat'), or give references to take it from")
         if action != "first" and not e.get("main"):
             raise ProjectError(f"{e['name']} has no main look yet; propose make_images action=more first")
         place = None
@@ -1258,7 +1264,19 @@ def _plan_studio(project: Project, tool: str, args: dict) -> tuple[dict, str]:
         count = max(1, min(4, int(args.get("count") or (1 if action == "sheet" else 2))))
         label = {"look": f"new look of {e['name']}: {change}", "angle": f"{e['name']} {change}", "sheet": f"a character sheet of {e['name']}",
                  "place": f"{e['name']} in {project.entities[place]['name'] if place else ''}: {change}", "first": f"more designs of {e['name']}"}[action]
-        return ({"entity": e["id"], "action": action, "text": change, "place": place, "count": count}, f"Make {count} image(s) — {label}")
+        refs = []
+        for r in (args.get("references") or [])[:3]:
+            ref = str((r or {}).get("image") or "").strip()
+            try:
+                aid = find_entity(project, ref)["main"]
+            except ProjectError:
+                aid = _asset_ref(project, ref, "image")["id"]
+            if not aid:
+                raise ProjectError(f"{ref} has no image to use as a reference")
+            refs.append({"asset": aid, "use": str((r or {}).get("use") or "").strip()})
+        if refs:
+            label += " (with " + ", ".join((r["use"] or "reference") + " from " + (project.assets[r["asset"]].get("title") or r["asset"]) for r in refs) + ")"
+        return ({"entity": e["id"], "action": action, "text": change, "place": place, "count": count, "refs": refs}, f"Make {count} image(s) — {label}")
     # speak_line
     text = str(args.get("text") or "").strip()
     if not text:
@@ -1371,7 +1389,8 @@ def _apply(project: Project, proposal: dict, *, render=None, client=None) -> str
     elif tool == "make_images":
         from . import tools as studio_tools
 
-        jobs = studio_tools.queue_entity(project, client, a["entity"], a["action"], a.get("text", ""), place_id=a.get("place"), count=a["count"])
+        jobs = studio_tools.queue_entity(project, client, a["entity"], a["action"], a.get("text", ""), place_id=a.get("place"), count=a["count"],
+                                         refs=a.get("refs") or None)
         return f"{len(jobs)} image(s) queued"
     elif tool == "speak_line":
         from . import tools as studio_tools
