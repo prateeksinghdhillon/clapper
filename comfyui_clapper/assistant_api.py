@@ -7,6 +7,7 @@ when the same chat loads the model again, so the conversation is not re-read aft
 from __future__ import annotations
 
 import asyncio
+import re
 import logging
 import threading
 import time
@@ -433,6 +434,48 @@ async def proposal_action(request):
 
 
 # ------------------------------------------------------------------ reference cards
+
+@routes.post("/clapper/api/assistant/describe_image")
+async def describe_image(request):
+    """{path, asset, kind?, auto?, save?}: the assistant looks at a library image and writes its name and description.
+    kind (character | place | prop | style) = for a new entity of that kind; none = what the uploaded image is.
+    auto: skip quietly (skipped: reason) when it cannot be done now — the model cannot see images, or the local
+    model would have to load while ComfyUI is rendering. save: store the description (and a better title) on it."""
+    body = await _body(request)
+    loop = asyncio.get_running_loop()
+    try:
+        project = _open(body["path"], request)
+        provider = _provider()
+        auto = bool(body.get("auto"))
+        if not provider.get("vision"):
+            if auto:
+                return _ok({"skipped": "the assistant model cannot see images"})
+            raise llm.LLMError("the active assistant model cannot see images — choose one that can in Assistant settings")
+        if auto and provider.get("kind") == "local":
+            c = G.comfy()
+            if (c["running"] or c["pending"]) and not G.runner().loaded():
+                return _ok({"skipped": "ComfyUI is rendering; describe it later with ✨"})
+
+        def work():
+            with _turn_lock:
+                if provider.get("kind") == "local":
+                    G.ensure_llm()
+                return assistant.describe_image(provider, project, str(body["asset"]), body.get("kind") or None)
+        out = await loop.run_in_executor(None, work)
+        if body.get("save"):
+            async with _lock:
+                p = _open(body["path"], request)
+                a = p.asset(str(body["asset"]))
+                fields = {"description": out["description"]}
+                # a file name ("IMG_2041", "image (3)", "Gemini_Generated_Image_…") gives way to the model's title
+                if out.get("name") and (not a.get("title") or re.search(r"\d{3,}|^(img|image|photo|screenshot|untitled|download)\b|_", a["title"], re.I)):
+                    fields["title"] = out["name"]
+                p.update_asset(a["id"], **fields)
+                return _ok({**out, "project": _view(p)})
+        return _ok(out)
+    except ERRORS as exc:
+        return _err(exc)
+
 
 @routes.post("/clapper/api/assistant/describe_ref")
 async def describe_ref(request):

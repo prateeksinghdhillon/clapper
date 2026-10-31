@@ -187,9 +187,11 @@ A character (likewise a place, prop or style) has its own page:
 - its **name**, which is also its `@name` in scenes (an image that already had an @name keeps it);
 - a **description** of what makes it look like itself ("a 17-year-old girl, short indigo bob with a white streak, amber eyes…"). It is added to every image made from it, and it is the definition H3 receives in every scene that uses it — one text keeps the pictures and the video consistent;
 - a **voice** (characters) — a voice sample from the library, used by 🗣 Speak;
-- its **looks** — every image of it with a label (*default*, *winter outfit*, *side view*, *at night*). **★** marks the **main look**: the image scenes use as its @name. **Make main** on another look switches every scene that uses it. **＋ Add from library** files images you already have under it.
+- its **looks** — every image of it with a label (*default*, *winter outfit*, *side view*, *at night*). **★** marks the **main look**: new images start from it, and scenes use it as its @name. **Make main** on another look switches every scene that uses it. **＋ Add from library** files images you already have under it.
+- **✨ Describe from its main look** — the assistant looks at the image and writes the description (you can still edit it). It needs an assistant model that can see images.
+- a **character sheet** (characters and props): **▦ Make a character sheet** makes one picture of it standing full body from the front, three-quarter, side and back, in its main look — or in another look chosen as **Start from**, or from any of its images (**▦ Character sheet of this look** in the image's panel). The sheet is filed under its looks (▦). **@name in scenes is: its main look / its character sheet** chooses what the video model gets as its reference: the sheet shows every side and every piece of the outfit, and its definition then says so. Whether a sheet or a single picture works better as the video reference can depend on the scene; try one take with each.
 
-The action box makes more of it, using the description and the main look as image 1, so you type only what changes:
+The action box makes more of it, using the description and the main look (or the look chosen in **Start from**) as image 1, so you type only what changes:
 
 | Action | You type | You get |
 |---|---|---|
@@ -204,13 +206,13 @@ The action box makes more of it, using the description and the main look as imag
 
 **＋ New** offers:
 
-- **Character / Place / Prop / Style** — a name, a description, and either **Design it now** (1–4 first designs; pick the main look afterwards) or **Start from an image I have**;
+- **Character / Place / Prop / Style** — a name, a description, and either **Design it now** (1–4 first designs; pick the main look afterwards) or **Start from an image I have**. When you choose the image and the description is still empty, the assistant looks at it right away and fills in a name and the description; **✨ Describe it** asks again;
 - the tools: **Image (FLUX.2 Klein)**, **Speech (Qwen3-TTS voice clone)** and your own tools (below). Results appear under **Made here**; open one to name it, file it under a character or make versions;
-- **Upload files**.
+- **Upload files**. New images are described by the assistant in the background (a title and *What it shows*, used by search and by the assistant) when its model can see images and — for the local model — ComfyUI is not rendering; otherwise **✨ Describe** in the image's panel does it later.
 
 | Tool | Makes | Needs |
 |---|---|---|
-| **Image (FLUX.2 Klein)** | A new image from a description, or up to 4 library images changed or combined ("the girl from image 1 sits in the shelter from image 2"). About 4 s per image at the default 4 steps. The shape starts at the video's shape | FLUX.2 Klein 9B (`flux-2-klein-9b-fp8`), its text encoder `qwen_3_8b_fp8mixed` and `flux2-vae`; with images also the Klein consistency LoRA (strength under *More options*) |
+| **Image (FLUX.2 Klein)** | A new image from a description, or up to 4 library images changed or combined ("the girl from image 1 sits in the shelter from image 2"). **Who and where** picks characters, places and props: each adds its main look as a reference and its name and description to the prompt, so you write "Aoi in a winter coat at the Bus stop". **Save results under** files the results straight into a character or place as a look (with the look's name). About 4 s per image at the default 4 steps. The shape starts at the video's shape | FLUX.2 Klein 9B (`flux-2-klein-9b-fp8`), its text encoder `qwen_3_8b_fp8mixed` and `flux2-vae`; with images also the Klein consistency LoRA (strength under *More options*) |
 | **Speech (Qwen3-TTS voice clone)** | A spoken line in the voice of a library sample, in 10 languages. Use it as a scene's sound clip. A few seconds per line | The `qwen3-tts-comfyui` node pack and its 1.7B Base model; a clean voice sample of a few seconds |
 | **Your own tools** | Anything a ComfyUI workflow makes — see the [Reference](REFERENCE.md#adding-your-own-tool) | — |
 

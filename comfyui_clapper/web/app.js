@@ -1068,6 +1068,21 @@ function toolField(f, values) {
         h("span", { class: "pick-t" }, assetNames(a.id).map((n) => "@" + n).join(" ") || a.title));
     }) : [h("p", { class: "hint" }, "No images in the library yet.")]));
     draw(); input = grid;
+  } else if (f.type === "entities") {   // characters / places / props: their main look and description come along
+    const chosen = Array.isArray(v) ? [...v] : [];
+    set(chosen);
+    const ents = Object.values(state.project.entities || {}).filter((e) => e.main && assets()[e.main]);
+    const grid = h("div", { class: "pick-grid" });
+    const draw = () => grid.replaceChildren(...(ents.length ? ents.map((e) => {
+      const on = chosen.includes(e.id);
+      return h("button", { class: "pick" + (on ? " on" : ""), type: "button", title: e.description || e.name, onclick: () => {
+        if (on) chosen.splice(chosen.indexOf(e.id), 1);
+        else { if (f.max && chosen.length >= f.max) { toast(`At most ${f.max}`, true); return; } chosen.push(e.id); }
+        set([...chosen]); draw();
+      } }, h("img", { src: media(assets()[e.main].file), loading: "lazy" }), on ? h("span", { class: "pick-n" }, "✓") : null,
+        h("span", { class: "pick-t" }, e.name));
+    }) : [h("p", { class: "hint" }, "No characters, places or props with a main look yet (Studio › Characters).")]));
+    draw(); input = grid;
   } else if (f.type === "audio") {
     const sounds = Object.values(assets()).filter((a) => a.kind === "audio");
     input = h("select", {}, h("option", { value: "" }, sounds.length ? "Choose a sound from the library…" : "Add a voice sample to the library first"),
@@ -1081,7 +1096,7 @@ function toolField(f, values) {
       if (dep && a && a.transcript && !values[dep.key]) { values[dep.key] = a.transcript; renderStudio(); }
     };
   }
-  return h("label", { class: "tool-field" + (f.type === "images" ? " wide" : "") }, f.label + (f.required ? " *" : ""), input, f.hint ? h("span", { class: "hint" }, f.hint) : null);
+  return h("label", { class: "tool-field" + (f.type === "images" || f.type === "entities" ? " wide" : "") }, f.label + (f.required ? " *" : ""), input, f.hint ? h("span", { class: "hint" }, f.hint) : null);
 }
 
 const JOB_CLS = { queued: "info", running: "info", done: "ok", failed: "bad", interrupted: "warn", cancelled: "muted" };

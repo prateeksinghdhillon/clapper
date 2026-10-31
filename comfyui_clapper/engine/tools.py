@@ -104,6 +104,9 @@ IMAGE_TOOL = Tool(
     fields=[
         {"key": "prompt", "label": "Describe the image", "type": "longtext", "required": True,
          "placeholder": "Full-body anime girl with short silver hair and a red scarf, standing, neutral white background"},
+        {"key": "cast", "label": "Who and where (characters, places, props)", "type": "entities", "max": 4,
+         "hint": "Each one adds its main look as a reference image, and its name and description to the prompt — "
+                 "write their names in the description: \"Aoi in a winter coat at the Bus stop\"."},
         {"key": "images", "label": "Start from library images (optional, up to 4)", "type": "images", "max": 4,
          "hint": "With images, describe the change: \"the same character, sitting on a bench at night\". Refer to them as image 1, image 2 … in the order chosen."},
         {"key": "aspect", "label": "Shape", "type": "select", "options": list(ASPECTS), "default": "9:16"},
@@ -264,16 +267,40 @@ def _check_inputs(project: Project, tool: Tool, inputs: dict) -> dict[str, str]:
                 if asset["kind"] != want:
                     raise ProjectError(f"{f['label']}: {asset['title']} is not an {want}")
                 paths[aid] = str(root / asset["file"])
+        if f.get("type") == "entities" and value:
+            for eid in value:
+                e = project.entity(eid)
+                if not e.get("main"):
+                    raise ProjectError(f"{e['name']} has no main look yet — make one first")
         if f.get("type") == "select" and value is not None and value not in f["options"]:
             raise ProjectError(f"{f['label']}: choose one of {', '.join(map(str, f['options']))}")
     return paths
 
 
+def with_cast(project: Project, inputs: dict) -> dict:
+    """The image tool's inputs as run: each chosen character / place / prop adds its main look after the user's own
+    images (so "image 1" in their text stays their first image), and a line naming it to the prompt."""
+    cast = [project.entity(eid) for eid in inputs.get("cast") or []]
+    if not cast:
+        return inputs
+    images = list(inputs.get("images") or [])
+    lines = []
+    for e in cast:
+        if e["main"] not in images:
+            images.append(e["main"])
+        n = images.index(e["main"]) + 1
+        lines.append(f"Image {n} is {e['name']}" + (f": {e['description']}" if e.get("description") else "") + ".")
+    if len(images) > 4:
+        raise ProjectError("at most 4 images in all (the chosen characters, places and props count as one each)")
+    return {**inputs, "images": images, "prompt": " ".join(lines) + " " + (inputs.get("prompt") or "")}
+
+
 def queue_tool(project: Project, client: ComfyClient, tool_id: str, inputs: dict, *, count: int = 1,
                role: str | None = None, seed: int | None = None, title: str = "", user_dir: Path | None = None,
-               version_of: str | None = None) -> list[dict]:
+               version_of: str | None = None, entity: str | None = None, look: str = "") -> list[dict]:
     """Queue `count` jobs (seeds seed, seed+1, …). Their results land in the library when collected.
-    `version_of`: a library item the results are new versions of (they join its family)."""
+    `version_of`: a library item the results are new versions of (they join its family).
+    `entity` (+ `look`): file the results under that character / place as looks."""
     tool = get_tool(tool_id, user_dir)
     if version_of is not None:
         project.asset(version_of)
@@ -282,7 +309,11 @@ def queue_tool(project: Project, client: ComfyClient, tool_id: str, inputs: dict
     if role not in ASSET_ROLES:
         raise ProjectError(f"role must be one of {ASSET_ROLES}")
     inputs = {f["key"]: inputs.get(f["key"], f.get("default")) for f in tool.fields}
-    paths = _check_inputs(project, tool, inputs)
+    _check_inputs(project, tool, inputs)
+    run_inputs = with_cast(project, inputs)   # the recipe keeps the cast; the graph gets their images and names
+    paths = _check_inputs(project, tool, run_inputs)
+    if entity is not None:
+        project.entity(entity)
     base = int(seed) if seed is not None else random.randrange(1, 2**48)
     jobs = project.data.setdefault("jobs", {})
     queued = []
@@ -290,17 +321,19 @@ def queue_tool(project: Project, client: ComfyClient, tool_id: str, inputs: dict
         job_id = _new_id("j")
         out_dir = project.root.resolve() / "jobs" / job_id
         ctx = {"paths": paths, "out_dir": str(out_dir), "seed": base + i}
-        graph = tool.build(inputs, ctx)
+        graph = tool.build(run_inputs, ctx)
         name = title.strip()
         if name and count > 1:
             name = f"{name} {i + 1}"
         job = {"id": job_id, "tool": tool.id, "tool_title": tool.title, "kind": tool.kind, "inputs": inputs,
                "seed": base + i, "role": role, "title": name, "status": "queued", "created": _now(),
                "dir": f"jobs/{job_id}", "outputs": []}
+        if entity:
+            job["entity"], job["look"] = entity, _label(look or title or "look")
         if version_of:
             job["version_of"] = version_of
             src = project.assets.get(version_of) or {}
-            if src.get("entity") in project.entities:   # a version of a character's look is filed under that character
+            if src.get("entity") in project.entities and not entity:   # a version of a character's look is filed under that character
                 job["entity"], job["look"] = src["entity"], (src.get("look") or "look") + " (version)"
         from .comfy_client import ComfyTimeout
         try:
@@ -320,7 +353,17 @@ def queue_tool(project: Project, client: ComfyClient, tool_id: str, inputs: dict
 
 # ------------------------------------------------------------------ entity actions (look, angle, in a place)
 
-ENTITY_ACTIONS = ("first", "look", "angle", "place")
+ENTITY_ACTIONS = ("first", "look", "angle", "place", "sheet")
+# A turnaround sheet: every side of the character (or object) in one picture, for the video model as a reference.
+_SHEET = {
+    "character": ("A character turnaround reference sheet of the character from image 1 ({who}). The same character shown four "
+                  "times side by side, evenly spaced, full body from head to shoes, standing straight in a neutral pose with arms "
+                  "relaxed: front view, three-quarter view, side view, back view. Exactly the same outfit, colours, face, hair and "
+                  "art style in every view, even flat lighting, plain light grey background, no text, no labels, no frames."),
+    "prop": ("A turnaround reference sheet of the object from image 1 ({who}): the same object shown four times side by side, "
+             "evenly spaced — front, side, back and top view — the same size, materials, colours and art style in every view, "
+             "even flat lighting, plain light grey background, no text, no labels."),
+}
 _FIRST = {
     "character": "Original character design, a single character, full body, front view, standing relaxed, plain light grey background, no text. {who}. {extra}",
     "place": "Background art without people: {who}. {extra} No text.",
@@ -351,11 +394,20 @@ def _label(text: str, limit: int = 48) -> str:
 
 
 def entity_inputs(project: Project, entity_id: str, action: str, text: str, *, place_id: str | None = None,
-                  aspect: str | None = None) -> tuple[dict, dict]:
-    """Image-tool inputs for an entity action, and the job fields that file the results into the entity."""
+                  aspect: str | None = None, source: str | None = None) -> tuple[dict, dict]:
+    """Image-tool inputs for an entity action, and the job fields that file the results into the entity.
+    source: the image to start from (default: its main look) — e.g. an outfit look for a sheet of that outfit."""
     if action not in ENTITY_ACTIONS:
         raise ProjectError(f"action must be one of {ENTITY_ACTIONS}")
     e = project.entity(entity_id)
+    if source:
+        src = project.asset(source)
+        if src["kind"] != "image":
+            raise ProjectError("start from an image")
+        e = {**e, "main": source}   # this generation starts from that image instead of the main look
+        source_look = src.get("look") if src.get("entity") == entity_id else (src.get("title") or "")
+    else:
+        source_look = (project.assets.get(e.get("main") or "") or {}).get("look") or ""
     who = e["name"] + (f": {e['description']}" if e.get("description") else "")
     text = (text or "").strip()
     from .director import video_aspect
@@ -366,8 +418,15 @@ def entity_inputs(project: Project, entity_id: str, action: str, text: str, *, p
                  "aspect": aspect or kind_aspect}, {"entity": entity_id, "look": _label(text) or "design"})
     if not e.get("main"):
         raise ProjectError(f"{e['name']} has no main image yet — make or choose one first")
-    if not text and action != "place":
+    if not text and action not in ("place", "sheet"):
         raise ProjectError("describe what changes")
+    if action == "sheet":
+        if e["kind"] not in _SHEET:
+            raise ProjectError("a turnaround sheet is for characters and props")
+        prompt = _SHEET[e["kind"]].format(who=who) + (f" {text}" if text else "")
+        label = "sheet" + (f" · {source_look}" if source_look and source_look not in ("default", "design", "look") else "")
+        return ({"prompt": prompt, "images": [e["main"]], "aspect": aspect or "16:9"},
+                {"entity": entity_id, "look": _label(label), "sheet": True})
     if action in ("look", "angle"):
         template = (_LOOK if action == "look" else _ANGLE)[e["kind"]]
         return ({"prompt": template.format(who=who, change=text), "images": [e["main"]], "aspect": aspect or kind_aspect},
@@ -384,16 +443,17 @@ def entity_inputs(project: Project, entity_id: str, action: str, text: str, *, p
 
 def queue_entity(project: Project, client: ComfyClient, entity_id: str, action: str, text: str = "", *,
                  place_id: str | None = None, count: int = 2, seed: int | None = None, aspect: str | None = None,
-                 prompt: str | None = None) -> list[dict]:
+                 prompt: str | None = None, source: str | None = None) -> list[dict]:
     """Generate from a character / place: its first design, a new look or angle, or it placed in a place.
     `prompt` replaces the built prompt (the references stay)."""
-    inputs, extra = entity_inputs(project, entity_id, action, text, place_id=place_id, aspect=aspect)
+    inputs, extra = entity_inputs(project, entity_id, action, text, place_id=place_id, aspect=aspect, source=source)
     if prompt:
         inputs["prompt"] = prompt
     role = extra.pop("role", None) or project.entity(entity_id)["kind"]
     e = project.entity(entity_id)
-    title = (f"{e['name']} — {_label(text, 40)}" if text else e["name"]) if action != "place" else \
-        f"{e['name']} at {project.entity(place_id)['name']}"
+    title = (f"{e['name']} — character sheet" if action == "sheet" else
+             (f"{e['name']} — {_label(text, 40)}" if text else e["name"]) if action != "place" else
+             f"{e['name']} at {project.entity(place_id)['name']}")
     jobs = queue_tool(project, client, "image", inputs, count=count, role=role, seed=seed, title=title)
     for job in jobs:
         job.update(extra)
@@ -466,6 +526,10 @@ def collect(project: Project, client: ComfyClient) -> list[str]:
                                             parent=parent if parent in project.assets else None)
                 if job.get("entity") in project.entities:
                     project.add_to_entity(asset["id"], job["entity"], look=job.get("look") or "", save=False)
+                    if job.get("sheet"):
+                        asset["sheet"] = True
+                        if not project.entities[job["entity"]].get("sheet"):   # the first sheet becomes its sheet
+                            project.set_entity_sheet(job["entity"], asset["id"], save=False)
                 if job.get("uses"):
                     asset["uses"] = [e for e in job["uses"] if e in project.entities]
                 job["outputs"].append(asset["id"])

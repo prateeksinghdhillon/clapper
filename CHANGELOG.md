@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Studio: the assistant describes images, characters go into image making, character sheets**:
+  - **Start from an image** fills in the name and description from the picture (✨ Describe it); **✨ Describe from its main look** on a character's page; uploaded images get a title and *What it shows* in the background (when the assistant can see images and the GPU is free), or with ✨ Describe.
+  - The image tool's **Who and where** adds characters, places and props as references with their names and descriptions; **Save results under** files the results into a character as a look. New looks, angles and sheets can **Start from** any of its looks.
+  - **▦ Character sheet**: front, three-quarter, side and back in one picture, filed under the character; scenes can use the sheet as the character's reference (`ref_use: sheet`). The assistant can propose one (`make_images action=sheet`).
 - **Online providers work better** (tested with Groq and gpt-oss-120b):
   - A text-only model no longer fails on pictures (*content must be a string*): the request is sent as text, the chat says so once, and *can see images* is turned off. Such a model gets each take's text instead of its frames.
   - A plan's request limit (Groq's free tier: 8000 tokens for gpt-oss-120b) is learned and saved. The assistant then uses the prompt guide in brief, shortens long tool results and summarises older messages to fit, and waits as long as the provider asks between requests (decimal `Retry-After` and "try again in 7.5s" are understood). If even the smallest request is too large, the message says so plainly.

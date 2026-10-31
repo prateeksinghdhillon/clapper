@@ -602,7 +602,7 @@ async def list_tools(request):
 
 @routes.post("/clapper/api/tool/run")
 async def run_tool(request):
-    """path, tool, inputs {…}, count (1–8), role, seed, title → one job per result."""
+    """path, tool, inputs {…}, count (1–8), role, seed, title, entity + look (file the results under it) → one job per result."""
     body = await _body(request)
     try:
         loop = asyncio.get_running_loop()
@@ -611,7 +611,7 @@ async def run_tool(request):
             jobs = await loop.run_in_executor(None, lambda: _guarded(tools.queue_tool)(
                 project, _client(), body["tool"], body.get("inputs") or {}, count=int(body.get("count") or 1),
                 role=body.get("role"), seed=body.get("seed"), title=body.get("title", ""),
-                version_of=body.get("version_of") or None))
+                version_of=body.get("version_of") or None, entity=body.get("entity") or None, look=body.get("look") or ""))
         return _ok({"jobs": [j["id"] for j in jobs], "project": _view(project)})
     except (KeyError, ProjectError, OSError, ValueError, RuntimeError) as exc:
         return _err(exc)
@@ -744,9 +744,11 @@ async def entity_action(request):
                                           from_asset=body.get("from_asset") or None)
                 return _ok({"entity": e["id"], "project": _view(project)})
             if action == "update":
-                project.update_entity(body["id"], **{k: body[k] for k in ("name", "description", "voice", "default") if k in body})
+                project.update_entity(body["id"], **{k: body[k] for k in ("name", "description", "voice", "default", "ref_use") if k in body})
             elif action == "main":
                 project.set_entity_main(body["id"], body["asset"])
+            elif action == "sheet":   # asset: one of its images, or null to have no sheet
+                project.set_entity_sheet(body["id"], body.get("asset") or None)
             elif action == "add":
                 project.add_to_entity(body["asset"], body.get("id"), look=body.get("look", ""))
             elif action == "remove":
@@ -761,7 +763,8 @@ async def entity_action(request):
 
 @routes.post("/clapper/api/entity/generate")
 async def entity_generate(request):
-    """id, action first|look|angle|place, text, place (for place), count, seed, aspect, prompt (optional override)."""
+    """id, action first|look|angle|place|sheet, text, place (for place), count, seed, aspect, prompt (optional override),
+    source (an image to start from instead of the main look)."""
     body = await _body(request)
     try:
         loop = asyncio.get_running_loop()
@@ -770,7 +773,7 @@ async def entity_generate(request):
             jobs = await loop.run_in_executor(None, lambda: _guarded(tools.queue_entity)(
                 project, _client(), body["id"], body["action"], body.get("text", ""), place_id=body.get("place"),
                 count=int(body.get("count") or 2), seed=body.get("seed"), aspect=body.get("aspect"),
-                prompt=body.get("prompt") or None))
+                prompt=body.get("prompt") or None, source=body.get("source") or None))
         return _ok({"jobs": [j["id"] for j in jobs], "project": _view(project)})
     except (KeyError, ProjectError, OSError, ValueError, RuntimeError) as exc:
         return _err(exc)
@@ -783,7 +786,7 @@ async def entity_preview(request):
     try:
         project = _open(body["path"], request)
         inputs, _ = tools.entity_inputs(project, body["id"], body["action"], body.get("text", "") or "…",
-                                        place_id=body.get("place"), aspect=body.get("aspect"))
+                                        place_id=body.get("place"), aspect=body.get("aspect"), source=body.get("source") or None)
         return _ok({"prompt": inputs["prompt"], "images": inputs["images"], "aspect": inputs["aspect"]})
     except (KeyError, ProjectError, OSError) as exc:
         return _err(exc)

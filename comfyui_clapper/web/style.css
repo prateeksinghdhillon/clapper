@@ -604,3 +604,9 @@ label.mini.slider input { width: 150px; padding: 0; }
 .made-from { margin-top: 6px; }
 .made-from summary { cursor: pointer; font-size: 0.85em; color: var(--muted, #888); }
 .made-text { white-space: pre-wrap; word-break: break-word; font-size: 0.8em; max-height: 240px; overflow: auto; background: var(--panel-2); padding: 8px; border-radius: 6px; margin: 4px 0 0; }
+
+/* character sheet on the entity page */
+.sheet-row { align-items: end; gap: 12px; flex-wrap: wrap; }
+.sheet-row .sheet-thumb { width: 150px; padding: 0; border-radius: 8px; overflow: hidden; flex: none; }
+.sheet-row .sheet-thumb .thumb-box { aspect-ratio: 16 / 9; }
+.sheet-row .sheet-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }

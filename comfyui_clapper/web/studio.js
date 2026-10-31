@@ -74,7 +74,7 @@ const mainOf = (e) => assets()[e.main];
 const entityKind = (k) => ENTITY_KINDS.find((x) => x[0] === k) || ENTITY_KINDS[0];
 const activeJobs = () => jobs().filter((j) => j.status === "queued" || j.status === "running");
 const matches = (text) => !studio.search || String(text || "").toLowerCase().includes(studio.search.toLowerCase());
-const assetText = (a) => [a.title, a.look, a.role, ...(assetNames(a.id) || []), a.origin?.inputs?.prompt, a.origin?.inputs?.text, a.transcript].join(" ");
+const assetText = (a) => [a.title, a.look, a.role, a.description, ...(assetNames(a.id) || []), a.origin?.inputs?.prompt, a.origin?.inputs?.text, a.transcript].join(" ");
 
 function usedIn(name) {
   if (!name) return [];
@@ -202,6 +202,22 @@ const ENTITY_HINT = {
 
 function openEntity(eid) { studio.page = "entity"; studio.entity = eid; studio.sel = null; renderStudio(); window.scrollTo({ top: 0 }); }
 
+// The character sheet: every side in one picture; scenes can send it to the video model instead of the main look.
+function sheetRow(e) {
+  if (e.kind !== "character" && e.kind !== "prop") return null;
+  const sheet = e.sheet && assets()[e.sheet];
+  const use = h("select", {}, [["main", "its main look"], ["sheet", "its character sheet (every side)"]].map(([v, l]) => h("option", { value: v, selected: (e.ref_use || "main") === v, disabled: v === "sheet" && !sheet }, l)));
+  use.onchange = () => guard(async () => { setProject(await call("/entity", { path: state.path, action: "update", id: e.id, ref_use: use.value })); toast(`Scenes now use ${use.value === "sheet" ? "the character sheet" : "the main look"} as @${e.ref}`); });
+  return h("div", { class: "row sheet-row" },
+    sheet ? h("button", { class: "sheet-thumb", title: "The character sheet", onclick: () => select("asset", sheet.id) }, tileThumb(sheet)) : null,
+    h("label", {}, `@${e.ref} in scenes is`, use),
+    h("button", { ...busyAttr("sheet"), title: "One picture with the front, three-quarter, side and back views, in the main look (or the look chosen below as “Start from”)",
+      onclick: () => once("sheet", async () => {
+        const d = await call("/entity/generate", { path: state.path, id: e.id, action: "sheet", count: 1, source: entityAct.source || null });
+        setProject(d.project); toast("Making the character sheet — it appears under Looks (▦)");
+      }) }, sheet ? "▦ New character sheet" : "▦ Make a character sheet"));
+}
+
 function renderEntityPage(e) {
   const [kind, label, one, ico] = entityKind(e.kind);
   const looks = looksOf(e.id);
@@ -224,6 +240,14 @@ function renderEntityPage(e) {
         name,
         h("div", { class: "row meta" }, h("span", { class: "at big" }, "@" + e.ref), h("span", { class: "hint" }, `${one} · ${looks.length} look${looks.length === 1 ? "" : "s"} · ${scenesUsing.length ? "in scene " + scenesUsing.map((x) => x.n).join(", ") : "not in a scene yet"}`)),
         h("label", {}, "Description — what makes it look like itself; added to every image made from it and sent to H3 in scenes that use it", desc),
+        main ? h("div", { class: "row" }, h("button", { class: "ghost small", ...busyAttr("describe"), title: "The assistant looks at the main look and rewrites the description (you can still edit it)",
+          onclick: () => once("describe", async () => {
+            const r = await call("/assistant/describe_image", { path: state.path, asset: main.id, kind });
+            if (desc.value.trim() && !confirm(`Replace the description with the assistant's?\n\n${r.description}`)) return;
+            desc.value = r.description;
+            setProject(await call("/entity", { path: state.path, action: "update", id: e.id, description: r.description })); toast("Description written from the image");
+          }) }, "✨ Describe from its main look")) : null,
+        sheetRow(e),
         kind === "character" ? h("label", {}, "Voice (used by 🗣 Speak)", voiceSel) : null,
         h("div", { class: "row" },
           main ? null : h("span", { class: "hint warn" }, "No main look yet — design one below or add an image."),
@@ -234,11 +258,13 @@ function renderEntityPage(e) {
             setProject(d); studio.page = null; renderStudio(); if (d.note) toast(d.note);
           }) }, `Remove ${one.toLowerCase()}`)))),
     entityActions(e),
-    h("div", { class: "coll-head" }, h("h3", {}, "Looks"), h("span", { class: "hint" }, "★ = the main look, used in scenes as @" + e.ref)),
+    h("div", { class: "coll-head" }, h("h3", {}, "Looks"), h("span", { class: "hint" }, e.ref_use === "sheet" && e.sheet
+      ? `★ = the main look (new images start from it) · ▦ = the character sheet, used in scenes as @${e.ref}`
+      : `★ = the main look, used in scenes as @${e.ref}` + (e.sheet ? " · ▦ = the character sheet" : ""))),
     jobTiles("entity", e.id),
     h("div", { class: "grid" }, ...looks.map((a) => h("button", { class: "tile" + (studio.sel?.id === a.id ? " on" : ""), onclick: () => select("asset", a.id) }, tileThumb(a),
-      h("span", { class: "tile-t" }, (a.id === e.main ? "★ " : "") + (a.look || a.title)),
-      h("span", { class: "tile-m" }, a.id === e.main ? h("span", { class: "at" }, "main") : h("span", { class: "link", onclick: (ev) => { ev.stopPropagation(); guard(async () => setProject(await call("/entity", { path: state.path, action: "main", id: e.id, asset: a.id }))); } }, "Make main")))),
+      h("span", { class: "tile-t" }, (a.id === e.main ? "★ " : "") + (a.id === e.sheet ? "▦ " : "") + (a.look || a.title)),
+      h("span", { class: "tile-m" }, a.id === e.main ? h("span", { class: "at" }, "main") : a.sheet ? h("span", { class: "at" }, a.id === e.sheet ? "sheet" : "a sheet") : h("span", { class: "link", onclick: (ev) => { ev.stopPropagation(); guard(async () => setProject(await call("/entity", { path: state.path, action: "main", id: e.id, asset: a.id }))); } }, "Make main")))),
       h("button", { class: "tile add", onclick: () => pickAssets({ kind: "image", title: `Add images to ${e.name}`, exclude: looks.map((x) => x.id) }, (ids) => guard(async () => {
         for (const id of ids) setProject(await call("/entity", { path: state.path, action: "add", id: e.id, asset: id, look: "look" }));
       })) }, h("span", { class: "thumb-box" }, h("span", { class: "big-ico" }, "＋")), h("span", { class: "tile-t" }, "Add from library"), h("span", { class: "tile-m" }, "images you already have"))));
@@ -255,7 +281,12 @@ const entityAct = { action: "look", text: "", place: "", count: 2, prompt: null,
 function entityActions(e) {
   const kind = e.kind;
   // what was typed (and a hand-edited prompt) belongs to this character only
-  if (entityAct.for !== e.id) Object.assign(entityAct, { text: "", prompt: null, edited: false, for: e.id });
+  if (entityAct.for !== e.id) Object.assign(entityAct, { text: "", prompt: null, edited: false, for: e.id, source: null });
+  // start from another of its looks (an outfit) instead of the main look: for new looks, angles and the sheet
+  const ownImages = looksOf(e.id).filter((a) => a.kind === "image" && !a.sheet);   // a sheet is not a look to start from
+  const sourceSel = ownImages.length > 1 ? h("select", {}, h("option", { value: "" }, "its main look"),
+    ...ownImages.filter((a) => a.id !== e.main).map((a) => h("option", { value: a.id, selected: a.id === entityAct.source }, a.look || a.title))) : null;
+  if (sourceSel) sourceSel.onchange = () => { entityAct.source = sourceSel.value || null; entityAct.prompt = entityAct.edited ? entityAct.prompt : null; };
   const acts = [["look", kind === "character" ? "New outfit / look" : kind === "place" ? "Variation (time, weather)" : "Variation"], ["angle", "New angle / pose"], ...(kind === "character" ? [["place", "Put in a place"]] : []), ["first", e.main ? "More designs" : "Design it"]];
   if (!e.main && entityAct.action !== "first") entityAct.action = "first";
   const ph = { look: kind === "character" ? "wearing a winter coat and a red scarf" : "at night in the rain", angle: kind === "character" ? "from the side, walking" : "from above", place: "sitting on the bench, looking down the road", first: "anything to add to the description (optional)" };
@@ -271,17 +302,19 @@ function entityActions(e) {
   const preview = h("details", { class: "adv" }, h("summary", {}, "See / edit the prompt"), promptBox, h("p", { class: "hint" }, "Built from the description and what you typed; the main look is attached as image 1. Edit it to take full control."));
   preview.addEventListener("toggle", () => {
     if (!preview.open || entityAct.prompt) { promptBox.value = entityAct.prompt || promptBox.value; return; }
-    guard(async () => { const r = await call("/entity/preview", { path: state.path, id: e.id, action: entityAct.action, text: entityAct.text, place: entityAct.place }); promptBox.value = r.prompt; });
+    guard(async () => { const r = await call("/entity/preview", { path: state.path, id: e.id, action: entityAct.action, text: entityAct.text, place: entityAct.place, source: entityAct.source }); promptBox.value = r.prompt; });
   });
   promptBox.oninput = () => { entityAct.prompt = promptBox.value; entityAct.edited = true; };
   const go = h("button", { class: "primary", ...busyAttr("entity-gen"), onclick: () => once("entity-gen", async () => {
-    const d = await call("/entity/generate", { path: state.path, id: e.id, action: entityAct.action, text: entityAct.text, place: entityAct.place, count: entityAct.count, prompt: entityAct.prompt });
+    const d = await call("/entity/generate", { path: state.path, id: e.id, action: entityAct.action, text: entityAct.text, place: entityAct.place, count: entityAct.count, prompt: entityAct.prompt,
+      source: entityAct.action === "first" || entityAct.action === "place" ? null : entityAct.source });
     entityAct.text = ""; entityAct.prompt = null; entityAct.edited = false; setProject(d.project);
     toast(entityAct.action === "place" ? "Making start frames — they appear in Start images & frames" : `Making ${d.jobs.length} — they appear under Looks`);
   }) }, "Generate");
   return h("section", { class: "card actions-card" },
     h("div", { class: "seg act-tabs" }, acts.map(([v, l]) => h("button", { class: entityAct.action === v ? "on" : "", disabled: !e.main && v !== "first", onclick: () => { entityAct.action = v; entityAct.prompt = null; renderStudio(); } }, l))),
     h("div", { class: "act-row" }, entityAct.action === "place" ? h("label", { class: "grow-0" }, "Place", placeSel) : null,
+      sourceSel && (entityAct.action === "look" || entityAct.action === "angle") ? h("label", { class: "grow-0", title: "Also used by ▦ Make a character sheet" }, "Start from", sourceSel) : null,
       h("label", { class: "grow" }, entityAct.action === "first" ? "Extra details" : entityAct.action === "place" ? "What happens there" : "What changes", text), h("label", { class: "grow-0" }, "Results", count), go),
     preview,
     h("p", { class: "hint" }, entityAct.action === "place" ? "Makes start frames for scenes (Files › Start images & frames), with this character and the place's main image as references." : `About 4–10 s per image. Results are filed under ${e.name}'s looks.`));
@@ -342,6 +375,16 @@ function assetDetail(a) {
   const out = [bigPreview(a.kind, a.file), title,
     h("div", { class: "row meta" }, roleSelect(a.role, (r) => guard(async () => setProject(await call("/asset/update", { path: state.path, id: a.id, role: r })))),
       h("span", { class: "hint" }, assetMeta(a)))];
+  if (a.kind === "image") {   // what is in it: written by the assistant (or by hand); used for search and by the assistant
+    const d = h("textarea", { rows: 3, placeholder: "What is in this image (✨ lets the assistant write it)" });
+    d.value = a.description || "";
+    d.onchange = () => guard(async () => setProject(await call("/asset/update", { path: state.path, id: a.id, description: d.value })));
+    out.push(h("section", { class: "psec" }, h("div", { class: "row" }, h("h4", {}, "What it shows"), h("span", { class: "spacer" }),
+      h("button", { class: "ghost small", ...busyAttr("describe"), onclick: () => once("describe", async () => {
+        const r = await call("/assistant/describe_image", { path: state.path, asset: a.id, save: true });
+        setProject(r.project); d.value = r.description; toast("Described by the assistant");
+      }) }, "✨ Describe")), d));
+  }
   // where it belongs
   if (a.kind === "image") {
     const options = Object.values(entities());
@@ -354,7 +397,13 @@ function assetDetail(a) {
     out.push(h("section", { class: "psec" }, h("h4", {}, "Belongs to"), h("div", { class: "row" }, belong, e ? h("button", { onclick: () => openEntity(e.id) }, "Open") : null),
       e ? h("label", {}, "Look", look) : null,
       e && e.main !== a.id ? h("button", { onclick: () => guard(async () => setProject(await call("/entity", { path: state.path, action: "main", id: e.id, asset: a.id }))) }, `★ Make it ${e.name}'s main look`) : null,
-      e && e.main === a.id ? h("p", { class: "hint" }, `★ ${e.name}'s main look — scenes use it as @${e.ref}.`) : null,
+      e && e.main === a.id ? h("p", { class: "hint" }, `★ ${e.name}'s main look` + ((e.ref_use || "main") === "main" ? ` — scenes use it as @${e.ref}.` : ".")) : null,
+      e && (e.kind === "character" || e.kind === "prop") && e.sheet !== a.id ? h("button", { onclick: () => guard(async () => { setProject(await call("/entity", { path: state.path, action: "sheet", id: e.id, asset: a.id })); toast(`Now ${e.name}'s character sheet`); }) }, `▦ Use as ${e.name}'s character sheet`) : null,
+      e && e.sheet === a.id ? h("p", { class: "hint" }, `▦ ${e.name}'s character sheet` + (e.ref_use === "sheet" ? ` — scenes use it as @${e.ref}.` : " (scenes use the main look; switch it on the character's page).")) : null,
+      e && (e.kind === "character" || e.kind === "prop") ? h("button", { ...busyAttr("sheet"), title: "Front, three-quarter, side and back views of this look", onclick: () => once("sheet", async () => {
+        const d = await call("/entity/generate", { path: state.path, id: e.id, action: "sheet", count: 1, source: a.id });
+        setProject(d.project); toast("Making a character sheet of this look");
+      }) }, "▦ Character sheet of this look") : null,
       !e ? h("button", { class: "ghost", onclick: () => openNew(a.role === "place" ? "place" : a.role === "prop" ? "prop" : a.role === "style" ? "style" : "character", { from: a.id }) }, "Make a character / place from it…") : null));
   }
   // versions
@@ -531,8 +580,25 @@ function newEntityForm(kind) {
   const count = h("select", {}, [1, 2, 4].map((n) => h("option", { value: n, selected: n === f.count }, `${n} designs`)));
   count.onchange = () => { f.count = Number(count.value); };
   const pickBox = h("div", { class: "row" });
+  const describeOut = h("span", { class: "hint" });
+  const describe = async (auto) => {
+    if (!picked) return;
+    describeOut.textContent = "✨ The assistant is looking at the image…";
+    try {
+      const r = await call("/assistant/describe_image", { path: state.path, asset: picked, kind, auto });
+      if (r.skipped) { describeOut.textContent = ""; return; }
+      if (r.name && !f.name.trim()) { f.name = r.name; name.value = r.name; }
+      f.desc = r.description; desc.value = r.description;
+      describeOut.textContent = "✨ Written by the assistant from the image — check it and change anything.";
+    } catch (e) { describeOut.textContent = ""; if (!auto) throw e; }
+  };
   const drawPick = () => pickBox.replaceChildren(picked ? tileThumb(assets()[picked]) : h("span", { class: "hint" }, "No image chosen"),
-    h("button", { onclick: () => pickAssets({ kind: "image", title: "Choose its first image", single: true }, (ids) => { picked = f.picked = ids[0]; drawPick(); }) }, picked ? "Change…" : "Choose from library…"));
+    h("button", { onclick: () => pickAssets({ kind: "image", title: "Choose its first image", single: true }, (ids) => {
+      picked = f.picked = ids[0]; drawPick();
+      if (!f.desc.trim()) guard(() => describe(true));   // nothing written yet: let the assistant describe it right away
+    }) }, picked ? "Change…" : "Choose from library…"),
+    picked ? h("button", { ...busyAttr("describe"), title: "The assistant looks at the image and writes the name and description", onclick: () => once("describe", () => describe(false)) }, "✨ Describe it") : null,
+    describeOut);
   drawPick();
   const modeSeg = h("div", { class: "seg" }, [["design", "Design it now"], ["image", "Start from an image I have"]].map(([v, l]) => h("button", { class: mode.v === v ? "on" : "", onclick: (ev) => { mode.v = v; ev.target.parentNode.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === ev.target)); designRow.hidden = v !== "design"; pickBox.hidden = v !== "image"; } }, l)));
   const designRow = h("div", { class: "row" }, h("label", { class: "grow-0" }, "How many", count), h("span", { class: "hint" }, "≈ 4–10 s per image; you pick the main look afterwards."));
@@ -569,9 +635,16 @@ function newToolForm(toolId) {
   const count = h("select", {}, [1, 2, 4, 8].map((n) => h("option", { value: n, selected: n === 2 }, String(n))));
   const title = h("input", { placeholder: "optional" });
   const seed = h("input", { type: "number", placeholder: "random" });
+  // images: file the results straight into a character / place as looks
+  const under = tool.kind === "image" ? h("select", {}, h("option", { value: "" }, "— the library only"),
+    ...ENTITY_KINDS.map(([k, label]) => { const list = Object.values(entities()).filter((x) => x.kind === k); return list.length ? h("optgroup", { label }, list.map((x) => h("option", { value: x.id, selected: x.id === values._under }, x.name))) : null; }).filter(Boolean)) : null;
+  if (under) under.onchange = () => { values._under = under.value; lookName.hidden = !under.value; };
+  const lookName = h("input", { placeholder: "look, e.g. winter outfit", value: values._look || "", hidden: !values._under });
+  lookName.oninput = () => { values._look = lookName.value; };
   const go = h("button", { class: "primary big", disabled: !tool.ok, ...busyAttr("tool"), onclick: () => once("tool", async () => {
     const inputs = Object.fromEntries(tool.fields.map((f) => [f.key, values[f.key] ?? f.default ?? null]));
     const body = { path: state.path, tool: tool.id, inputs, count: Number(count.value), role: role.value, title: title.value };
+    if (under && under.value) { body.entity = under.value; body.look = lookName.value.trim() || title.value.trim() || "look"; }
     if (seed.value) body.seed = Number(seed.value);
     const d = await call("/tool/run", body);
     d.jobs.forEach((j) => studio.made.add(j));
@@ -581,6 +654,7 @@ function newToolForm(toolId) {
     h("p", { class: "hint" }, tool.description, tool.ok ? "" : h("span", { class: "warn" }, ` Cannot run on this ComfyUI: missing ${tool.missing.join(", ")}.`)),
     h("div", { class: "form-grid" }, ...tool.fields.filter((f) => !f.advanced).map((f) => toolField(f, values))),
     tool.fields.some((f) => f.advanced) ? h("details", { class: "adv" }, h("summary", {}, "More options"), h("div", { class: "form-grid" }, ...tool.fields.filter((f) => f.advanced).map((f) => toolField(f, values)), h("label", {}, "Seed", seed))) : null,
+    under ? h("div", { class: "row" }, h("label", {}, "Save results under", under), h("label", { class: "grow" }, lookName)) : null,
     h("div", { class: "row tool-run" }, h("label", {}, "Results", count), h("label", {}, "Save as", role), h("label", { class: "grow" }, "Title", title), go));
 }
 
@@ -593,6 +667,20 @@ function uploadForm() {
     h("div", { class: "row" }, h("label", {}, "Save as", role), h("label", { class: "btn primary file-label" }, "Choose files…", input)));
 }
 
+// New images get a title and "what it shows" from the assistant in the background — when it can see images and
+// (for the local model) ComfyUI is not rendering; otherwise ✨ Describe in the image's panel does it later.
+async function autoDescribe(ids) {
+  let done = 0;
+  for (const id of ids) {
+    try {
+      const r = await call("/assistant/describe_image", { path: state.path, asset: id, auto: true, save: true });
+      if (r.skipped) { if (!done) toast(`Not described: ${r.skipped}`); return; }
+      setProject(r.project); done++;
+    } catch (e) { return; }   // the assistant is not set up: nothing to say on every upload
+  }
+  if (done) toast(`✨ ${done} image${done > 1 ? "s" : ""} described by the assistant`);
+}
+
 async function uploadFiles(files, role) {
   if (!files.length) return;
   const fd = new FormData();
@@ -602,6 +690,7 @@ async function uploadFiles(files, role) {
     toast(`Adding ${files.length} file(s)…`);
     const d = await call("/asset", fd);
     setProject(d.project); toast(`${d.added.length} added`);
+    autoDescribe(d.added.filter((id) => assets()[id]?.kind === "image").slice(0, 8));
     if (d.added.length === 1) { studio.page = null; studio.cat = "files"; select("asset", d.added[0]); }
   });
 }

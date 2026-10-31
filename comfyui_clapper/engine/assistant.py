@@ -312,7 +312,9 @@ def snapshot(project: Project, chat: dict | None = None) -> str:
             voice = project.assets.get(e.get("voice") or "")
             lines.append(f"- {e['name']} ({e['kind']}) · " + (f"@{e['ref']}" if main else "no main look yet (no @name until it has one)")
                          + f" · {len(looks)} look(s)" + (f": " + ", ".join(f"{'★' if x['id'] == e.get('main') else ''}{x.get('look') or x['title']}" for x in looks[:8]) if looks else "")
-                         + (f" · voice {voice['id']} \"{voice['title']}\"" if voice else (" · no voice" if e["kind"] == "character" else "")))
+                         + (f" · voice {voice['id']} \"{voice['title']}\"" if voice else (" · no voice" if e["kind"] == "character" else ""))
+                         + ((" · has a character sheet" + (" (scenes use it as its reference)" if e.get("ref_use") == "sheet" else ""))
+                            if e.get("sheet") in project.assets else ""))
             if e.get("description"):
                 lines.append(f"    description: {e['description']}")
     voices = [a for a in project.assets.values() if a["kind"] == "audio" and a.get("role") == "voice"]
@@ -328,7 +330,8 @@ def snapshot(project: Project, chat: dict | None = None) -> str:
         lines.append("Library items without an @name (not usable as references until the user names them; audio can be a scene's sound clip):")
         for a in unnamed[:40]:
             extra = f", {a['duration']:.1f}s" if a.get("duration") else ""
-            lines.append(f"- {a['id']} ({a['kind']}, {a['role']}{extra}): \"{a.get('title', '')}\"")
+            lines.append(f"- {a['id']} ({a['kind']}, {a['role']}{extra}): \"{a.get('title', '')}\""
+                         + (f" — {a['description'][:160]}" if a.get("description") else ""))
         if len(unnamed) > 40:
             lines.append(f"- … and {len(unnamed) - 40} more")
     scenes = project.scenes
@@ -565,9 +568,10 @@ TOOLS = [
         {"character": {"type": "string", "description": "its name or @name"}, "description": {"type": "string", "description": "the complete new description"},
          "new_name": {"type": "string"}, "voice": {"type": "string", "description": "a voice sample (a_… id or @name) for its spoken lines"}}, ["character"]),
     _fn("make_images", "Propose generating images of a character or place: a new outfit/look or variation, a new angle/pose, "
-        "start frames of a character in a place, or more designs. Uses its description and main look automatically — describe only the change.",
+        "start frames of a character in a place, more designs, or a character sheet (front, side and back in one picture, which "
+        "scenes can use as its reference). Uses its description and main look automatically — describe only the change.",
         {"character": {"type": "string", "description": "its name or @name"},
-         "action": {"type": "string", "enum": ["look", "angle", "place", "more"]},
+         "action": {"type": "string", "enum": ["look", "angle", "place", "more", "sheet"]},
          "change": {"type": "string", "description": "look: 'wearing a winter coat'; angle: 'from the side, walking'; place: what happens there"},
          "place": {"type": "string", "description": "action place: the place's name or @name"},
          "count": {"type": "integer", "description": "1-4 (default 2)"}}, ["character", "action"]),
@@ -1234,8 +1238,10 @@ def _plan_studio(project: Project, tool: str, args: dict) -> tuple[dict, str]:
     if tool == "make_images":
         e = find_entity(project, args.get("character"))
         action = {"more": "first"}.get(str(args.get("action")), str(args.get("action")))
-        if action not in ("look", "angle", "place", "first"):
-            raise ProjectError("action must be look, angle, place or more")
+        if action not in ("look", "angle", "place", "first", "sheet"):
+            raise ProjectError("action must be look, angle, place, more or sheet")
+        if action == "sheet" and e["kind"] not in ("character", "prop"):
+            raise ProjectError("a character sheet is for characters and props")
         change = str(args.get("change") or "").strip()
         if action in ("look", "angle") and not change:
             raise ProjectError("describe the change (e.g. 'wearing a winter coat')")
@@ -1249,8 +1255,8 @@ def _plan_studio(project: Project, tool: str, args: dict) -> tuple[dict, str]:
             if p["kind"] != "place" or not p.get("main"):
                 raise ProjectError(f"{p['name']} is not a place with a main image")
             place = p["id"]
-        count = max(1, min(4, int(args.get("count") or 2)))
-        label = {"look": f"new look of {e['name']}: {change}", "angle": f"{e['name']} {change}",
+        count = max(1, min(4, int(args.get("count") or (1 if action == "sheet" else 2))))
+        label = {"look": f"new look of {e['name']}: {change}", "angle": f"{e['name']} {change}", "sheet": f"a character sheet of {e['name']}",
                  "place": f"{e['name']} in {project.entities[place]['name'] if place else ''}: {change}", "first": f"more designs of {e['name']}"}[action]
         return ({"entity": e["id"], "action": action, "text": change, "place": place, "count": count}, f"Make {count} image(s) — {label}")
     # speak_line
@@ -2003,6 +2009,62 @@ class Assistant:
         chat.setdefault("compactions", []).append({"at": _now(), "upto": cut})
         save_chat(project, chat)
         return True
+
+
+_DESCRIBE_FOR = {
+    "character": ("a character", "what makes them look like themselves in every picture: age and build, face, hair (style and colour), "
+                  "eyes, skin, the outfit piece by piece with colours, shoes, accessories, distinctive marks; then the art style in a few words"),
+    "place": ("a place", "what makes it recognisable: the kind of place, its main structures and objects and where they are, materials "
+              "and colours, the time of day, weather and light, what is in the background; then the art style in a few words"),
+    "prop": ("an object", "its shape, size compared with a hand, materials, colours, markings or symbols on it; then the art style in a few words"),
+    "style": ("an art style", "the medium and technique, line work, shading, colour palette, level of detail, lighting and mood"),
+}
+
+
+def describe_image(provider: dict, project: Project, asset_id: str, kind: str | None = None) -> dict:
+    """The model looks at a library image once and writes what a person would type for it:
+    {"name", "description"} for a new character / place / prop / style (kind), or {"name", "description", "kind"}
+    for an uploaded image (kind None: it also says what the image is). The user reviews it before it is used."""
+    asset = project.asset(asset_id)
+    if asset["kind"] != "image":
+        raise ProjectError("only an image can be described")
+    if not provider.get("vision"):
+        raise LLMError("the active assistant model cannot see images — choose one that can in Assistant settings")
+    if kind and kind not in _DESCRIBE_FOR:
+        raise ProjectError(f"kind must be one of {sorted(_DESCRIBE_FOR)}")
+    if kind:
+        what, how = _DESCRIBE_FOR[kind]
+        task = (f"This image shows {what} for an AI video. Give it a short name (one or two words; a person's first name if it is a "
+                f"person and none is visible, made up to fit) and a description of {how}. The description is added to every image "
+                "made of it and sent to the video model, so write it as one dense paragraph of visual facts, 40-90 words, no story, "
+                "no feelings, no 'the image shows'.")
+        shape = '{"name": "…", "description": "…"}'
+    else:
+        task = ("This image was added to the library of an AI video project. Say what it is: kind is one of character, place, prop, "
+                "style or other (a frame, a logo, a texture …). Give a short title (2-5 words) and a description of 30-70 words of "
+                "visual facts (who or what, colours, setting, art style), no story, no 'the image shows'.")
+        shape = '{"kind": "…", "name": "…", "description": "…"}'
+    known = (asset.get("title") or "").strip()
+    question = (task + (f"\n\nIts file is called \"{known}\" (a hint only)." if known else "")
+                + f"\n\nAnswer with only this JSON, nothing else: {shape}")
+    part = _image_part(project, asset["file"])
+    client = Client(provider)
+    result = client.chat([{"role": "user", "content": [part, {"type": "text", "text": question}]}], max_tokens=1200, thinking=False)
+    if not client.sees_images:
+        raise LLMError("the active assistant model cannot see images — choose one that can in Assistant settings")
+    text = (result["content"] or "").strip()
+    m = re.search(r"\{.*\}", text, re.S)
+    try:
+        data = json.loads(m.group(0)) if m else {}
+    except ValueError:
+        data = {}
+    if not isinstance(data, dict) or not str(data.get("description") or "").strip():
+        data = {"name": "", "description": re.sub(r"^```\w*|```$", "", text).strip()}   # it answered in prose: keep it
+    out = {"name": str(data.get("name") or "").strip()[:60], "description": " ".join(str(data.get("description") or "").split())}
+    if not kind:
+        guess = str(data.get("kind") or "other").strip().lower()
+        out["kind"] = guess if guess in (*_DESCRIBE_FOR, "other") else "other"
+    return out
 
 
 def describe_reference(provider: dict, project: Project, name: str) -> str:

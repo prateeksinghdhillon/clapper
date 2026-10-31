@@ -358,7 +358,7 @@ class Project:
 
     def update_asset(self, asset_id: str, **fields) -> dict:
         asset = self.asset(asset_id)
-        unknown = set(fields) - {"title", "role", "tags", "notes", "transcript", "look"}
+        unknown = set(fields) - {"title", "role", "tags", "notes", "transcript", "look", "description"}
         if unknown:
             raise ProjectError(f"cannot update {sorted(unknown)}")
         if "role" in fields and fields["role"] not in ASSET_ROLES:
@@ -440,7 +440,11 @@ class Project:
 
     def update_entity(self, entity_id: str, **fields) -> dict:
         entity = self.entity(entity_id)
-        unknown = set(fields) - {"name", "description", "voice", "notes", "default"}
+        unknown = set(fields) - {"name", "description", "voice", "notes", "default", "ref_use"}
+        if fields.get("ref_use") not in (None, "main", "sheet"):
+            raise ProjectError("ref_use must be main or sheet")
+        if fields.get("ref_use") == "sheet" and not entity.get("sheet"):
+            raise ProjectError(f"{entity['name']} has no character sheet yet — make one first")
         if unknown:
             raise ProjectError(f"cannot update {sorted(unknown)}")
         if "description" in fields:
@@ -465,6 +469,10 @@ class Project:
                 raise ProjectError(f"this is {self.entities[old]['name']}'s only image and its main look; "
                                    "add another look first, or remove the character")
             self.entities[old]["main"] = rest[-1]["id"]   # the newest other look
+        if old in self.entities and old != entity_id and self.entities[old].get("sheet") == asset_id:
+            self.entities[old]["sheet"] = None
+            if self.entities[old].get("ref_use") == "sheet":
+                self.entities[old]["ref_use"] = "main"
         if entity_id is None:
             asset.pop("entity", None)
             asset.pop("look", None)
@@ -494,20 +502,48 @@ class Project:
             self.save()
         return entity
 
+    def set_entity_sheet(self, entity_id: str, asset_id: str | None, *, save: bool = True) -> dict:
+        """The character sheet (every side in one picture) of this entity; scenes use it when ref_use is "sheet"."""
+        entity = self.entity(entity_id)
+        if asset_id is not None:
+            asset = self.asset(asset_id)
+            if asset.get("entity") != entity_id or asset["kind"] != "image":
+                raise ProjectError("the sheet must be one of its own images")
+            asset["sheet"] = True
+        entity["sheet"] = asset_id
+        if asset_id is None and entity.get("ref_use") == "sheet":
+            entity["ref_use"] = "main"
+        self._sync_entity_ref(entity)
+        if save:
+            self.save()
+        return entity
+
+    def entity_ref_image(self, entity: dict) -> str | None:
+        """The image the entity's @name points to: its sheet when chosen (and still there), else its main look."""
+        if entity.get("ref_use") == "sheet" and entity.get("sheet") in self.assets:
+            return entity["sheet"]
+        return entity.get("main")
+
     def _sync_entity_ref(self, entity: dict) -> None:
         """Keep the entity's @name on its main image, with its description as the definition."""
         name = entity.get("ref")
         if not name or not entity.get("main"):
             return
-        asset = self.assets[entity["main"]]
+        asset = self.assets[self.entity_ref_image(entity)]
+        sheet = asset["id"] != entity["main"]
         items = self.data["library"]["items"]
         existing = items.get(name)
         if existing and existing.get("entity") not in (None, entity["id"]):
             entity["ref"] = name = self._free_name(entity["name"])
             existing = None
-        definition = f"@{name} is {entity['name']}" + (f": {entity['description']}" if entity.get("description") else ".")
+        definition = (f"@{name} is {entity['name']}" + (" (shown from the front, side and back)" if sheet else "")
+                      + (f": {entity['description']}" if entity.get("description") else "."))
+        note = " (shown from the front, side and back)"
+        custom = (existing or {}).get("definition_custom") and (existing.get("definition") or "").replace(note, "")
+        if custom and sheet:   # a hand-written definition stays; it is told the picture shows every side
+            custom = re.sub(r"^(@\w+ is [^,:.]+)", lambda m: m.group(1) + note, custom, count=1) if re.match(r"^@\w+ is ", custom) else custom + note
         item = {"kind": "image", "file": asset["file"], "sha256": asset.get("sha256"), "description": entity["name"],
-                "definition": definition if not (existing or {}).get("definition_custom") else existing["definition"],
+                "definition": custom if custom else definition,
                 "source": f"library:{asset['id']}", "asset": asset["id"], "entity": entity["id"]}
         for key in ("card", "card_status", "definition_custom"):
             if existing and key in existing:
