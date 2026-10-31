@@ -237,7 +237,9 @@
         <span class="spacer"></span>
         <label class="lib-role">Add as<select id="libRole"></select></label>
         <label class="primary file-btn">+ Add files<input type="file" id="libFiles" multiple accept="image/*,audio/*,video/*,.m4a,.flac,.ogg,.opus"></label>
+        <button class="ai-btn create-btn" id="libCreate" title="Make images or speech with a tool (FLUX.2, Qwen3-TTS or your own workflows)">✨ Create…</button>
       </div>
+      <div class="jobs" id="libJobs"></div>
       <p class="hint">Images, sounds (mp3, wav, m4a, ogg, flac…) and video clips. Drop files anywhere in this window. Give an item an <b>@name</b> to use it as a reference in scenes; ★ = used by scenes that have no own list · ▶ = the first scene's start image.</p>
       <div class="lib-grid" id="libGrid"></div>
     </section>
@@ -250,6 +252,24 @@
       <textarea id="notesText" rows="4"></textarea>
       <button class="ghost" id="saveNotes">Save story notes</button>
     </details>
+  </div>
+</dialog>
+
+<dialog id="toolDlg" class="dlg tool-dlg">
+  <div class="dlg-head"><h2>Create</h2><button class="icon" data-close>✕</button></div>
+  <div class="dlg-body">
+    <div class="seg tool-tabs" id="toolTabs"></div>
+    <p class="hint" id="toolDesc"></p>
+    <div class="tool-form" id="toolForm"></div>
+    <details class="adv" id="toolAdv"><summary>More options</summary><div class="tool-form" id="toolAdvForm"></div>
+      <label>Seed (empty = random)<input type="number" id="toolSeed"></label></details>
+    <div class="row tool-run">
+      <label>Results<select id="toolCount"><option>1</option><option selected>2</option><option>4</option><option>8</option></select></label>
+      <label>Save as<select id="toolRole"></select></label>
+      <label class="grow">Title (optional)<input id="toolTitle" placeholder="e.g. Aoi, side view"></label>
+      <button class="primary big" id="toolRun">Create</button>
+    </div>
+    <p class="hint">Results appear in the Library as they finish. Each keeps the tool, settings and seed that made it, so you can run it again or vary it.</p>
   </div>
 </dialog>
 

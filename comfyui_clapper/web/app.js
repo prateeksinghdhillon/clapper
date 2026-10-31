@@ -99,6 +99,8 @@ function setProject(data) {
   renderBoard();
   if (state.sceneId && sceneById(state.sceneId)) renderEditor(); else closeEditor();
   syncPolling(); chatRefsChanged();
+  if ($("libraryDlg").open && !$("libraryDlg").contains(document.activeElement)) renderLibrary();
+  else if ($("libraryDlg").open) renderJobs();
 }
 
 // ------------------------------------------------------------------ profile login
@@ -505,6 +507,9 @@ function renderClips(scene) {
       a.duration && end > secs ? h("span", { class: "hint warn" }, `ends at ${end.toFixed(1)} s — the scene is ${secs} s, so the clip is cut; make the scene longer?`) : null,
       h("button", { class: "icon", title: "Remove from this scene", onclick: () => saveClips(clips.filter((_, j) => j !== i)) }, "✕"));
   }));
+  const vm = (effective()?.video_model || {}).mode || "fl2va";
+  if (clips.length && sceneMode(scene) === "continue" && vm !== "ref2va")
+    $("edClips").append(h("p", { class: "hint warn" }, "In testing, a sound clip in a continued scene rendered by FL2VA made a hard cut at the join; Ref2VA joined cleanly. Settings › Video model › Ref2VA for every scene avoids it."));
   const audio = Object.values(assets()).filter((a) => a.kind === "audio");
   $("edClipAdd").replaceChildren(h("option", { value: "" }, audio.length ? "+ Add a sound clip from the library…" : "+ Add sound clips in the Library first"),
     ...audio.map((a) => h("option", { value: a.id }, `${a.title}${a.duration ? " · " + fmtDur(a.duration) : ""} (${ROLE_LABEL[a.role] || a.role})`)));
@@ -632,7 +637,7 @@ function syncPolling() {
   clearInterval(state.polling); state.polling = null;
   clearTimeout(state.liveTimer); pollLive();
   if (!state.path) return;
-  const busy = takes().some((t) => t.status === "queued" || t.status === "rendering");
+  const busy = takes().some((t) => t.status === "queued" || t.status === "rendering") || jobs().some((j) => j.status === "queued" || j.status === "running");
   state.polling = setInterval(() => refresh(false), busy ? 4000 : 20000);
 }
 
@@ -644,6 +649,8 @@ async function refresh(showErrors) {
     if (data.changed.length) {
       const finished = data.changed.map((id) => data.project.takes[id]).filter((t) => t && t.status === "done").length;
       if (finished) toast(`${finished} take(s) finished`);
+      const made = data.changed.map((id) => (data.project.jobs || {})[id]).filter((j) => j && j.status === "done").length;
+      if (made) toast(`${made} new item(s) in the Library`);
     }
     if (!document.activeElement || !["edText", "edTitle", "edSeconds"].includes(document.activeElement.id) || data.changed.length) setProject(data.project);
     else { state.project = data.project; renderBoard(); }
@@ -868,7 +875,7 @@ function assetMeta(a) {
   if (a.width) bits.push(`${a.width}×${a.height}`);
   const o = a.origin || {};
   if (o.type === "frame") bits.push(`frame of ${parentLabel(o.take)} at ${Number(o.seconds).toFixed(1)} s`);
-  else if (o.type === "tool") bits.push(`made with ${o.tool}`);
+  else if (o.type === "tool") bits.push(`made with ${(o.tool_title || o.tool).replace(/ \(.*\)$/, "")} · seed ${o.seed}`);
   return bits.join(" · ");
 }
 
@@ -920,6 +927,7 @@ function nameForm(a) {
 }
 
 function renderLibrary() {
+  renderJobs();
   $("styleText").value = state.project.style || "";
   $("notesText").value = state.project.notes || "";
   $("libFilter").replaceChildren(...LIB_FILTERS.map(([v, label]) => h("span", { class: "chip" + (libFilter === v ? " on" : ""), onclick: () => { libFilter = v; renderLibrary(); } }, label)));
@@ -936,7 +944,12 @@ function renderLibrary() {
         h("span", { class: "hint" }, assetMeta(a))),
       ...names.map((n) => namedBox(n, library()[n])),
       nameBox,
-      h("div", { class: "row" }, nameBtn,
+      a.kind === "audio" && a.role === "voice" ? (() => {
+        const t = h("input", { placeholder: "What the sample says (helps speech tools)", value: a.transcript || "" });
+        t.onchange = () => guard(async () => { setProject(await call("/asset/update", { path: state.path, id: a.id, transcript: t.value })); toast("Transcript saved"); });
+        return h("label", { class: "transcript" }, "Transcript", t);
+      })() : null,
+      h("div", { class: "row" }, nameBtn, ...toolButtons(a),
         names.length ? null : h("button", { class: "ghost danger", title: "Move the file to the project's trash folder", onclick: () => guard(async () => {
           if (!confirm(`Remove "${a.title}" from the library?`)) return;
           setProject(await call("/asset/remove", { path: state.path, id: a.id })); renderLibrary();
@@ -959,6 +972,127 @@ $("libFiles").onchange = () => { const f = [...$("libFiles").files]; $("libFiles
 $("libraryDlg").addEventListener("dragover", (e) => { e.preventDefault(); $("libraryDlg").classList.add("drop"); });
 $("libraryDlg").addEventListener("dragleave", (e) => { if (e.target === $("libraryDlg")) $("libraryDlg").classList.remove("drop"); });
 $("libraryDlg").addEventListener("drop", (e) => { e.preventDefault(); $("libraryDlg").classList.remove("drop"); uploadFiles([...(e.dataTransfer?.files || [])]); });
+
+// ------------------------------------------------------------------ tools (Create)
+
+const toolState = { list: null, problems: [], current: null, values: {} };
+const jobs = () => Object.values(state.project?.jobs || {}).sort((a, b) => (b.created || "").localeCompare(a.created || ""));
+
+async function loadTools(force) {
+  if (toolState.list && !force) return toolState.list;
+  const d = await call("/tools");
+  toolState.list = d.tools; toolState.problems = d.problems || [];
+  return toolState.list;
+}
+
+async function openTool(toolId, values = {}) {
+  await guard(async () => {
+    const list = await loadTools();
+    const tool = list.find((t) => t.id === toolId) || list.find((t) => t.ok) || list[0];
+    toolState.current = tool.id;
+    toolState.values = { ...values };
+    renderTool();
+    if (!$("toolDlg").open) $("toolDlg").showModal();
+  });
+}
+
+function toolField(f, values) {
+  const v = values[f.key] ?? f.default ?? (f.type === "images" ? [] : "");
+  const set = (x) => { values[f.key] = x; };
+  let input;
+  if (f.type === "longtext") { input = h("textarea", { rows: 4, placeholder: f.placeholder || "" }); input.value = v; input.oninput = () => set(input.value); }
+  else if (f.type === "text") { input = h("input", { placeholder: f.placeholder || "", value: v }); input.oninput = () => set(input.value); }
+  else if (f.type === "select") {
+    input = h("select", {}, f.options.map((o) => h("option", { value: o, selected: String(o) === String(v) }, o)));
+    input.onchange = () => set(f.options.find((o) => String(o) === input.value));
+  } else if (f.type === "int" || f.type === "float") {
+    input = h("input", { type: "number", value: v, min: f.min, max: f.max, step: f.step || (f.type === "int" ? 1 : 0.05) });
+    input.onchange = () => set(input.value === "" ? null : Number(input.value));
+  } else if (f.type === "images" || f.type === "image") {
+    const multi = f.type === "images";
+    const chosen = multi ? [...v] : (v ? [v] : []);
+    set(multi ? chosen : (chosen[0] || null));
+    const imgs = Object.values(assets()).filter((a) => a.kind === "image");
+    const grid = h("div", { class: "pick-grid" });
+    const draw = () => grid.replaceChildren(...(imgs.length ? imgs.map((a) => {
+      const idx = chosen.indexOf(a.id);
+      return h("button", { class: "pick" + (idx >= 0 ? " on" : ""), type: "button", title: a.title, onclick: () => {
+        if (idx >= 0) chosen.splice(idx, 1);
+        else { if (!multi) chosen.length = 0; if (f.max && chosen.length >= f.max) { toast(`At most ${f.max}`, true); return; } chosen.push(a.id); }
+        set(multi ? [...chosen] : (chosen[0] || null)); draw();
+      } }, h("img", { src: media(a.file), loading: "lazy" }), idx >= 0 ? h("span", { class: "pick-n" }, multi ? `image ${idx + 1}` : "✓") : null,
+        h("span", { class: "pick-t" }, assetNames(a.id).map((n) => "@" + n).join(" ") || a.title));
+    }) : [h("p", { class: "hint" }, "No images in the library yet.")]));
+    draw(); input = grid;
+  } else if (f.type === "audio") {
+    const sounds = Object.values(assets()).filter((a) => a.kind === "audio");
+    input = h("select", {}, h("option", { value: "" }, sounds.length ? "Choose a sound from the library…" : "Add a voice sample to the library first"),
+      ...sounds.map((a) => h("option", { value: a.id, selected: a.id === v }, `${a.title}${a.duration ? " · " + fmtDur(a.duration) : ""} (${ROLE_LABEL[a.role] || a.role})`)));
+    input.onchange = () => {
+      set(input.value || null);
+      // a transcript saved on the sample fills the matching field
+      const tool = toolState.list.find((t) => t.id === toolState.current);
+      const dep = tool.fields.find((x) => x.from_asset === "transcript");
+      const a = assets()[input.value];
+      if (dep && a && a.transcript && !values[dep.key]) { values[dep.key] = a.transcript; renderTool(); }
+    };
+  }
+  return h("label", { class: "tool-field" + (f.type === "images" ? " wide" : "") }, f.label + (f.required ? " *" : ""), input, f.hint ? h("span", { class: "hint" }, f.hint) : null);
+}
+
+function renderTool() {
+  const list = toolState.list || []; const tool = list.find((t) => t.id === toolState.current);
+  $("toolTabs").replaceChildren(...list.map((t) => h("button", { class: t.id === tool.id ? "on" : "", title: t.ok ? t.description : "Cannot run here: " + t.missing.join(", "),
+    onclick: () => { toolState.current = t.id; toolState.values = {}; renderTool(); } }, (t.kind === "audio" ? "🗣 " : "🖼 ") + t.title + (t.ok ? "" : " ⚠"))));
+  $("toolDesc").replaceChildren(tool.description, tool.ok ? "" : h("span", { class: "hint warn" }, ` — cannot run on this ComfyUI: missing ${tool.missing.join(", ")}.`),
+    toolState.problems.length ? h("span", { class: "hint warn" }, ` Your own tools with problems: ${toolState.problems.join("; ")}`) : "");
+  $("toolForm").replaceChildren(...tool.fields.filter((f) => !f.advanced).map((f) => toolField(f, toolState.values)));
+  const adv = tool.fields.filter((f) => f.advanced);
+  $("toolAdvForm").replaceChildren(...adv.map((f) => toolField(f, toolState.values)));
+  $("toolRole").replaceChildren(...(state.project.asset_roles || Object.keys(ROLE_LABEL)).map((r) => h("option", { value: r, selected: r === (toolState.values.__role || tool.default_role) }, ROLE_LABEL[r] || r)));
+  $("toolRun").disabled = !tool.ok || isBusy("tool");
+  $("toolRun").dataset.once = "tool";
+}
+
+$("libCreate").onclick = () => openTool(toolState.current || "image");
+$("toolRun").onclick = () => once("tool", async () => {
+  const tool = toolState.list.find((t) => t.id === toolState.current);
+  const inputs = Object.fromEntries(tool.fields.map((f) => [f.key, toolState.values[f.key] ?? f.default ?? null]));
+  const body = { path: state.path, tool: tool.id, inputs, count: Number($("toolCount").value), role: $("toolRole").value, title: $("toolTitle").value };
+  if ($("toolSeed").value) body.seed = Number($("toolSeed").value);
+  const d = await call("/tool/run", body);
+  setProject(d.project);
+  toast(`${d.jobs.length} queued — results appear in the Library`);
+  $("toolDlg").close();
+  if (!$("libraryDlg").open) { renderLibrary(); $("libraryDlg").showModal(); }
+}).then(renderTool);
+
+const JOB_CLS = { queued: "info", running: "info", done: "ok", failed: "bad", interrupted: "warn", cancelled: "muted" };
+function renderJobs() {
+  const list = jobs().filter((j) => j.status !== "done");
+  const done = jobs().filter((j) => j.status === "done");
+  const cur = state.live?.current;
+  $("libJobs").replaceChildren(...list.map((j) => {
+    const live = cur && j.prompt_id === cur.prompt_id && cur.total ? ` · step ${cur.step}/${cur.total}` : "";
+    return h("div", { class: "job" },
+      h("span", { class: `badge ${JOB_CLS[j.status] || "muted"}` }, j.status === "queued" ? "waiting" : j.status === "running" ? "making…" : j.status),
+      h("span", { class: "job-t", title: JSON.stringify(j.inputs) }, `${j.tool_title}: ${j.title || (j.inputs.prompt || j.inputs.text || "").slice(0, 70)}`, h("span", { class: "hint" }, live + (j.error ? " · " + j.error.slice(0, 120) : ""))),
+      h("span", { class: "spacer" }),
+      j.status === "queued" || j.status === "running"
+        ? h("button", { class: "danger", ...busyAttr(`cancel:${j.id}`), onclick: () => once(`cancel:${j.id}`, async () => setProject(await call("/tool/cancel", { path: state.path, job_id: j.id }))) }, "Cancel")
+        : h("button", { onclick: () => openTool(j.tool, { ...j.inputs }) }, "Edit & run again"),
+      j.status !== "queued" && j.status !== "running" ? h("button", { class: "icon", title: "Remove from this list", onclick: () => guard(async () => { setProject(await call("/tool/dismiss", { path: state.path, job_id: j.id })); renderLibrary(); }) }, "✕") : null);
+  }), done.length ? h("button", { class: "ghost small", onclick: () => guard(async () => { setProject(await call("/tool/dismiss", { path: state.path, finished: true })); renderLibrary(); }) }, `Clear ${done.length} finished job(s) from the history`) : null);
+}
+
+// Asset buttons that open a tool: vary an image, speak with a voice, run a tool result again.
+function toolButtons(a) {
+  const out = [];
+  if (a.kind === "image") out.push(h("button", { title: "Make new images from this one: same character in a new pose, place or outfit", onclick: () => openTool("image", { images: [a.id] }) }, "✨ Vary…"));
+  if (a.kind === "audio" && (a.role === "voice" || a.role === "speech")) out.push(h("button", { title: "Say new words in this voice", onclick: () => openTool("speech", { voice: a.id, voice_text: a.transcript || "" }) }, "🗣 Speak…"));
+  if (a.origin?.type === "tool") out.push(h("button", { title: "Open the tool with the settings that made this", onclick: () => openTool(a.origin.tool, { ...a.origin.inputs }) }, "↻ Again…"));
+  return out;
+}
 
 async function projectUpdate(fields) { const d = await guard(() => call("/project/update", { path: state.path, ...fields })); if (d) { setProject(d); renderLibrary(); } return d; }
 const toggleDefault = (name) => { const d = state.project.library.defaults; projectUpdate({ defaults: d.includes(name) ? d.filter((n) => n !== name) : [...d, name] }); };

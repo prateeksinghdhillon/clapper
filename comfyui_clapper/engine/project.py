@@ -303,7 +303,7 @@ class Project:
 
     def update_asset(self, asset_id: str, **fields) -> dict:
         asset = self.asset(asset_id)
-        unknown = set(fields) - {"title", "role", "tags", "notes"}
+        unknown = set(fields) - {"title", "role", "tags", "notes", "transcript"}
         if unknown:
             raise ProjectError(f"cannot update {sorted(unknown)}")
         if "role" in fields and fields["role"] not in ASSET_ROLES:

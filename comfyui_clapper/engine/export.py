@@ -8,7 +8,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from .project import Project, ProjectError
+from .project import Project, ProjectError, folder_name
 
 FFMPEG = shutil.which("ffmpeg") or os.path.expanduser("~/.local/bin/ffmpeg")
 FPS = 24
@@ -78,7 +78,8 @@ def export_video(project: Project, *, name: str | None = None, partial: bool = F
     out_dir = project.root / "exports"
     out_dir.mkdir(exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    out = out_dir / f"{name or project.data['name'].replace(' ', '_')}-{stamp}.mp4"
+    # File names that work on every system: the project's folder-style name (letters, digits, dashes).
+    out = out_dir / f"{folder_name(name or project.data['name'])}-{stamp}.mp4"
 
     cmd = [FFMPEG, "-v", "error", "-y"]
     for seg in segments:

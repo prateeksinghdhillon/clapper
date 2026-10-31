@@ -17,7 +17,7 @@ from aiohttp import web
 from server import PromptServer
 
 from . import gpu, live, sysstats
-from .engine import director, media as media_tools, profiles, registry, repeats
+from .engine import director, media as media_tools, profiles, registry, repeats, tools
 from .engine.comfy_client import ComfyClient
 from .engine.export import export_check, export_video
 from .engine.project import ASSET_ROLES, Project, ProjectError, delete_project_folder, disk_usage, folder_name
@@ -498,7 +498,7 @@ async def update_asset(request):
     try:
         async with _lock:
             project = _open(body["path"], request)
-            project.update_asset(body["id"], **{k: body[k] for k in ("title", "role", "tags", "notes") if k in body})
+            project.update_asset(body["id"], **{k: body[k] for k in ("title", "role", "tags", "notes", "transcript") if k in body})
         return _ok(_view(project))
     except (KeyError, ProjectError, OSError) as exc:
         return _err(exc)
@@ -558,6 +558,82 @@ async def grab_frame(request):
                 project, body["take_id"], float(body.get("seconds", 0)), title=body.get("title", "")))
         return _ok({"project": _view(project), "asset": asset})
     except (KeyError, ProjectError, OSError, ValueError) as exc:
+        return _err(exc)
+
+
+# ------------------------------------------------------------------ tools (image, speech, user workflows)
+
+@routes.get("/clapper/api/tools")
+async def list_tools(request):
+    """The tools, their forms, and whether each can run on this ComfyUI (nodes and model files present)."""
+    try:
+        loop = asyncio.get_running_loop()
+        found, problems = await loop.run_in_executor(None, tools.all_tools)
+        avail = await loop.run_in_executor(None, lambda: tools.availability(found, _client().object_info))
+        return _ok({"tools": [{**t.describe(), **avail[t.id]} for t in found], "problems": problems})
+    except (OSError, ProjectError) as exc:
+        return _err(exc)
+
+
+@routes.post("/clapper/api/tool/run")
+async def run_tool(request):
+    """path, tool, inputs {…}, count (1–8), role, seed, title → one job per result."""
+    body = await _body(request)
+    try:
+        loop = asyncio.get_running_loop()
+        async with _lock:
+            project = _open(body["path"], request)
+            jobs = await loop.run_in_executor(None, lambda: tools.queue_tool(
+                project, _client(), body["tool"], body.get("inputs") or {}, count=int(body.get("count") or 1),
+                role=body.get("role"), seed=body.get("seed"), title=body.get("title", "")))
+        return _ok({"jobs": [j["id"] for j in jobs], "project": _view(project)})
+    except (KeyError, ProjectError, OSError, ValueError, RuntimeError) as exc:
+        return _err(exc)
+
+
+@routes.post("/clapper/api/tool/cancel")
+async def cancel_tool(request):
+    """path, job_id (or all: true): stop running tool jobs, take waiting ones out of the queue."""
+    import nodes as comfy_nodes
+
+    body = await _body(request)
+    try:
+        async with _lock:
+            project = _open(body["path"], request)
+            jobs = project.data.get("jobs") or {}
+            active = [j for j in jobs.values() if j["status"] in ("queued", "running")]
+            targets = active if body.get("all") else [j for j in active if j["id"] == body.get("job_id")]
+            if not targets:
+                raise ProjectError("that job is not running or waiting")
+            queue = PromptServer.instance.prompt_queue
+            running, _pending = queue.get_current_queue()
+            running_ids = {item[1] for item in running}
+            for job in targets:
+                pid = job.get("prompt_id")
+                if pid in running_ids:
+                    comfy_nodes.interrupt_processing()
+                elif pid:
+                    queue.delete_queue_item(lambda item, pid=pid: item[1] == pid)
+                job.update(status="cancelled", error="cancelled by you")
+            project.save()
+        return _ok(_view(project))
+    except (KeyError, ProjectError, OSError) as exc:
+        return _err(exc)
+
+
+@routes.post("/clapper/api/tool/dismiss")
+async def dismiss_tool(request):
+    body = await _body(request)
+    try:
+        async with _lock:
+            project = _open(body["path"], request)
+            if body.get("finished"):
+                for jid in [j["id"] for j in (project.data.get("jobs") or {}).values() if j["status"] not in ("queued", "running")]:
+                    tools.dismiss(project, jid)
+            else:
+                tools.dismiss(project, body["job_id"])
+        return _ok(_view(project))
+    except (KeyError, ProjectError, OSError) as exc:
         return _err(exc)
 
 
@@ -681,6 +757,7 @@ async def refresh(request):
             project = _open(body["path"], request)
             loop = asyncio.get_running_loop()
             changed = await loop.run_in_executor(None, lambda: director.refresh(project, _client()))
+            changed += await loop.run_in_executor(None, lambda: tools.collect(project, _client()))
             for take in project.data["takes"].values():  # remember how long finished takes took
                 if take["status"] == "done" and not take.get("s_per_it") and take.get("prompt_id"):
                     stats = live.LIVE.result_for(take["prompt_id"])

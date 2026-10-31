@@ -46,6 +46,7 @@ ComfyUI server ── comfyui_clapper ──────────────
    engine/       pure Python, no torch — usable from the CLI and tests
       project.py   project store, asset library, @name compile, definitions, start images, sound clips, badges, take numbering
       media.py     ffprobe / ffmpeg helpers for library files (durations, sizes, frames of takes)
+      tools.py     Create tools (FLUX.2 image, Qwen3-TTS speech, user workflows) and their jobs
       director.py  plan / queue / chain / refresh / requeue
       graph.py     ComfyUI API graph for one take
       export.py    export plan, checks, ffmpeg join
@@ -55,7 +56,7 @@ ComfyUI server ── comfyui_clapper ──────────────
       repeats.py   short-window refusal of repeated render / re-queue requests
       llm.py       OpenAI-compatible chat client, provider settings, llama-swap load/eject/cache
       assistant.py instructions, project snapshot, tools, proposals, chats, compaction
-   nodes.py      Clapper · Scene Conditioning, Clapper · Save Take (torch side)
+   nodes.py      Clapper · Scene Conditioning, Save Take, Load Image / Load Audio (path), Save Images / Save Audio (job)
    web/          the interface (plain HTML/CSS/JS, no build step)
    js/           ComfyUI sidebar tab
 Project folders on disk (project.json, refs/, assets/, trash/, takes/, exports/, history/, chat/)
@@ -105,6 +106,11 @@ Key decisions:
 | Anchored audio clip (`audio_guides`, at 0.5 s) | the soundtrack is the clip: envelope correlation 0.995 at zero lag, waveform correlation 0.95 (an unanchored take: 0.28 / 0.03); mouths stayed closed as prompted |
 | Voice reference (`<Audio 1>`) with new words | new words spoken (envelope correlation with the sample 0.13); pitch median 115 Hz vs the sample's 113 Hz (no voice reference: 131 Hz), spectral similarity 0.96 vs 0.84 — likely the same voice; not yet confirmed by listening |
 | Qwen3-TTS 1.7B Base, voice clone from a saved voice, English | a 4.4 s line in 12 s including model load |
+| Mixed models: FL2VA scene continuing a Ref2VA take (same seed and parent, three runs) | without a sound clip: clean join (4.1); **with a sound clip at 0.5 s: hard cut right after the carried frames (41.8)**; the same scene on Ref2VA with the clip: clean (2.9). Clip reproduced in all (envelope 0.98). One seed — a strong hint, not proof; the editor warns about this combination |
+| Image tool: FLUX.2 Klein 9B fp8, 768×1344, same seed, 4 vs 20 steps | 3.9 s vs 56 s; equal quality (the checkpoint is distilled) — 4 steps is the default. With 1–2 reference images about 9–15 s; the first job after a video render ≈ 30–50 s (model load) |
+| Image tool with references (character + location) | an original anime character and an empty location combined into a start frame: character, outfit, umbrella and the exact shelter kept |
+| Speech tool: Qwen3-TTS 1.7B Base clone, English line, 7 s voice sample | 4.6 s line in 8–10 s |
+| End to end, original anime short: character and location made with the image tool, line with the speech tool, 7 s scene from the start frame with the line as a sound clip, then a continued scene, Ref2VA for both | line placed exactly (envelope 0.97 at zero lag); scene 1 179 s, scene 2 123 s; join clean (5.2 vs ≈3 in-take); story beats followed (headlights, she stands, umbrella snaps open, bus arrives) |
 | Ref2VA: Ref2V Turbo LoRA at 4 vs 20 steps (same seed, start image) | 114 s vs 396 s; frames nearly identical, no visible gain at 20 — 4 steps is the Ref2VA default |
 
 ## Roadmap
@@ -134,6 +140,8 @@ The next version's plan (library, image and speech tools, start modes, finishing
 | Library: every image / sound / clip with role and origin; `@name` = a named library item; save a take's frame; trash | done |
 | Start mode per scene: continue · from image · fresh (references only) · bridge | done |
 | Video model per project: FL2VA · Ref2VA · Ref2VA for fresh scenes (per-take model recorded) | done |
+| Create tools: image (FLUX.2 Klein: new, vary, combine), speech (Qwen3-TTS clone), batches, job list, run again; your own tools from a workflow + `tool.json` | done |
+| Character / place sheets (many angles from one image) | planned |
 | Video references | planned |
 | Overlays in export (exact logos, product photos, text cards with position, timing, simple animation) | planned |
 | Seam correction at joins (port Continuum's audio/video seam logic) | planned if joins show flicker |

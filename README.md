@@ -20,6 +20,12 @@ Storyboard ──► Scene editor ──► Render take ──► Takes (numbere
 - **Nothing re-renders silently.** Change a scene and the later scenes get a badge such as *previous scene changed*. You decide what to redo.
 - **Per-scene references.** Images and voice samples live in a named library (`@hero`, `@logo`, `@narrator`). Each scene uses the project defaults or its own list, and Clapper numbers them correctly (`<Picture N>`, `<Audio N>`) for every scene.
 
+**Making what a video needs**
+- **Library** of every image, sound and clip in the project, with where it came from. Any item becomes a reference with an `@name`.
+- **✨ Create** images with FLUX.2 Klein (new, or the same character in a new pose or place, several references combined) and speech with Qwen3-TTS voice cloning. Add your own ComfyUI workflows as tools with a small `tool.json`.
+- **Sound clips**: a recorded or generated line placed in a scene becomes its soundtrack, word for word, and the picture is made around it.
+- **Start any scene** by continuing the previous one, from a library image, or fresh from the references; render with MiniMax H3 FL2VA or Ref2VA.
+
 **Working with it**
 - **Web interface** served by ComfyUI: storyboard, scene editor, references, settings, export. It works on a phone too.
 - **Live progress.** Each render shows its phase, step, seconds per step and time left. You get Stop / Cancel buttons, machine stats (CPU, RAM, GPU, VRAM, temperatures) and ComfyUI's log.
@@ -47,6 +53,10 @@ Storyboard ──► Scene editor ──► Render take ──► Takes (numbere
 - **[comfyui-kjnodes](https://github.com/kijai/ComfyUI-KJNodes)** for the `MiniMaxChunkFeedForward` memory patch. It is on by default and can be switched off in Settings.
 - **ffmpeg** on the PATH of the ComfyUI process (`~/.local/bin` is also searched).
 - **A GPU that runs H3 at your chosen size.** Tested on an RTX 5060 Ti 16 GB with 31 GB RAM on Linux: a 5-second scene at 416×736 takes about 5–6 minutes with the default settings. Other GPUs are untested. If you run out of memory, lower the megapixels, use fewer references and keep the memory patch on.
+- **Optional, for the Create tools** (each tool says what it is missing):
+  - images: FLUX.2 Klein 9B (`diffusion_models/flux-2-klein-9b-fp8.safetensors`, `text_encoders/qwen_3_8b_fp8mixed.safetensors`, `vae/flux2-vae.safetensors`; for changing images also `loras/Flux2-Klein-9B-consistency-V2.safetensors`);
+  - speech: the [qwen3-tts-comfyui](https://github.com/flybirdxx/ComfyUI-Qwen-TTS) node pack with its 1.7B Base model.
+- **Optional, for the Ref2VA video model:** `diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors` and `loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors`.
 - **Optional, for the assistant:**
   - a local model: [llama-swap](https://github.com/mostlygeek/llama-swap) in front of llama.cpp, with a model that fits your GPU (plus its vision projector if it should see images). It takes turns with H3 on the GPU. See [Reference › Local model](docs/REFERENCE.md#local-model-with-llama-swap).
   - or an API key for any OpenAI-compatible service (OpenAI, OpenRouter, Groq, …, or LM Studio / Ollama on another computer). This needs no GPU.

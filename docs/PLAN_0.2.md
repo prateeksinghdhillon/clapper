@@ -129,8 +129,8 @@ One **job tray** (the existing status pill and live bar) shows every kind of job
 |---|---|---|
 | M0 | Tests T0–T5 on a GPU (CLI, no interface) | **done** — results in DESIGN.md |
 | M1 | Library (A1–A3), start modes (C1), video model (C2), audio import + voice refs + sound clips (C3) | **done** — the job tray for tool jobs moves to M2, where the first tool jobs appear |
-| M2 | Adapter system, image tools B1–B4, batches B8, versions A4 | a character made, varied and used as `@name` in a scene |
-| M3 | Speech B5 (B6 if the model is present) | a generated line used in a scene (C3) |
+| M2 | Adapter system, image tools B1–B4, batches B8, versions A4 | **done** except B4 (sheets) — an original anime character made, varied, combined with a location into a start frame and used in scenes |
+| M3 | Speech B5 (B6 if the model is present) | **B5 done** (built with M2) — a generated line used as a scene's sound clip; B6 needs the Voice Design model |
 | M4 | Finish screen D1–D4, then D5–D6 | an upscaled export with a logo overlay and music |
 | M5 | Assistant E1–E5 across the above; E6 | the assistant plans a video including its assets |
 | later | Shared library (A5), video references (C4), more video models through adapters, lip-sync | — |

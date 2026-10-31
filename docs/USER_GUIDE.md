@@ -152,6 +152,21 @@ Open it with **Library** in the top bar (on a phone: the profile menu).
 - **Remove** — moves an item without an `@name` to the project's `trash/` folder. Items used as a sound clip in a scene cannot be removed.
 - **Shared style text and story notes** (folded at the bottom) — the style text is sent with every scene; changing it changes every scene's prompt (all scenes will show *prompt edited since take*). Story notes are the assistant's memory and are not sent to H3.
 
+### Create (images and speech)
+
+**✨ Create…** in the Library opens the tools. Each result is a new library item that remembers the tool, its settings and seed (**↻ Again…** reopens the tool with them).
+
+| Tool | Makes | Needs |
+|---|---|---|
+| **Image (FLUX.2 Klein)** | A new image from a description — a character design, a place, a prop, a start frame. Choose up to 4 library images to *change* them instead: the same character in a new pose, outfit or place, or several images combined ("the girl from image 1 sits in the shelter from image 2"). About 4 s per image at the default 4 steps on a 16 GB card. | FLUX.2 Klein 9B (`flux-2-klein-9b-fp8`), its text encoder `qwen_3_8b_fp8mixed` and `flux2-vae`; with images also the Klein consistency LoRA (strength under *More options*) |
+| **Speech (Qwen3-TTS voice clone)** | A spoken line in the voice of a sample from the library, in 10 languages. Use the result as a scene's sound clip. A few seconds per line. | The `qwen3-tts-comfyui` node pack and its 1.7B Base model; a clean voice sample of a few seconds (its transcript, if you type it on the sample, improves the likeness) |
+| **Your own tools** | Anything a ComfyUI workflow makes — see the [Reference](REFERENCE.md#adding-your-own-tool) | — |
+
+- Choose how many **results** (1–8, each its own seed), what to **save as** (role) and an optional title; results from one run are numbered.
+- Shortcuts on library items: **✨ Vary…** (image tool with that image picked), **🗣 Speak…** (speech tool with that voice), **↻ Again…** (the settings that made it).
+- Running and failed jobs are listed at the top of the Library with **Cancel**, **Edit & run again** and ✕; finished jobs simply appear as new items. Tools that cannot run on this ComfyUI (a node pack or model file missing) say what is missing.
+- Tool jobs share ComfyUI's queue with takes, in the order queued. Making the images and voices first, then rendering scenes, keeps model switching to a minimum.
+
 A **voice sample** with an `@name` used in a scene is a *voice reference*: the scene's speaker gets that voice and says new words written in the text. A **sound clip** (scene editor) is played as-is. Use a voice reference for new lines in a known voice, a sound clip for lines you already have as audio.
 
 Limits per scene: up to 9 images and 3 audio references. Video references are not supported yet.
@@ -205,7 +220,7 @@ The local model is small and runs at about 2 bits: it follows the workflow well 
 
 ### Start a new video
 
-1. New project → Library: add the start image, characters, props, style sheet and any voice samples or recorded lines; give the images an `@name` (start image ▶, the rest ★) and write their definitions.
+1. New project → Library: add or **✨ Create** the characters, places and start image, give them an `@name` (start image ▶, the rest ★) and write their definitions. Add a voice sample and **🗣 Speak** the lines you need.
 2. Style text: format, art style, rules that always apply.
 3. Scene 1 → **Render take**. Judge the style, the characters and the sound before going further.
 4. Write the remaining scenes (you can write them all first), then **Render remaining**.

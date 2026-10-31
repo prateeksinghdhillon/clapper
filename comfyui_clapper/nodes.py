@@ -328,11 +328,108 @@ def _write_mp4(path: Path, images: torch.Tensor, wav_path: Path) -> None:
         raise RuntimeError(f"ffmpeg failed: {proc.stderr.decode(errors='replace')[-800:]}")
 
 
+# ---------------------------------------------------------------- tool jobs (library files in, job folder out)
+
+class ClapperLoadImage:
+    """Loads an image from an absolute path (a Clapper library file) as RGB."""
+
+    CATEGORY = "Clapper"
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "load"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"path": ("STRING", {"default": ""})}}
+
+    def load(self, path):
+        return (_load_image(path),)
+
+
+class ClapperLoadAudio:
+    """Loads any audio file ffmpeg/PyAV can read (mp3, wav, m4a, ogg, flac, …) from an absolute path."""
+
+    CATEGORY = "Clapper"
+    RETURN_TYPES = ("AUDIO",)
+    FUNCTION = "load"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"path": ("STRING", {"default": ""})}}
+
+    def load(self, path):
+        return (_load_audio(path),)
+
+
+def _job_dir(out_dir: str) -> Path:
+    path = Path(out_dir)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+class ClapperSaveImages:
+    """Writes every image of the batch as PNG into a Clapper job folder."""
+
+    CATEGORY = "Clapper"
+    RETURN_TYPES = ()
+    FUNCTION = "save"
+    OUTPUT_NODE = True
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"images": ("IMAGE",), "out_dir": ("STRING", {"default": ""}),
+                             "prefix": ("STRING", {"default": "image"})}}
+
+    def save(self, images, out_dir, prefix):
+        folder = _job_dir(out_dir)
+        names = []
+        for i, img in enumerate(images):
+            arr = (img.detach().float().cpu().clamp(0, 1).numpy() * 255.0).round().astype(np.uint8)
+            name = f"{prefix}_{i + 1:02d}.png"
+            tmp = folder / (name + ".tmp")
+            Image.fromarray(arr).save(tmp, format="PNG")
+            os.replace(tmp, folder / name)
+            names.append(name)
+        return {"ui": {"text": names}}
+
+
+class ClapperSaveAudio:
+    """Writes audio as WAV into a Clapper job folder."""
+
+    CATEGORY = "Clapper"
+    RETURN_TYPES = ()
+    FUNCTION = "save"
+    OUTPUT_NODE = True
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"audio": ("AUDIO",), "out_dir": ("STRING", {"default": ""}),
+                             "prefix": ("STRING", {"default": "audio"})}}
+
+    def save(self, audio, out_dir, prefix):
+        folder = _job_dir(out_dir)
+        names = []
+        for i, wave_ in enumerate(audio["waveform"]):
+            name = f"{prefix}_{i + 1:02d}.wav"
+            tmp = folder / (name + ".tmp")
+            _write_wav(tmp, wave_, audio["sample_rate"])
+            os.replace(tmp, folder / name)
+            names.append(name)
+        return {"ui": {"text": names}}
+
+
 NODE_CLASS_MAPPINGS = {
     "ClapperSceneConditioning": ClapperSceneConditioning,
     "ClapperSaveTake": ClapperSaveTake,
+    "ClapperLoadImage": ClapperLoadImage,
+    "ClapperLoadAudio": ClapperLoadAudio,
+    "ClapperSaveImages": ClapperSaveImages,
+    "ClapperSaveAudio": ClapperSaveAudio,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "ClapperSceneConditioning": "Clapper · Scene Conditioning",
     "ClapperSaveTake": "Clapper · Save Take",
+    "ClapperLoadImage": "Clapper · Load Image (path)",
+    "ClapperLoadAudio": "Clapper · Load Audio (path)",
+    "ClapperSaveImages": "Clapper · Save Images (job)",
+    "ClapperSaveAudio": "Clapper · Save Audio (job)",
 }

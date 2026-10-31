@@ -384,3 +384,27 @@ body.chat-open main { padding-left: min(460px, 100vw); }
 #playerActions { margin-top: 8px; }
 .card-fold summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
 .card-fold[open] summary { margin-bottom: 4px; }
+
+/* ---------------------------------------------------------------- tools */
+.create-btn { padding: 7px 14px; }
+.jobs { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.jobs:empty { display: none; }
+.job { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-2); font-size: 13px; min-width: 0; }
+.job .job-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job button { padding: 3px 8px; font-size: 12px; }
+.small { font-size: 12px; padding: 3px 8px; align-self: flex-start; }
+.tool-dlg { width: min(860px, 96vw); }
+.tool-tabs { margin-bottom: 6px; }
+.tool-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr)); gap: 10px; margin: 8px 0; }
+.tool-field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.tool-field.wide, .tool-field:has(textarea) { grid-column: 1 / -1; }
+.pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; max-height: 260px; overflow: auto; }
+.pick { position: relative; padding: 3px; border: 2px solid var(--line); border-radius: 8px; background: var(--panel); display: flex; flex-direction: column; gap: 2px; cursor: pointer; }
+.pick.on { border-color: var(--accent); }
+.pick img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 5px; }
+.pick-n { position: absolute; top: 4px; left: 4px; background: var(--accent); color: #fff; font-size: 11px; padding: 1px 6px; border-radius: 99px; }
+.pick-t { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-run { align-items: flex-end; margin-top: 8px; }
+.tool-run label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.tool-run .grow { flex: 1; min-width: 160px; }
+.lib-item .transcript { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }

@@ -124,6 +124,10 @@ Served by ComfyUI under `/clapper/`. JSON in, JSON out; errors return `{"error":
 | `POST /clapper/api/asset/name` | `path`, `id`, `name`, `definition`, `default`, `start` | Give a library item an `@name` |
 | `POST /clapper/api/asset/remove` | `path`, `id` | Move an item without `@name` to `trash/` (refused while a scene uses it as a sound clip) |
 | `POST /clapper/api/ref/remove` | `path`, `name` | Remove an `@name` (refused while the style text or a scene's text mentions it); the item stays |
+| `GET /clapper/api/tools` | — | Tools with their form fields, `ok` and `missing` (node packs / model files), plus problems with your own tool folders |
+| `POST /clapper/api/tool/run` | `path`, `tool`, `inputs` {…}, `count` (1–8), `role`, `seed`, `title` | Queue one job per result; returns `{jobs, project}`. Results land in the library on the next `/refresh` |
+| `POST /clapper/api/tool/cancel` | `path`, `job_id` or `all` | Stop a running job, take waiting ones out of the queue |
+| `POST /clapper/api/tool/dismiss` | `path`, `job_id` or `finished: true` | Remove jobs from the list (their library items stay) |
 | `POST /clapper/api/asset/frame` | `path`, `take_id`, `seconds` | Save a frame of a finished take to the library; returns `{project, asset}` |
 | `POST /clapper/api/take/note` | `path`, `take_id`, `note` / `rating` | Annotate a take |
 | `POST /clapper/api/refresh` | `path` | Collect finished takes; returns queue counts |
@@ -154,6 +158,7 @@ Served by ComfyUI under `/clapper/`. JSON in, JSON out; errors return `{"error":
   refs/<name>.<ext>       copies of files added as references (older projects, CLI `ref`)
   assets/images|audios|videos/<id>.<ext>   library files added with + Add files, CLI `asset add` or Save frame
   trash/                  library files removed from the library
+  jobs/<job-id>/          a tool job's files until they move into the library
   takes/<scene-id>/<take-id>/
       take.mp4            H.264 + AAC, 24 fps
       audio.wav           the take's sound
@@ -163,7 +168,7 @@ Served by ComfyUI under `/clapper/`. JSON in, JSON out; errors return `{"error":
   chat/c_<id>.json        assistant chats; chat/frames/<take>/ frames used for take reviews
 ```
 
-`project.json` top level: `schema`, `name`, `created`, `updated`, `settings`, `style`, `notes`, `start_image`, `library` (`items` by name: `kind`, `file`, `sha256`, `description`, `definition`, `card`, `card_status`, `asset`; `defaults`), `assets` (by id: `kind`, `role`, `title`, `file`, `sha256`, `tags`, `origin` — `{type: upload, source}` or `{type: frame, take, seconds}`, `parent`, `created`, `duration` / `width`, `height`), `scenes` (ordered: `id`, `title`, `text`, `seconds`, `join`, `refs` — `null` = defaults, `start_image` — absent/`null` = the project's start image for the first scene, `""` = none, or an image `@name`; `audio_clips` — `[{asset, at}]` with `at` in seconds of scene time; `selected_take`), `takes` (by id: `scene`, `number`, `status`, `created`, `finished`, `seed`, `parent_take`, `join`, `context_frames`, `frames`, `width`, `height`, `prompt_sha256`, `refs`, `scene_text`, `scene_refs`, `scene_join`, `scene_seconds`, `scene_start_image`, `scene_audio_clips`, `model` (`fl2va`/`ref2va`), `prompt_id`, `render_seconds`, `s_per_it`, `steps`, `error`).
+`project.json` top level: `schema`, `name`, `created`, `updated`, `settings`, `style`, `notes`, `start_image`, `library` (`items` by name: `kind`, `file`, `sha256`, `description`, `definition`, `card`, `card_status`, `asset`; `defaults`), `assets` (by id: `kind`, `role`, `title`, `file`, `sha256`, `tags`, `transcript` (voice samples), `origin` — `{type: upload, source}`, `{type: frame, take, seconds}` or `{type: tool, tool, tool_title, job, seed, inputs}`, `parent`, `created`, `duration` / `width`, `height`), `scenes` (ordered: `id`, `title`, `text`, `seconds`, `join`, `refs` — `null` = defaults, `start_image` — absent/`null` = the project's start image for the first scene, `""` = none, or an image `@name`; `audio_clips` — `[{asset, at}]` with `at` in seconds of scene time; `selected_take`), `takes` (by id: `scene`, `number`, `status`, `created`, `finished`, `seed`, `parent_take`, `join`, `context_frames`, `frames`, `width`, `height`, `prompt_sha256`, `refs`, `scene_text`, `scene_refs`, `scene_join`, `scene_seconds`, `scene_start_image`, `scene_audio_clips`, `model` (`fl2va`/`ref2va`), `prompt_id`, `render_seconds`, `s_per_it`, `steps`, `error`).
 
 Take statuses: `queued`, `rendering`, `done`, `failed`, `interrupted`.
 
@@ -297,6 +302,41 @@ ComfyUI sends step progress only to the browser session that queued a job. Clapp
 ### Protection against double clicks
 
 A button that queues GPU work or changes something for good (Render take, Render remaining, Re-queue, Stop / Cancel / Stop all, Export, and in the assistant panel Apply / Render / Reject, Apply all and Send) ignores further clicks until the server has answered, and stays disabled meanwhile. The server also refuses the same render (same scene, seed, overrides and parent take) and the same re-queue for 5 seconds (`engine/repeats.py`), so a double tap on a phone or a retried script cannot queue it twice. A different seed, or waiting a few seconds, queues another take as usual. *Render remaining* is refused while any of its scenes is still rendering or waiting, and a proposal can only be applied while it is pending.
+
+## Adding your own tool
+
+Any ComfyUI workflow that makes images or audio can become a **Create** tool without writing code:
+
+1. Build the workflow in ComfyUI. Load library files with **Clapper · Load Image (path)** / **Clapper · Load Audio (path)** and end it with **Clapper · Save Images (job)** / **Clapper · Save Audio (job)**.
+2. Export it with *Export (API)* and save it as `~/.clapper/tools/<id>/workflow.json`.
+3. Next to it write `tool.json`:
+
+```json
+{
+  "title": "Upscale ×2",
+  "kind": "image",
+  "description": "Doubles the size of a library image.",
+  "default_role": "frame",
+  "output_node": "9",
+  "seed_node": "5", "seed_input": "seed",
+  "fields": [
+    {"key": "image", "label": "Image", "type": "image", "node": "1", "input": "path", "required": true},
+    {"key": "prompt", "label": "Describe the details", "type": "longtext", "node": "3", "input": "text"},
+    {"key": "scale", "label": "Scale", "type": "select", "options": [2, 4], "default": 2, "node": "6", "input": "scale_by"}
+  ]
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `kind` | `image` or `audio` — what the tool makes |
+| `output_node` | id of the Clapper save node; Clapper sets its `out_dir` to the job folder |
+| `seed_node`, `seed_input` | optional: where the seed goes (each result gets its own) |
+| `fields[]` | the form: `key`, `label`, `type` (`text`, `longtext`, `int`, `float`, `select` + `options`, `image`, `audio`, `images` + `nodes` [one load node per image] + `max`), `default`, `required`, `advanced`, `hint`, and where the value goes: `node` and `input` |
+
+Reload the Clapper page; the tool appears in **Create** (marked ⚠ with the reason if a node pack or model is missing, and listed with the problem if `tool.json` is wrong). The built-in tools are in `comfyui_clapper/engine/tools.py`.
+
+A job writes into `<project>/jobs/<job-id>/`; when it finishes its files move into `assets/` with `origin: {type: "tool", tool, tool_title, job, seed, inputs}`, and an image made from library images records the first one as its `parent`.
 
 ## Tools
 

@@ -38,6 +38,13 @@ class ComfyClient:
     def history(self, prompt_id: str) -> dict | None:
         return self._request(f"/history/{prompt_id}").get(prompt_id)
 
+    def object_info(self, node: str) -> dict:
+        """The node's definition, or {} when that node class is not installed."""
+        try:
+            return self._request(f"/object_info/{node}").get(node) or {}
+        except ComfyError:
+            return {}
+
     def queue_state(self) -> dict:
         return self._request("/queue")
 
