@@ -270,9 +270,13 @@ def _check_inputs(project: Project, tool: Tool, inputs: dict) -> dict[str, str]:
 
 
 def queue_tool(project: Project, client: ComfyClient, tool_id: str, inputs: dict, *, count: int = 1,
-               role: str | None = None, seed: int | None = None, title: str = "", user_dir: Path | None = None) -> list[dict]:
-    """Queue `count` jobs (seeds seed, seed+1, …). Their results land in the library when collected."""
+               role: str | None = None, seed: int | None = None, title: str = "", user_dir: Path | None = None,
+               version_of: str | None = None) -> list[dict]:
+    """Queue `count` jobs (seeds seed, seed+1, …). Their results land in the library when collected.
+    `version_of`: a library item the results are new versions of (they join its family)."""
     tool = get_tool(tool_id, user_dir)
+    if version_of is not None:
+        project.asset(version_of)
     count = max(1, min(MAX_COUNT, int(count or 1)))
     role = role or tool.default_role
     if role not in ASSET_ROLES:
@@ -293,6 +297,8 @@ def queue_tool(project: Project, client: ComfyClient, tool_id: str, inputs: dict
         job = {"id": job_id, "tool": tool.id, "tool_title": tool.title, "kind": tool.kind, "inputs": inputs,
                "seed": base + i, "role": role, "title": name, "status": "queued", "created": _now(),
                "dir": f"jobs/{job_id}", "outputs": []}
+        if version_of:
+            job["version_of"] = version_of
         try:
             job["prompt_id"] = client.submit(graph)
         except Exception as exc:
@@ -304,6 +310,90 @@ def queue_tool(project: Project, client: ComfyClient, tool_id: str, inputs: dict
         queued.append(job)
     project.save()
     return queued
+
+
+# ------------------------------------------------------------------ entity actions (look, angle, in a place)
+
+ENTITY_ACTIONS = ("first", "look", "angle", "place")
+_FIRST = {
+    "character": "Original character design, a single character, full body, front view, standing relaxed, plain light grey background, no text. {who}. {extra}",
+    "place": "Background art without people: {who}. {extra} No text.",
+    "prop": "A single object on a plain light grey background, centred, no text: {who}. {extra}",
+    "style": "A style sheet showing the art style: {who}. {extra} No text.",
+}
+_LOOK = {
+    "character": "The same character as image 1 ({who}), now {change}. Full body, front view, plain light grey background, the same face, hair and art style, no text.",
+    "place": "The same place as image 1 ({who}), now {change}. The same layout and art style, no text.",
+    "prop": "The same object as image 1 ({who}), now {change}. Plain light grey background, no text.",
+    "style": "The same art style as image 1 ({who}), {change}. No text.",
+}
+_ANGLE = {
+    "character": "The same character as image 1 ({who}), seen {change}. The same outfit, face, hair and art style, plain light grey background, no text.",
+    "place": "The same place as image 1 ({who}), seen {change}. The same art style, no text.",
+    "prop": "The same object as image 1 ({who}), seen {change}. Plain light grey background, no text.",
+    "style": "The same art style as image 1 ({who}), {change}. No text.",
+}
+
+
+def _label(text: str, limit: int = 48) -> str:
+    """A short look label from what the user typed: whole words, at most `limit` characters."""
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0]
+    return cut.rstrip(",.;:") + "…"
+
+
+def entity_inputs(project: Project, entity_id: str, action: str, text: str, *, place_id: str | None = None,
+                  aspect: str | None = None) -> tuple[dict, dict]:
+    """Image-tool inputs for an entity action, and the job fields that file the results into the entity."""
+    if action not in ENTITY_ACTIONS:
+        raise ProjectError(f"action must be one of {ENTITY_ACTIONS}")
+    e = project.entity(entity_id)
+    who = e["name"] + (f": {e['description']}" if e.get("description") else "")
+    text = (text or "").strip()
+    from .director import video_aspect
+
+    kind_aspect = "9:16" if e["kind"] in ("character", "prop") else video_aspect(project)
+    if action == "first":
+        return ({"prompt": _FIRST[e["kind"]].format(who=who, extra=text).replace("  ", " ").strip(), "images": [],
+                 "aspect": aspect or kind_aspect}, {"entity": entity_id, "look": _label(text) or "design"})
+    if not e.get("main"):
+        raise ProjectError(f"{e['name']} has no main image yet — make or choose one first")
+    if not text and action != "place":
+        raise ProjectError("describe what changes")
+    if action in ("look", "angle"):
+        template = (_LOOK if action == "look" else _ANGLE)[e["kind"]]
+        return ({"prompt": template.format(who=who, change=text), "images": [e["main"]], "aspect": aspect or kind_aspect},
+                {"entity": entity_id, "look": _label(text)})
+    place = project.entity(place_id or "")
+    if place["kind"] != "place" or not place.get("main"):
+        raise ProjectError("choose a place that has a main image")
+    prompt = (f"The character from image 1 ({who}) in the place from image 2 ({place['name']}"
+              + (f": {place['description']}" if place.get("description") else "") + f"). {text or 'Standing in the scene'}. "
+              "The same character design and the same place, the same art style, no text.")
+    return ({"prompt": prompt, "images": [e["main"], place["main"]], "aspect": aspect or video_aspect(project)},
+            {"uses": [entity_id, place["id"]], "role": "start"})
+
+
+def queue_entity(project: Project, client: ComfyClient, entity_id: str, action: str, text: str = "", *,
+                 place_id: str | None = None, count: int = 2, seed: int | None = None, aspect: str | None = None,
+                 prompt: str | None = None) -> list[dict]:
+    """Generate from a character / place: its first design, a new look or angle, or it placed in a place.
+    `prompt` replaces the built prompt (the references stay)."""
+    inputs, extra = entity_inputs(project, entity_id, action, text, place_id=place_id, aspect=aspect)
+    if prompt:
+        inputs["prompt"] = prompt
+    role = extra.pop("role", None) or project.entity(entity_id)["kind"]
+    e = project.entity(entity_id)
+    title = (f"{e['name']} — {_label(text, 40)}" if text else e["name"]) if action != "place" else \
+        f"{e['name']} at {project.entity(place_id)['name']}"
+    jobs = queue_tool(project, client, "image", inputs, count=count, role=role, seed=seed, title=title)
+    for job in jobs:
+        job.update(extra)
+        job["entity_action"] = action
+    project.save()
+    return jobs
 
 
 def _summary(job: dict) -> str:
@@ -355,7 +445,7 @@ def collect(project: Project, client: ComfyClient) -> list[str]:
         files = sorted(p for p in folder.iterdir() if p.is_file() and not p.name.endswith(".tmp")) if folder.is_dir() else []
         if entry and status.get("status_str") != "error" and files:
             refs = job["inputs"].get("images") or ([job["inputs"]["voice"]] if job["inputs"].get("voice") else [])
-            parent = refs[0] if job["kind"] == "image" and refs else None
+            parent = job.get("version_of") or (refs[0] if job["kind"] == "image" and refs else None)
             for n, path in enumerate(files, 1):
                 title = job.get("title") or _summary(job) or job["tool_title"]
                 if len(files) > 1:
@@ -364,6 +454,10 @@ def collect(project: Project, client: ComfyClient) -> list[str]:
                           "seed": job["seed"], "inputs": job["inputs"]}
                 asset = media.add_with_info(project, path, role=job["role"], title=title, origin=origin,
                                             parent=parent if parent in project.assets else None)
+                if job.get("entity") in project.entities:
+                    project.add_to_entity(asset["id"], job["entity"], look=job.get("look") or "", save=False)
+                if job.get("uses"):
+                    asset["uses"] = [e for e in job["uses"] if e in project.entities]
                 job["outputs"].append(asset["id"])
             shutil.rmtree(folder, ignore_errors=True)
             stamps = {m[0]: m[1].get("timestamp") for m in status.get("messages", [])}

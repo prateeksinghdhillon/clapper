@@ -16,14 +16,31 @@ def project_settings(project: Project, overrides: dict | None = None) -> dict:
 
 
 def canvas_size(project: Project, settings: dict, start: str | None = None) -> tuple[int, int]:
+    """Width × height of a fresh scene. Continued scenes keep their parent take's size."""
     res = settings["resolution"]
-    start = start or project.data.get("start_image")
-    if res.get("mode") == "start_image" and start:
+    aspect = res.get("aspect") or ("start_image" if res.get("mode", "start_image") == "start_image" else "custom")
+    multiple = res.get("multiple", 32)
+    if aspect == "custom":
+        return int(res["width"]), int(res["height"])
+    if aspect == "start_image":
+        start = start or project.data.get("start_image")
+        if not start:
+            return int(res["width"]), int(res["height"])
         from PIL import Image
 
         with Image.open(project.ref_path(start)) as im:
-            return fit_resolution(*im.size, res["megapixels"], res.get("multiple", 32))
-    return int(res["width"]), int(res["height"])
+            return fit_resolution(*im.size, res["megapixels"], multiple)
+    w, _, h = aspect.partition(":")
+    return fit_resolution(int(w) * 1000, int(h) * 1000, res["megapixels"], multiple)
+
+
+def video_aspect(project: Project) -> str:
+    """The project's video shape as an image-tool aspect ("9:16", "16:9", …), for start frames and places."""
+    from .tools import ASPECTS as TOOL_ASPECTS
+
+    w, h = canvas_size(project, project_settings(project))
+    ratio = w / h
+    return min(TOOL_ASPECTS, key=lambda k: abs(TOOL_ASPECTS[k][0] / TOOL_ASPECTS[k][1] - ratio))
 
 
 def plan_take(project: Project, scene_id: str, *, seed: int | None = None, overrides: dict | None = None,

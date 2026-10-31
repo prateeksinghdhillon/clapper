@@ -173,3 +173,14 @@ def test_timing_from_takes(project):
     t = estimates.timing(project)
     assert t["ref2va"]["takes"] == 2 and t["ref2va"]["s_per_step"] == 18.0 and t["ref2va"]["overhead"] == 43.0
     assert round(estimates.estimate_seconds(t["ref2va"], steps=4, width=416, height=736, frames=124)) == 115
+
+
+def test_new_version_joins_the_family(project):
+    c = FakeComfy()
+    job = tools.queue_tool(project, c, "image", {"prompt": "girl, red scarf"}, seed=1, version_of=project.girl["id"])[0]
+    out = project.root / job["dir"]; out.mkdir(parents=True); (out / "image_01.png").write_bytes(PNG)
+    c.finish(job["prompt_id"]); tools.collect(project, c)
+    made = project.assets[project.data["jobs"][job["id"]]["outputs"][0]]
+    assert made["parent"] == project.girl["id"]
+    with pytest.raises(ProjectError):
+        tools.queue_tool(project, c, "image", {"prompt": "x"}, version_of="a_missing")

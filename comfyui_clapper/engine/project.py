@@ -26,6 +26,7 @@ HISTORY_KEEP = 50
 REF_KINDS = ("image", "audio", "video")
 JOIN_MODES = ("continue", "cut", "bridge")
 ASSET_KINDS = ("image", "audio", "video")
+ENTITY_KINDS = ("character", "place", "prop", "style")
 ASSET_ROLES = ("character", "place", "prop", "style", "start", "frame", "voice", "speech", "sound", "music",
                "clip", "other")
 _EXT_KIND = {**{e: "image" for e in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")},
@@ -150,6 +151,7 @@ class Project:
             "start_image": None,              # library name pinned as frame 0 of the first scene
             "library": {"items": {}, "defaults": []},
             "assets": {},                     # every library file with its origin; @names link to these
+            "entities": {},                   # characters, places, props, styles: identity + looks (assets with `entity`)
             "scenes": [],
             "takes": {},
         }
@@ -303,7 +305,7 @@ class Project:
 
     def update_asset(self, asset_id: str, **fields) -> dict:
         asset = self.asset(asset_id)
-        unknown = set(fields) - {"title", "role", "tags", "notes", "transcript"}
+        unknown = set(fields) - {"title", "role", "tags", "notes", "transcript", "look"}
         if unknown:
             raise ProjectError(f"cannot update {sorted(unknown)}")
         if "role" in fields and fields["role"] not in ASSET_ROLES:
@@ -335,6 +337,133 @@ class Project:
             self.data["library"]["defaults"].append(name)
         self.save()
         return item
+
+    # ------------------------------------------------------------ entities (characters, places, props, styles)
+
+    @property
+    def entities(self) -> dict:
+        return self.data.setdefault("entities", {})
+
+    def entity(self, entity_id: str) -> dict:
+        try:
+            return self.entities[entity_id]
+        except KeyError:
+            raise ProjectError(f"unknown character / place {entity_id}") from None
+
+    def entity_looks(self, entity_id: str) -> list[dict]:
+        """The entity's images (and other files), oldest first."""
+        return sorted((a for a in self.assets.values() if a.get("entity") == entity_id), key=lambda a: a.get("created") or "")
+
+    def _free_name(self, name: str) -> str:
+        base = re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_")
+        base = (base if base[:1].isalpha() else "x_" + base)[:28] or "item"
+        candidate, n = base, 2
+        while candidate in self.data["library"]["items"]:
+            candidate, n = f"{base}_{n}", n + 1
+        return candidate
+
+    def create_entity(self, kind: str, name: str, *, description: str = "", from_asset: str | None = None,
+                      default: bool = True) -> dict:
+        """A character, place, prop or style. With `from_asset`, that image becomes its first look and main image,
+        and the entity gets an @name (its description is the definition H3 receives)."""
+        if kind not in ENTITY_KINDS:
+            raise ProjectError(f"kind must be one of {ENTITY_KINDS}")
+        if not name.strip():
+            raise ProjectError("give it a name")
+        eid = _new_id("e")
+        # An image that already has an @name keeps it: scenes that use it go on working.
+        adopted = [n for n in self.asset_names(from_asset) if not self.data["library"]["items"][n].get("entity")] if from_asset else []
+        entity = {"id": eid, "kind": kind, "name": name.strip(), "description": description.strip(), "main": None,
+                  "ref": adopted[0] if adopted else self._free_name(name), "voice": None, "default": bool(default), "created": _now()}
+        self.entities[eid] = entity
+        if from_asset:
+            self.add_to_entity(from_asset, eid, look="default", save=False)
+            self.set_entity_main(eid, from_asset, save=False)
+        self.save()
+        return entity
+
+    def update_entity(self, entity_id: str, **fields) -> dict:
+        entity = self.entity(entity_id)
+        unknown = set(fields) - {"name", "description", "voice", "notes", "default"}
+        if unknown:
+            raise ProjectError(f"cannot update {sorted(unknown)}")
+        if fields.get("voice"):
+            if self.asset(fields["voice"])["kind"] != "audio":
+                raise ProjectError("a voice must be a sound from the library")
+        entity.update(fields)
+        self._sync_entity_ref(entity)
+        self.save()
+        return entity
+
+    def add_to_entity(self, asset_id: str, entity_id: str | None, *, look: str = "", save: bool = True) -> dict:
+        """Put a library item into an entity (or take it out with None) with a look label."""
+        asset = self.asset(asset_id)
+        if entity_id is None:
+            old = asset.pop("entity", None)
+            asset.pop("look", None)
+            if old and self.entities.get(old, {}).get("main") == asset_id:
+                rest = [a for a in self.entity_looks(old) if a["kind"] == "image"]
+                self.entities[old]["main"] = rest[0]["id"] if rest else None
+                self._sync_entity_ref(self.entities[old])
+        else:
+            entity = self.entity(entity_id)
+            asset["entity"], asset["look"] = entity_id, look.strip() or asset.get("look") or "look"
+            if not entity.get("main") and asset["kind"] == "image":
+                entity["main"] = asset_id
+                self._sync_entity_ref(entity)
+        if save:
+            self.save()
+        return asset
+
+    def set_entity_main(self, entity_id: str, asset_id: str, *, save: bool = True) -> dict:
+        """The image scenes use for this entity: its @name points here."""
+        entity = self.entity(entity_id)
+        asset = self.asset(asset_id)
+        if asset.get("entity") != entity_id or asset["kind"] != "image":
+            raise ProjectError("the main image must be one of its own images")
+        entity["main"] = asset_id
+        self._sync_entity_ref(entity)
+        if save:
+            self.save()
+        return entity
+
+    def _sync_entity_ref(self, entity: dict) -> None:
+        """Keep the entity's @name on its main image, with its description as the definition."""
+        name = entity.get("ref")
+        if not name or not entity.get("main"):
+            return
+        asset = self.assets[entity["main"]]
+        items = self.data["library"]["items"]
+        existing = items.get(name)
+        if existing and existing.get("entity") not in (None, entity["id"]):
+            entity["ref"] = name = self._free_name(entity["name"])
+            existing = None
+        definition = f"@{name} is {entity['name']}" + (f": {entity['description']}" if entity.get("description") else ".")
+        item = {"kind": "image", "file": asset["file"], "sha256": asset.get("sha256"), "description": entity["name"],
+                "definition": definition if not (existing or {}).get("definition_custom") else existing["definition"],
+                "source": f"library:{asset['id']}", "asset": asset["id"], "entity": entity["id"]}
+        for key in ("card", "card_status", "definition_custom"):
+            if existing and key in existing:
+                item[key] = existing[key]
+        items[name] = item
+        defaults = self.data["library"]["defaults"]
+        if entity.get("default", True) and entity["kind"] in ("character", "style") and name not in defaults:
+            defaults.append(name)
+
+    def remove_entity(self, entity_id: str) -> None:
+        """Remove the character / place; its images stay in the library, its @name is removed when unused."""
+        entity = self.entity(entity_id)
+        for a in self.entity_looks(entity_id):
+            a.pop("entity", None)
+            a.pop("look", None)
+        del self.entities[entity_id]
+        if entity.get("ref") in self.data["library"]["items"]:
+            try:
+                self.remove_reference(entity["ref"])
+                return
+            except ProjectError:
+                self.data["library"]["items"][entity["ref"]].pop("entity", None)
+        self.save()
 
     def remove_asset(self, asset_id: str) -> None:
         """Move a library file to trash/. Refused while an @name or a scene's audio clip uses it."""

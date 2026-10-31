@@ -1,0 +1,678 @@
+// Clapper workspaces: Studio (cast, world and every file), Scenes (storyboard, in app.js) and Finish.
+// Loaded after app.js and uses its helpers (h, $, call, guard, once, media, state, …).
+
+// ------------------------------------------------------------------ workspaces
+
+const WS = ["studio", "scenes", "finish"];
+const wsFromHash = () => { const w = (location.hash || "").replace("#", "").split("/")[0]; return WS.includes(w) ? w : null; };
+state.ws = wsFromHash() || (() => { try { return localStorage.getItem("clapper.ws") || "scenes"; } catch (e) { return "scenes"; } })();
+
+function showWs(ws) {
+  if (ws === "assistant") { $("assistantBtn").click(); return; }
+  state.ws = ws;
+  try { localStorage.setItem("clapper.ws", ws); } catch (e) { /* storage blocked */ }
+  if (location.hash !== "#" + ws) history.replaceState(null, "", location.pathname + location.search + "#" + ws);
+  document.querySelectorAll("#wsNav button[data-ws]").forEach((b) => b.classList.toggle("on", b.dataset.ws === ws));
+  for (const w of WS) $("ws" + w[0].toUpperCase() + w.slice(1)).hidden = w !== ws;
+  document.body.dataset.ws = ws;
+  if (ws !== "scenes" && typeof closeEditor === "function" && state.sceneId) closeEditor();
+  if (ws !== "studio") document.body.classList.remove("panel-open");
+  renderWorkspace(true);
+  window.scrollTo({ top: 0 });
+}
+document.querySelectorAll("#wsNav button[data-ws]").forEach((b) => (b.onclick = () => showWs(b.dataset.ws)));
+window.addEventListener("hashchange", () => { const w = wsFromHash(); if (w && w !== state.ws) showWs(w); });
+
+// Re-render the visible workspace after project changes, without clobbering a field being typed in.
+let lastSig = { studio: "", finish: "" };
+function wsSignature(ws) {
+  const p = state.project;
+  const jobsSig = Object.values(p.jobs || {}).map((j) => j.id + j.status).join();
+  if (ws === "studio") return JSON.stringify([Object.keys(p.assets || {}).length, p.entities, p.library, jobsSig,
+    Object.values(p.assets || {}).map((a) => [a.title, a.role, a.entity, a.look, a.transcript])]);
+  return JSON.stringify([p.scenes.map((s) => s.selected_take), Object.values(p.takes).map((t) => [t.status, t.upscaled, Object.keys(t.upscales || {})]), jobsSig]);
+}
+function renderWorkspace(force) {
+  if (!state.project) return;
+  const ws = state.ws;
+  if (ws !== "studio" && ws !== "finish") return;
+  const sig = wsSignature(ws);
+  if (!force && sig === lastSig[ws]) { if (ws === "studio") renderStudioLive(); return; }   // nothing changed: keep forms as they are
+  lastSig[ws] = sig;
+  const el = $("ws" + ws[0].toUpperCase() + ws.slice(1));
+  const typing = !force && el && el.contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+  if (ws === "studio") { if (typing) renderStudioLive(); else renderStudio(); }
+  if (ws === "finish" && !typing) renderFinish();
+}
+// Names the older code calls.
+function renderLibrary() { renderWorkspace(); }
+function renderJobs() { renderWorkspace(); }
+
+// ------------------------------------------------------------------ studio state
+
+const ENTITY_KINDS = [["character", "Characters", "Character", "👤"], ["place", "Places", "Place", "🏞"], ["prop", "Props", "Prop", "🎒"], ["style", "Styles", "Style", "🎨"]];
+const FILE_CATS = [
+  ["files", "All files", () => true],
+  ["images", "Images", (a) => a.kind === "image"],
+  ["starts", "Start images & frames", (a) => a.kind === "image" && (a.role === "start" || a.role === "frame")],
+  ["voices", "Voices", (a) => a.kind === "audio" && a.role === "voice"],
+  ["lines", "Speech lines", (a) => a.kind === "audio" && a.role === "speech"],
+  ["sound", "Music & effects", (a) => a.kind === "audio" && (a.role === "music" || a.role === "sound" || a.role === "other")],
+  ["clips", "Video clips", (a) => a.kind === "video"],
+  ["refs", "@ References", (a) => assetNames(a.id).length > 0],
+];
+const SCENE_CATS = [["takes", "Scene takes"], ["exports", "Exports"]];
+const studio = { cat: "character", page: null, entity: null, sel: null, search: "", made: new Set(), newKind: null, exports: null };
+try { Object.assign(studio, JSON.parse(localStorage.getItem("clapper.studio") || "{}"), { made: new Set(), exports: null, sel: null }); } catch (e) { /* ignore */ }
+const saveStudio = () => { try { localStorage.setItem("clapper.studio", JSON.stringify({ cat: studio.cat })); } catch (e) { /* ignore */ } };
+
+const entities = () => state.project?.entities || {};
+const looksOf = (eid) => Object.values(assets()).filter((a) => a.entity === eid).sort((a, b) => (a.created || "").localeCompare(b.created || ""));
+const mainOf = (e) => assets()[e.main];
+const entityKind = (k) => ENTITY_KINDS.find((x) => x[0] === k) || ENTITY_KINDS[0];
+const activeJobs = () => jobs().filter((j) => j.status === "queued" || j.status === "running");
+const matches = (text) => !studio.search || String(text || "").toLowerCase().includes(studio.search.toLowerCase());
+const assetText = (a) => [a.title, a.look, a.role, ...(assetNames(a.id) || []), a.origin?.inputs?.prompt, a.origin?.inputs?.text, a.transcript].join(" ");
+
+function usedIn(name) {
+  if (!name) return [];
+  const re = new RegExp("@" + name + "\\b");
+  return scenes().map((s, i) => ({ s, n: i + 1 })).filter(({ s }) => re.test(s.text || "") || (s.refs || []).includes(name) || s.start_image === name);
+}
+function clipsUsing(aid) { return scenes().map((s, i) => ({ s, n: i + 1 })).filter(({ s }) => (s.audio_clips || []).some((c) => c.asset === aid)); }
+
+// ------------------------------------------------------------------ studio: layout
+
+function renderStudio() {
+  if (!state.project) return;
+  renderCats();
+  if (studio.page === "new") renderNewPage();
+  else if (studio.page === "entity" && entities()[studio.entity]) renderEntityPage(entities()[studio.entity]);
+  else { studio.page = null; renderCollection(); }
+  renderPanel();
+  $("studio").classList.toggle("has-panel", !!studio.sel);
+}
+
+// While a field is focused: refresh only things that change by themselves (jobs, new results).
+function renderStudioLive() {
+  document.querySelectorAll("[data-live=jobs]").forEach((el) => el.replaceWith(jobTiles(el.dataset.scope || "", el.dataset.entity || "")));
+}
+
+function renderCats() {
+  const count = (fn) => Object.values(assets()).filter(fn).length;
+  const ent = (k) => Object.values(entities()).filter((e) => e.kind === k).length;
+  const item = (key, label, n, ico) => h("button", { class: "cat" + (studio.page !== "new" && studio.cat === key && studio.page !== "entity" ? " on" : "") + (studio.page === "entity" && entities()[studio.entity]?.kind === key ? " on" : ""),
+    onclick: () => { studio.cat = key; studio.page = null; studio.sel = null; saveStudio(); renderStudio(); } }, ico ? h("span", { class: "ci" }, ico) : null, h("span", { class: "cl" }, label), n != null ? h("span", { class: "cn" }, n) : null);
+  $("studioCats").replaceChildren(
+    h("div", { class: "cat-group" }, "Cast & world"),
+    ...ENTITY_KINDS.map(([k, label, , ico]) => item(k, label, ent(k), ico)),
+    h("div", { class: "cat-group" }, "Files"),
+    ...FILE_CATS.map(([k, label, fn]) => item(k, label, count(fn))),
+    h("div", { class: "cat-group" }, "From scenes"),
+    item("takes", "Scene takes", takes().filter((t) => t.status === "done").length),
+    item("exports", "Exports", studio.exports ? studio.exports.length : null));
+}
+
+function crumbs(...parts) {
+  return h("div", { class: "crumbs" }, ...parts.flatMap((p, i) => [i ? h("span", { class: "sep" }, "›") : null,
+    p.onclick ? h("button", { class: "link", onclick: p.onclick }, p.label) : h("b", {}, p.label)]));
+}
+
+// ------------------------------------------------------------------ collections
+
+function renderCollection() {
+  const main = $("studioMain");
+  const ek = ENTITY_KINDS.find((x) => x[0] === studio.cat);
+  if (ek) return main.replaceChildren(entityCollection(ek));
+  if (studio.cat === "takes") return main.replaceChildren(takesCollection());
+  if (studio.cat === "exports") { main.replaceChildren(exportsCollection()); if (!studio.exports) loadExports(); return; }
+  const cat = FILE_CATS.find((x) => x[0] === studio.cat) || FILE_CATS[0];
+  const list = Object.values(assets()).filter(cat[2]).filter((a) => matches(assetText(a))).sort((a, b) => (b.created || "").localeCompare(a.created || ""));
+  main.replaceChildren(
+    h("div", { class: "coll-head" }, h("h3", {}, cat[1]), h("span", { class: "hint" }, `${list.length} item${list.length === 1 ? "" : "s"}`)),
+    jobTiles("files"),
+    list.length ? h("div", { class: "grid" }, list.map(assetTile))
+      : h("div", { class: "empty-state" }, h("p", {}, studio.search ? "Nothing matches your search." : "Nothing here yet."),
+        h("div", { class: "row" }, h("button", { class: "primary", onclick: () => openNew() }, "＋ New"), h("span", { class: "hint" }, "or drop files here, or ⬆ Upload"))));
+}
+
+function assetTile(a) {
+  const names = assetNames(a.id);
+  const e = entities()[a.entity];
+  return h("button", { class: "tile" + (studio.sel?.id === a.id ? " on" : ""), onclick: () => select("asset", a.id), title: a.title },
+    tileThumb(a),
+    h("span", { class: "tile-t" }, a.title),
+    h("span", { class: "tile-m" }, names.length ? h("span", { class: "at" }, "@" + names[0]) : null,
+      e ? h("span", {}, `${entityKind(e.kind)[3]} ${e.name}`) : h("span", {}, ROLE_LABEL[a.role] || a.role),
+      a.duration ? h("span", {}, fmtDur(a.duration)) : null));
+}
+
+function tileThumb(a) {
+  if (!a) return h("span", { class: "thumb-box empty" }, "—");
+  if (a.kind === "image") return h("span", { class: "thumb-box" }, h("img", { src: media(a.file), loading: "lazy", alt: "" }));
+  if (a.kind === "video") return h("span", { class: "thumb-box" }, posterImg(a.file, 0.1), h("span", { class: "dur" }, a.duration ? fmtDur(a.duration) : "▶"));
+  return h("span", { class: "thumb-box audio" }, h("span", { class: "big-ico" }, a.role === "music" ? "♫" : a.role === "voice" || a.role === "speech" ? "🗣" : "♪"), a.duration ? h("span", { class: "dur" }, fmtDur(a.duration)) : null);
+}
+
+// Jobs still running, as tiles (scope: files | entity id | made).
+function jobTiles(scope, entityId) {
+  const list = activeJobs().filter((j) => j.kind !== "upscale" && (scope === "entity" ? j.entity === entityId || (j.uses || [])[0] === entityId : scope === "made" ? studio.made.has(j.id) : !j.entity));
+  const failed = jobs().filter((j) => j.kind !== "upscale" && (j.status === "failed" || j.status === "interrupted") && (scope === "entity" ? j.entity === entityId : scope === "made" ? studio.made.has(j.id) : !j.entity)).slice(0, 3);
+  const cur = state.live?.current;
+  const box = h("div", { class: "grid jobs-grid", "data-live": "jobs", "data-scope": scope, "data-entity": entityId || "" },
+    ...list.map((j) => h("div", { class: "tile pending" },
+      h("span", { class: "thumb-box" }, h("span", { class: "spin" }), h("span", { class: "hint" }, j.status === "running" ? (cur && cur.prompt_id === j.prompt_id && cur.total ? `step ${cur.step}/${cur.total}` : "making…") : "waiting")),
+      h("span", { class: "tile-t" }, j.title || (j.inputs.prompt || j.inputs.text || "").slice(0, 60)),
+      h("span", { class: "tile-m" }, h("button", { class: "link danger", onclick: (ev) => { ev.stopPropagation(); once(`cancel:${j.id}`, async () => setProject(await call("/tool/cancel", { path: state.path, job_id: j.id }))); } }, "Cancel")))),
+    ...failed.map((j) => h("div", { class: "tile failed" },
+      h("span", { class: "thumb-box" }, h("span", { class: "big-ico" }, "⚠")),
+      h("span", { class: "tile-t", title: j.error || "" }, `${j.status}: ${(j.error || "").slice(0, 70)}`),
+      h("span", { class: "tile-m" }, h("button", { class: "link", onclick: () => guard(async () => { setProject(await call("/tool/dismiss", { path: state.path, job_id: j.id })); }) }, "Dismiss")))));
+  if (!list.length && !failed.length) box.hidden = true;
+  return box;
+}
+
+// ------------------------------------------------------------------ cast & world
+
+function entityCollection([kind, label, one, ico]) {
+  const list = Object.values(entities()).filter((e) => e.kind === kind).filter((e) => matches(e.name + " " + e.description + " " + e.ref));
+  return h("div", {},
+    h("div", { class: "coll-head" }, h("h3", {}, label), h("span", { class: "hint" }, ENTITY_HINT[kind])),
+    h("div", { class: "grid entity-grid" },
+      ...list.map((e) => {
+        const looks = looksOf(e.id);
+        const busy = activeJobs().filter((j) => j.entity === e.id).length;
+        return h("button", { class: "tile entity", onclick: () => openEntity(e.id) }, tileThumb(mainOf(e)),
+          h("span", { class: "tile-t" }, e.name),
+          h("span", { class: "tile-m" }, h("span", { class: "at" }, "@" + e.ref), h("span", {}, `${looks.length} look${looks.length === 1 ? "" : "s"}`), busy ? h("span", { class: "badge info" }, `making ${busy}`) : null));
+      }),
+      h("button", { class: "tile add", onclick: () => openNew(kind) }, h("span", { class: "thumb-box" }, h("span", { class: "big-ico" }, "＋")), h("span", { class: "tile-t" }, `New ${one.toLowerCase()}`), h("span", { class: "tile-m" }, "design it, or start from an image"))));
+}
+const ENTITY_HINT = {
+  character: "Each character keeps its description, its looks (outfits, poses, angles) and its voice. Scenes use its main look as @name.",
+  place: "Locations and backgrounds, with their variations (time of day, weather, angles).",
+  prop: "Objects that must look the same in every scene.",
+  style: "Art-style sheets the scenes follow.",
+};
+
+function openEntity(eid) { studio.page = "entity"; studio.entity = eid; studio.sel = null; renderStudio(); window.scrollTo({ top: 0 }); }
+
+function renderEntityPage(e) {
+  const [kind, label, one, ico] = entityKind(e.kind);
+  const looks = looksOf(e.id);
+  const main = mainOf(e);
+  const name = h("input", { class: "title-input", value: e.name });
+  name.onchange = () => guard(async () => setProject(await call("/entity", { path: state.path, action: "update", id: e.id, name: name.value })));
+  const desc = h("textarea", { rows: 4, placeholder: DESC_PH[kind] });
+  desc.value = e.description || "";
+  desc.onchange = () => guard(async () => { setProject(await call("/entity", { path: state.path, action: "update", id: e.id, description: desc.value })); toast("Description saved — new images and scenes use it"); });
+  const scenesUsing = usedIn(e.ref);
+  const voices = Object.values(assets()).filter((a) => a.kind === "audio" && (a.role === "voice" || a.id === e.voice));
+  const voiceSel = h("select", {}, h("option", { value: "" }, voices.length ? "No voice yet" : "Add a voice sample to the library first"),
+    ...voices.map((v) => h("option", { value: v.id, selected: v.id === e.voice }, `${v.title}${v.duration ? " · " + fmtDur(v.duration) : ""}`)));
+  voiceSel.onchange = () => guard(async () => setProject(await call("/entity", { path: state.path, action: "update", id: e.id, voice: voiceSel.value || null })));
+  $("studioMain").replaceChildren(
+    crumbs({ label, onclick: () => { studio.cat = kind; studio.page = null; renderStudio(); } }, { label: e.name }),
+    h("div", { class: "entity-head" },
+      h("button", { class: "cover", onclick: () => main && select("asset", main.id), title: "Main look" }, tileThumb(main)),
+      h("div", { class: "entity-info" },
+        name,
+        h("div", { class: "row meta" }, h("span", { class: "at big" }, "@" + e.ref), h("span", { class: "hint" }, `${one} · ${looks.length} look${looks.length === 1 ? "" : "s"} · ${scenesUsing.length ? "in scene " + scenesUsing.map((x) => x.n).join(", ") : "not in a scene yet"}`)),
+        h("label", {}, "Description — what makes it look like itself; added to every image made from it and sent to H3 in scenes that use it", desc),
+        kind === "character" ? h("label", {}, "Voice (used by 🗣 Speak)", voiceSel) : null,
+        h("div", { class: "row" },
+          main ? null : h("span", { class: "hint warn" }, "No main look yet — design one below or add an image."),
+          h("span", { class: "spacer" }),
+          h("button", { class: "ghost danger", onclick: () => guard(async () => {
+            if (!confirm(`Remove ${e.name}? Its images stay in the library (Files).`)) return;
+            setProject(await call("/entity", { path: state.path, action: "remove", id: e.id })); studio.page = null; renderStudio();
+          }) }, `Remove ${one.toLowerCase()}`)))),
+    entityActions(e),
+    h("div", { class: "coll-head" }, h("h3", {}, "Looks"), h("span", { class: "hint" }, "★ = the main look, used in scenes as @" + e.ref)),
+    jobTiles("entity", e.id),
+    h("div", { class: "grid" }, ...looks.map((a) => h("button", { class: "tile" + (studio.sel?.id === a.id ? " on" : ""), onclick: () => select("asset", a.id) }, tileThumb(a),
+      h("span", { class: "tile-t" }, (a.id === e.main ? "★ " : "") + (a.look || a.title)),
+      h("span", { class: "tile-m" }, a.id === e.main ? h("span", { class: "at" }, "main") : h("span", { class: "link", onclick: (ev) => { ev.stopPropagation(); guard(async () => setProject(await call("/entity", { path: state.path, action: "main", id: e.id, asset: a.id }))); } }, "Make main")))),
+      h("button", { class: "tile add", onclick: () => pickAssets({ kind: "image", title: `Add images to ${e.name}`, exclude: looks.map((x) => x.id) }, (ids) => guard(async () => {
+        for (const id of ids) setProject(await call("/entity", { path: state.path, action: "add", id: e.id, asset: id, look: "look" }));
+      })) }, h("span", { class: "thumb-box" }, h("span", { class: "big-ico" }, "＋")), h("span", { class: "tile-t" }, "Add from library"), h("span", { class: "tile-m" }, "images you already have"))));
+}
+const DESC_PH = {
+  character: "e.g. a 17-year-old girl, short indigo bob with a white streak over her left eye, amber eyes, small bandage on her cheek",
+  place: "e.g. a small rural bus stop with a wooden shelter and tin roof, a bench, rice fields and mountains behind",
+  prop: "e.g. a clear plastic umbrella with a wooden handle",
+  style: "e.g. clean cel-shaded 2D anime, crisp line art, soft flat shading",
+};
+
+// The action box on an entity page: one place to make more of it.
+const entityAct = { action: "look", text: "", place: "", count: 2, prompt: null };
+function entityActions(e) {
+  const kind = e.kind;
+  const acts = [["look", kind === "character" ? "New outfit / look" : kind === "place" ? "Variation (time, weather)" : "Variation"], ["angle", "New angle / pose"], ...(kind === "character" ? [["place", "Put in a place"]] : []), ["first", e.main ? "More designs" : "Design it"]];
+  if (!e.main && entityAct.action !== "first") entityAct.action = "first";
+  const ph = { look: kind === "character" ? "wearing a winter coat and a red scarf" : "at night in the rain", angle: kind === "character" ? "from the side, walking" : "from above", place: "sitting on the bench, looking down the road", first: "anything to add to the description (optional)" };
+  const text = h("input", { value: entityAct.text, placeholder: ph[entityAct.action] });
+  text.oninput = () => { entityAct.text = text.value; entityAct.prompt = null; };
+  const places = Object.values(entities()).filter((x) => x.kind === "place" && x.main);
+  const placeSel = h("select", {}, places.length ? places.map((p) => h("option", { value: p.id, selected: p.id === entityAct.place }, p.name)) : [h("option", { value: "" }, "make a place first (Places)")]);
+  if (!entityAct.place && places[0]) entityAct.place = places[0].id;
+  placeSel.onchange = () => { entityAct.place = placeSel.value; };
+  const count = h("select", {}, [1, 2, 4].map((n) => h("option", { value: n, selected: n === entityAct.count }, `${n} result${n > 1 ? "s" : ""}`)));
+  count.onchange = () => { entityAct.count = Number(count.value); };
+  const promptBox = h("textarea", { rows: 4 });
+  const preview = h("details", { class: "adv" }, h("summary", {}, "See / edit the prompt"), promptBox, h("p", { class: "hint" }, "Built from the description and what you typed; the main look is attached as image 1. Edit it to take full control."));
+  preview.addEventListener("toggle", () => {
+    if (!preview.open || entityAct.prompt) { promptBox.value = entityAct.prompt || promptBox.value; return; }
+    guard(async () => { const r = await call("/entity/preview", { path: state.path, id: e.id, action: entityAct.action, text: entityAct.text, place: entityAct.place }); promptBox.value = r.prompt; });
+  });
+  promptBox.oninput = () => { entityAct.prompt = promptBox.value; };
+  const go = h("button", { class: "primary", ...busyAttr("entity-gen"), onclick: () => once("entity-gen", async () => {
+    const d = await call("/entity/generate", { path: state.path, id: e.id, action: entityAct.action, text: entityAct.text, place: entityAct.place, count: entityAct.count, prompt: entityAct.prompt });
+    entityAct.text = ""; entityAct.prompt = null; setProject(d.project);
+    toast(entityAct.action === "place" ? "Making start frames — they appear in Start images & frames" : `Making ${d.jobs.length} — they appear under Looks`);
+  }) }, "Generate");
+  return h("section", { class: "card actions-card" },
+    h("div", { class: "seg act-tabs" }, acts.map(([v, l]) => h("button", { class: entityAct.action === v ? "on" : "", disabled: !e.main && v !== "first", onclick: () => { entityAct.action = v; entityAct.prompt = null; renderStudio(); } }, l))),
+    h("div", { class: "act-row" }, entityAct.action === "place" ? h("label", { class: "grow-0" }, "Place", placeSel) : null,
+      h("label", { class: "grow" }, entityAct.action === "first" ? "Extra details" : entityAct.action === "place" ? "What happens there" : "What changes", text), h("label", { class: "grow-0" }, "Results", count), go),
+    preview,
+    h("p", { class: "hint" }, entityAct.action === "place" ? "Makes start frames for scenes (Files › Start images & frames), with this character and the place's main image as references." : `About 4–10 s per image. Results are filed under ${e.name}'s looks.`));
+}
+
+// ------------------------------------------------------------------ the panel (one item, in detail)
+
+// On tablets and phones the panel slides over the page; tapping the dimmed page beside it closes it.
+document.body.addEventListener("click", (e) => { if (e.target === document.body && document.body.classList.contains("panel-open")) closePanel(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && studio.sel && !document.querySelector("dialog[open]")) closePanel(); });
+
+function select(type, id) { studio.sel = { type, id }; renderStudio(); }
+function closePanel() { studio.sel = null; renderStudio(); }
+
+function renderPanel() {
+  const p = $("studioPanel");
+  const sel = studio.sel;
+  if (!sel) { p.hidden = true; p.replaceChildren(); document.body.classList.remove("panel-open"); return; }
+  p.hidden = false; document.body.classList.toggle("panel-open", state.ws === "studio");
+  const head = (title) => h("div", { class: "panel-head" }, h("button", { class: "icon back", title: "Close", onclick: closePanel }, "←"), h("b", {}, title), h("span", { class: "spacer" }), h("button", { class: "icon", title: "Close", onclick: closePanel }, "✕"));
+  if (sel.type === "asset") {
+    const a = assets()[sel.id];
+    if (!a) { studio.sel = null; p.hidden = true; return; }
+    p.replaceChildren(head(a.kind === "image" ? "Image" : a.kind === "audio" ? "Sound" : "Video"), ...assetDetail(a));
+  } else if (sel.type === "take") {
+    const t = state.project.takes[sel.id];
+    if (!t) { studio.sel = null; p.hidden = true; return; }
+    p.replaceChildren(head("Scene take"), ...takeDetail(t));
+  } else if (sel.type === "export") {
+    const x = (studio.exports || []).find((e) => e.file === sel.id);
+    if (!x) { studio.sel = null; p.hidden = true; return; }
+    p.replaceChildren(head("Export"), ...exportDetail(x));
+  }
+}
+
+function bigPreview(kind, file) {
+  const src = media(file);
+  if (kind === "image") return h("a", { class: "big-prev", href: src, target: "_blank", title: "Open full size" }, h("img", { src, alt: "" }));
+  if (kind === "audio") return h("div", { class: "big-prev audio" }, h("span", { class: "big-ico" }, "🗣"), h("audio", { src, controls: true, preload: "metadata" }));
+  return h("div", { class: "big-prev" }, h("video", { src, controls: true, preload: "metadata", playsinline: true }));
+}
+
+function familyOf(a) {
+  const all = Object.values(assets());
+  let root = a; const seen = new Set();
+  while (root.parent && assets()[root.parent] && !seen.has(root.parent)) { seen.add(root.id); root = assets()[root.parent]; }
+  const out = [root]; const queue = [root.id];
+  while (queue.length) { const id = queue.shift(); for (const x of all) if (x.parent === id && !out.includes(x)) { out.push(x); queue.push(x.id); } }
+  // versions are variants of the same kind of thing: a start frame made from a character is not one of its versions
+  return out.filter((x) => x.id === a.id || (x.role === a.role && x.kind === a.kind));
+}
+
+function assetDetail(a) {
+  const names = assetNames(a.id);
+  const e = entities()[a.entity];
+  const title = h("input", { class: "title-input", value: a.title });
+  title.onchange = () => guard(async () => setProject(await call("/asset/update", { path: state.path, id: a.id, title: title.value })));
+  const out = [bigPreview(a.kind, a.file), title,
+    h("div", { class: "row meta" }, roleSelect(a.role, (r) => guard(async () => setProject(await call("/asset/update", { path: state.path, id: a.id, role: r })))),
+      h("span", { class: "hint" }, assetMeta(a)))];
+  // where it belongs
+  if (a.kind === "image") {
+    const options = Object.values(entities());
+    const belong = h("select", {}, h("option", { value: "" }, "— not part of a character or place"), ...ENTITY_KINDS.map(([k, label]) => {
+      const list = options.filter((x) => x.kind === k); return list.length ? h("optgroup", { label }, list.map((x) => h("option", { value: x.id, selected: x.id === a.entity }, x.name))) : null;
+    }).filter(Boolean));
+    belong.onchange = () => guard(async () => setProject(await call("/entity", { path: state.path, action: "add", id: belong.value || null, asset: a.id, look: a.look || a.title })));
+    const look = h("input", { value: a.look || "", placeholder: "label, e.g. winter outfit" });
+    look.onchange = () => guard(async () => setProject(await call("/asset/update", { path: state.path, id: a.id, look: look.value })));
+    out.push(h("section", { class: "psec" }, h("h4", {}, "Belongs to"), h("div", { class: "row" }, belong, e ? h("button", { onclick: () => openEntity(e.id) }, "Open") : null),
+      e ? h("label", {}, "Look", look) : null,
+      e && e.main !== a.id ? h("button", { onclick: () => guard(async () => setProject(await call("/entity", { path: state.path, action: "main", id: e.id, asset: a.id }))) }, `★ Make it ${e.name}'s main look`) : null,
+      e && e.main === a.id ? h("p", { class: "hint" }, `★ ${e.name}'s main look — scenes use it as @${e.ref}.`) : null,
+      !e ? h("button", { class: "ghost", onclick: () => openNew(a.role === "place" ? "place" : a.role === "prop" ? "prop" : a.role === "style" ? "style" : "character", { from: a.id }) }, "Make a character / place from it…") : null));
+  }
+  // versions
+  const fam = familyOf(a);
+  if (fam.length > 1) out.push(h("section", { class: "psec" }, h("h4", {}, `Versions (${fam.length})`),
+    h("div", { class: "strip" }, fam.map((x) => h("button", { class: "strip-item" + (x.id === a.id ? " on" : ""), title: x.title, onclick: () => select("asset", x.id) }, tileThumb(x))))));
+  // make more from it
+  out.push(...makeMore(a, e));
+  // reference
+  if (a.kind !== "video") out.push(h("section", { class: "psec" }, h("h4", {}, "In scenes"),
+    ...names.map((n) => library()[n]?.entity ? h("p", { class: "hint" }, `@${n} — ${entities()[library()[n].entity]?.name || ""}'s main look; its definition is the description.`) : namedBox(n, library()[n])),
+    ...(names.length ? [] : a.kind === "image" ? nameForm(a) : []),
+    ...names.map((n) => { const u = usedIn(n); return h("p", { class: "hint" }, u.length ? `@${n} is used in scene ${u.map((x) => x.n).join(", ")}.` : `@${n} is not used in a scene yet.`); }),
+    a.kind === "audio" ? (() => { const u = clipsUsing(a.id); return h("p", { class: "hint" }, u.length ? `Sound clip in scene ${u.map((x) => x.n).join(", ")}.` : "Add it to a scene as a sound clip in the scene editor."); })() : null));
+  out.push(h("div", { class: "row psec" },
+    h("a", { class: "btn", href: media(a.file), download: (a.title || a.id).replace(/[^\w.-]+/g, "_") + "." + a.file.split(".").pop() }, "⤓ Download"),
+    h("span", { class: "spacer" }),
+    names.length ? null : h("button", { class: "ghost danger", onclick: () => guard(async () => {
+      if (!confirm(`Remove "${a.title}" from the library?`)) return;
+      setProject(await call("/asset/remove", { path: state.path, id: a.id })); closePanel();
+    }) }, "Remove")));
+  return out;
+}
+
+const recipeEdits = {};   // asset id → edited recipe inputs
+// Generate again with changes (a new version), change an image, or speak with a voice.
+function makeMore(a, e) {
+  const sections = [];
+  const o = a.origin || {};
+  if (o.type === "tool" && o.inputs && o.tool && !o.tool.startsWith("upscale")) {
+    const values = recipeEdits[a.id] || (recipeEdits[a.id] = { ...o.inputs });
+    const tool = (toolState.list || []).find((t) => t.id === o.tool);
+    if (!toolState.list) loadTools().then(() => renderPanel()).catch(() => {});
+    const count = h("select", {}, [1, 2, 4].map((n) => h("option", { value: n }, `${n}`)));
+    sections.push(h("section", { class: "psec recipe" }, h("h4", {}, "Recipe"),
+      h("p", { class: "hint" }, `${(o.tool_title || o.tool).replace(/ \(.*\)$/, "")} · seed ${o.seed}. Change anything and make a new version — the original stays.`),
+      ...(tool ? tool.fields.filter((f) => !f.advanced).map((f) => toolField(f, values)) : [h("p", { class: "hint" }, "Loading the tool…")]),
+      h("div", { class: "row" }, h("label", { class: "grow-0" }, "Results", count),
+        h("button", { class: "primary", ...busyAttr("again"), onclick: () => once("again", async () => {
+          const d = await call("/tool/run", { path: state.path, tool: o.tool, inputs: values, count: Number(count.value), role: a.role, title: a.title.replace(/ \d+$/, ""), version_of: a.id });
+          delete recipeEdits[a.id]; setProject(d.project); toast(`Making ${d.jobs.length} new version(s)`);
+        }) }, "Make new version"))));
+  } else if (a.kind === "image") {
+    const text = h("input", { placeholder: "e.g. at night with the street lamp on" });
+    sections.push(h("section", { class: "psec" }, h("h4", {}, "Change it"),
+      h("div", { class: "row" }, text, h("button", { class: "primary", ...busyAttr("change"), onclick: () => once("change", async () => {
+        if (!text.value.trim()) throw new Error("Describe the change");
+        const d = await call("/tool/run", { path: state.path, tool: "image", inputs: { prompt: `The same picture as image 1, ${text.value.trim()}. Keep everything else the same.`, images: [a.id], aspect: "9:16" }, count: 2, role: a.role, title: a.title, version_of: a.id });
+        setProject(d.project); toast("Making 2 versions");
+      }) }, "Make 2"))));
+  }
+  if (a.kind === "audio" && (a.role === "voice" || a.role === "speech")) {
+    const t = h("input", { placeholder: "What the sample says (improves the likeness)", value: a.transcript || "" });
+    t.onchange = () => guard(async () => { setProject(await call("/asset/update", { path: state.path, id: a.id, transcript: t.value })); toast("Transcript saved"); });
+    const line = h("textarea", { rows: 2, placeholder: "A line to say in this voice" });
+    const lang = h("select", {}, ["Auto", "English", "Chinese", "Japanese", "Korean", "French", "German", "Spanish", "Portuguese", "Russian", "Italian"].map((l) => h("option", {}, l)));
+    sections.push(h("section", { class: "psec" }, h("h4", {}, "🗣 Speak in this voice"),
+      a.role === "voice" ? h("label", {}, "Transcript of the sample", t) : null, line,
+      h("div", { class: "row" }, h("label", { class: "grow-0" }, "Language", lang), h("button", { class: "primary", ...busyAttr("speak"), onclick: () => once("speak", async () => {
+        if (!line.value.trim()) throw new Error("Type a line");
+        const d = await call("/tool/run", { path: state.path, tool: "speech", inputs: { text: line.value.trim(), voice: a.id, voice_text: a.transcript || "", language: lang.value }, count: 2, role: "speech", title: line.value.trim().slice(0, 40) });
+        setProject(d.project); toast("Speaking 2 takes — they appear in Speech lines");
+      }) }, "Speak (2 takes)"))));
+  }
+  return sections;
+}
+
+// ------------------------------------------------------------------ takes and exports in the studio
+
+function takesCollection() {
+  const rows = scenes().map((s, i) => ({ s, n: i + 1, list: takesFor(s.id).filter((t) => t.status === "done") })).filter((r) => r.list.length);
+  return h("div", {},
+    h("div", { class: "coll-head" }, h("h3", {}, "Scene takes"), h("span", { class: "hint" }, "Every finished take, by scene. Save a frame from one to start another scene from it.")),
+    ...(rows.length ? rows.map((r) => h("div", { class: "scene-group" }, h("h4", {}, `Scene ${r.n}${r.s.title ? " · " + r.s.title : ""}`),
+      h("div", { class: "grid" }, r.list.map((t) => h("button", { class: "tile" + (studio.sel?.id === t.id ? " on" : ""), onclick: () => select("take", t.id) },
+        h("span", { class: "thumb-box" }, posterImg(`${t.dir}/take.mp4`, 0.1)),
+        h("span", { class: "tile-t" }, takeLabel(t) + (r.s.selected_take === t.id ? " · selected" : "")),
+        h("span", { class: "tile-m" }, h("span", {}, `${((t.frames || 124) / 24).toFixed(1)} s`), Object.keys(t.upscales || {}).length ? h("span", { class: "at" }, `⤢ ${Object.keys(t.upscales).length}`) : null))))))
+      : [h("div", { class: "empty-state" }, h("p", {}, "No finished takes yet — render scenes in Scenes."))]));
+}
+
+function takeDetail(t) {
+  const sc = sceneById(t.scene); const n = scenes().indexOf(sc) + 1;
+  const v = h("video", { src: takeVideo(t), controls: true, playsinline: true, preload: "metadata" });
+  return [h("div", { class: "big-prev" }, v),
+    h("b", {}, `Scene ${n}${sc?.title ? " · " + sc.title : ""} · ${takeLabel(t)}`),
+    h("p", { class: "hint" }, `${t.width}×${t.height} · ${((t.frames || 124) / 24).toFixed(1)} s · seed ${t.seed} · ${t.model || "fl2va"}${sc?.selected_take === t.id ? " · selected" : ""}`),
+    h("div", { class: "row" },
+      h("button", { onclick: () => once("frame", async () => {
+        v.pause();
+        const d = await call("/asset/frame", { path: state.path, take_id: t.id, seconds: v.currentTime });
+        setProject(d.project); toast(`Frame at ${v.currentTime.toFixed(1)} s saved to Start images & frames`);
+      }) }, "Save this frame"),
+      h("button", { onclick: () => openUpscale([t.id], `Upscale scene ${n} · ${takeLabel(t)}`) }, "⤢ Upscale…"),
+      h("button", { onclick: () => { showWs("scenes"); openEditor(t.scene); } }, "Open scene")),
+    upscaleRow(t) || h("p", { class: "hint" }, "No upscaled versions yet.")];
+}
+
+async function loadExports() {
+  const d = await guard(() => call(`/exports?path=${encodeURIComponent(state.path)}`));
+  if (d) { studio.exports = d.exports; renderWorkspace(true); }
+}
+function exportsCollection() {
+  const list = studio.exports;
+  return h("div", {}, h("div", { class: "coll-head" }, h("h3", {}, "Exports"), h("span", { class: "hint" }, "Finished videos. Make new ones in Finish.")),
+    !list ? h("p", { class: "hint" }, "Loading…") : list.length ? h("div", { class: "grid" }, list.map((x) => h("button", { class: "tile" + (studio.sel?.id === x.file ? " on" : ""), onclick: () => select("export", x.file) },
+      h("span", { class: "thumb-box" }, posterImg(x.file, 0.5)),
+      h("span", { class: "tile-t" }, fmtStamp(x.created) || x.file.split("/").pop()),
+      h("span", { class: "tile-m" }, h("span", {}, `${(x.seconds || 0).toFixed(1)} s`), x.width ? h("span", {}, `${x.width}×${x.height}`) : null))))
+      : h("div", { class: "empty-state" }, h("p", {}, "No exports yet."), h("button", { class: "primary", onclick: () => showWs("finish") }, "Go to Finish")));
+}
+const fmtStamp = (s) => { const m = /^(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)/.exec(s || ""); return m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}` : ""; };
+function exportDetail(x) {
+  return [h("div", { class: "big-prev" }, h("video", { src: media(x.file), controls: true, playsinline: true, preload: "metadata" })),
+    h("b", {}, fmtStamp(x.created) || x.file),
+    h("p", { class: "hint" }, `${(x.seconds || 0).toFixed(1)} s · ${x.width || "?"}×${x.height || "?"} · scenes 1–${x.scenes} of ${x.scenes_total}${x.upscaled?.length ? " · upscaled: " + x.upscaled.join(", ") : ""} · ${fmtSize(x.bytes)}`),
+    h("div", { class: "row" }, h("a", { class: "btn primary", href: media(x.file), download: x.file.split("/").pop() }, "⤓ Download"), h("span", { class: "spacer" }),
+      h("button", { class: "ghost danger", onclick: () => guard(async () => {
+        if (!confirm("Delete this exported video?")) return;
+        const d = await call("/exports/delete", { path: state.path, file: x.file }); studio.exports = d.exports; studio.sel = null; renderWorkspace(true);
+      }) }, "Delete"))];
+}
+
+// ------------------------------------------------------------------ New
+
+function openNew(kind, opts = {}) {
+  if (state.ws !== "studio") showWs("studio");
+  studio.page = "new"; studio.newKind = kind || studio.newKind || "character"; studio.newOpts = opts; studio.sel = null;
+  renderStudio(); window.scrollTo({ top: 0 });
+}
+// Older callers: openTool(toolId, values) opens New on that tool, filled in.
+function openTool(toolId, values = {}) { toolState.current = toolId; toolState.values = { ...values }; openNew("tool:" + toolId); }
+$("studioNew").onclick = () => openNew();
+
+function renderNewPage() {
+  const kinds = [...ENTITY_KINDS.map(([k, , one, ico]) => ["entity:" + k, `${ico} ${one}`]), ...((toolState.list || []).map((t) => ["tool:" + t.id, (t.kind === "audio" ? "🗣 " : "🖼 ") + t.title.replace(/ \(.*\)$/, "") + (t.ok ? "" : " ⚠")])), ["upload", "⬆ Upload files"]];
+  if (!toolState.list) loadTools().then(() => renderStudio()).catch(() => {});
+  let cur = studio.newKind || "character";
+  if (ENTITY_KINDS.some((x) => x[0] === cur)) cur = "entity:" + cur;
+  studio.newKind = cur;
+  const body = cur.startsWith("entity:") ? newEntityForm(cur.slice(7)) : cur.startsWith("tool:") ? newToolForm(cur.slice(5)) : uploadForm();
+  $("studioMain").replaceChildren(
+    crumbs({ label: "Studio", onclick: () => { studio.page = null; renderStudio(); } }, { label: "New" }),
+    h("div", { class: "new-kinds" }, h("div", { class: "cat-group" }, "Make"), h("div", { class: "seg wrap" }, kinds.map(([v, label]) => h("button", { class: v === cur ? "on" : "", onclick: () => { studio.newKind = v; if (v.startsWith("tool:")) { toolState.current = v.slice(5); toolState.values = {}; } renderStudio(); } }, label)))),
+    body,
+    h("div", { class: "coll-head" }, h("h3", {}, "Made here"), h("span", { class: "hint" }, "Results from this page; open one to name it, file it under a character or make versions.")),
+    jobTiles("made"),
+    h("div", { class: "grid" }, ...[...studio.made].flatMap((jid) => (state.project.jobs?.[jid]?.outputs || []).map((id) => assets()[id]).filter(Boolean)).map(assetTile)));
+}
+
+const newForms = {};   // kind → {name, desc, mode, picked, count}: kept while the page re-draws
+function newEntityForm(kind) {
+  const [, , one] = entityKind(kind);
+  const from = studio.newOpts?.from ? assets()[studio.newOpts.from] : null;
+  const f = newForms[kind] || (newForms[kind] = { name: from ? from.title.replace(/ \(\d+\)$/, "") : "", desc: from?.origin?.inputs?.prompt?.slice(0, 600) || "",
+    mode: from ? "image" : "design", picked: from ? from.id : null, count: 2 });
+  const name = h("input", { placeholder: kind === "character" ? "e.g. Aoi" : kind === "place" ? "e.g. Bus stop" : "Name", value: f.name });
+  name.oninput = () => { f.name = name.value; };
+  const desc = h("textarea", { rows: 4, placeholder: DESC_PH[kind] });
+  desc.value = f.desc; desc.oninput = () => { f.desc = desc.value; };
+  const mode = { get v() { return f.mode; }, set v(x) { f.mode = x; } };
+  let picked = f.picked;
+  const count = h("select", {}, [1, 2, 4].map((n) => h("option", { value: n, selected: n === f.count }, `${n} designs`)));
+  count.onchange = () => { f.count = Number(count.value); };
+  const pickBox = h("div", { class: "row" });
+  const drawPick = () => pickBox.replaceChildren(picked ? tileThumb(assets()[picked]) : h("span", { class: "hint" }, "No image chosen"),
+    h("button", { onclick: () => pickAssets({ kind: "image", title: "Choose its first image", single: true }, (ids) => { picked = f.picked = ids[0]; drawPick(); }) }, picked ? "Change…" : "Choose from library…"));
+  drawPick();
+  const modeSeg = h("div", { class: "seg" }, [["design", "Design it now"], ["image", "Start from an image I have"]].map(([v, l]) => h("button", { class: mode.v === v ? "on" : "", onclick: (ev) => { mode.v = v; ev.target.parentNode.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === ev.target)); designRow.hidden = v !== "design"; pickBox.hidden = v !== "image"; } }, l)));
+  const designRow = h("div", { class: "row" }, h("label", { class: "grow-0" }, "How many", count), h("span", { class: "hint" }, "≈ 4–10 s per image; you pick the main look afterwards."));
+  designRow.hidden = mode.v !== "design"; pickBox.hidden = mode.v !== "image";
+  const go = h("button", { class: "primary big", ...busyAttr("new-entity"), onclick: () => once("new-entity", async () => {
+    if (!name.value.trim()) throw new Error("Give it a name");
+    if (mode.v === "image" && !picked) throw new Error("Choose an image, or design it now");
+    const d = await call("/entity", { path: state.path, action: "create", kind, name: name.value.trim(), description: desc.value.trim(), from_asset: mode.v === "image" ? picked : null });
+    setProject(d.project);
+    if (mode.v === "design") {
+      const g = await call("/entity/generate", { path: state.path, id: d.entity, action: "first", count: Number(count.value) });
+      setProject(g.project);
+    }
+    studio.newOpts = {}; delete newForms[kind]; openEntity(d.entity);
+  }) }, `Create ${one.toLowerCase()}`);
+  return h("section", { class: "card new-form" }, h("h3", {}, `New ${one.toLowerCase()}`),
+    h("div", { class: "form-grid" }, h("label", {}, "Name — becomes its @name in scenes", name), h("label", { class: "wide" }, "Description", desc)),
+    modeSeg, designRow, pickBox, h("div", { class: "row" }, go));
+}
+
+function newToolForm(toolId) {
+  const tool = (toolState.list || []).find((t) => t.id === toolId);
+  if (!tool) return h("p", { class: "hint" }, "Loading tools…");
+  toolState.current = tool.id;
+  const values = toolState.values;
+  if (tool.id === "image" && values.aspect == null) values.aspect = state.project.video_aspect || "9:16";   // the video's shape
+  const role = h("select", {}, (state.project.asset_roles || Object.keys(ROLE_LABEL)).map((r) => h("option", { value: r, selected: r === tool.default_role }, ROLE_LABEL[r] || r)));
+  const count = h("select", {}, [1, 2, 4, 8].map((n) => h("option", { value: n, selected: n === 2 }, String(n))));
+  const title = h("input", { placeholder: "optional" });
+  const seed = h("input", { type: "number", placeholder: "random" });
+  const go = h("button", { class: "primary big", disabled: !tool.ok, ...busyAttr("tool"), onclick: () => once("tool", async () => {
+    const inputs = Object.fromEntries(tool.fields.map((f) => [f.key, values[f.key] ?? f.default ?? null]));
+    const body = { path: state.path, tool: tool.id, inputs, count: Number(count.value), role: role.value, title: title.value };
+    if (seed.value) body.seed = Number(seed.value);
+    const d = await call("/tool/run", body);
+    d.jobs.forEach((j) => studio.made.add(j));
+    setProject(d.project); toast(`${d.jobs.length} queued — results appear below`);
+  }) }, "Create");
+  return h("section", { class: "card new-form" }, h("h3", {}, tool.title),
+    h("p", { class: "hint" }, tool.description, tool.ok ? "" : h("span", { class: "warn" }, ` Cannot run on this ComfyUI: missing ${tool.missing.join(", ")}.`)),
+    h("div", { class: "form-grid" }, ...tool.fields.filter((f) => !f.advanced).map((f) => toolField(f, values))),
+    tool.fields.some((f) => f.advanced) ? h("details", { class: "adv" }, h("summary", {}, "More options"), h("div", { class: "form-grid" }, ...tool.fields.filter((f) => f.advanced).map((f) => toolField(f, values)), h("label", {}, "Seed", seed))) : null,
+    h("div", { class: "row tool-run" }, h("label", {}, "Results", count), h("label", {}, "Save as", role), h("label", { class: "grow" }, "Title", title), go));
+}
+
+function uploadForm() {
+  const role = h("select", {}, (state.project.asset_roles || Object.keys(ROLE_LABEL)).map((r) => h("option", { value: r }, ROLE_LABEL[r] || r)));
+  const input = h("input", { type: "file", multiple: true, accept: "image/*,audio/*,video/*,.m4a,.flac,.ogg,.opus" });
+  input.onchange = () => { const f = [...input.files]; input.value = ""; uploadFiles(f, role.value); };
+  return h("section", { class: "card new-form drop-zone" }, h("h3", {}, "Upload files"),
+    h("p", { class: "hint" }, "Images, sounds (mp3, wav, m4a, ogg, flac…) and video clips — or drop them anywhere in the Studio."),
+    h("div", { class: "row" }, h("label", {}, "Save as", role), h("label", { class: "btn primary file-label" }, "Choose files…", input)));
+}
+
+async function uploadFiles(files, role) {
+  if (!files.length) return;
+  const fd = new FormData();
+  fd.append("path", state.path); fd.append("role", role || guessRole(files[0]));
+  for (const f of files) fd.append("file", f);
+  await once("upload", async () => {
+    toast(`Adding ${files.length} file(s)…`);
+    const d = await call("/asset", fd);
+    setProject(d.project); toast(`${d.added.length} added`);
+    if (d.added.length === 1) { studio.page = null; studio.cat = "files"; select("asset", d.added[0]); }
+  });
+}
+const guessRole = (f) => (f.type.startsWith("audio") ? "voice" : f.type.startsWith("video") ? "clip" : "other");
+$("libFiles").onchange = () => { const f = [...$("libFiles").files]; $("libFiles").value = ""; uploadFiles(f); };
+$("wsStudio").addEventListener("dragover", (e) => { e.preventDefault(); $("wsStudio").classList.add("drop"); });
+$("wsStudio").addEventListener("dragleave", (e) => { if (!$("wsStudio").contains(e.relatedTarget)) $("wsStudio").classList.remove("drop"); });
+$("wsStudio").addEventListener("drop", (e) => { e.preventDefault(); $("wsStudio").classList.remove("drop"); uploadFiles([...(e.dataTransfer?.files || [])]); });
+let searchTimer;
+$("studioSearch").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { studio.search = $("studioSearch").value.trim(); if (studio.page === "new") studio.page = null; renderStudio(); }, 200); };
+
+// A picker for library items (used to add looks and to choose images).
+function pickAssets({ kind, title, single, exclude = [] }, done) {
+  const dlg = $("pickDlg");
+  const chosen = new Set();
+  const list = Object.values(assets()).filter((a) => a.kind === kind && !exclude.includes(a.id)).sort((a, b) => (b.created || "").localeCompare(a.created || ""));
+  const draw = () => {
+    $("pickBody").replaceChildren(list.length ? h("div", { class: "grid" }, list.map((a) => h("button", { class: "tile" + (chosen.has(a.id) ? " on" : ""), onclick: () => {
+      if (single) { chosen.clear(); chosen.add(a.id); } else chosen.has(a.id) ? chosen.delete(a.id) : chosen.add(a.id); draw();
+    } }, tileThumb(a), h("span", { class: "tile-t" }, a.title)))) : h("p", { class: "hint" }, "No matching items in the library."));
+    $("pickGo").disabled = !chosen.size; $("pickGo").textContent = chosen.size > 1 ? `Add ${chosen.size}` : "Choose";
+  };
+  $("pickTitle").textContent = title; draw();
+  $("pickGo").onclick = () => { dlg.close(); done([...chosen]); };
+  dlg.showModal();
+}
+
+// ------------------------------------------------------------------ Finish
+
+const finishSel = new Set();
+let lastExport = null;   // the export just made, shown until another one is made or the project changes
+async function renderFinish() {
+  const body = $("finishBody");
+  const rows = scenes().map((s, i) => ({ s, n: i + 1, take: state.project.takes[s.selected_take] }));
+  const ready = rows.filter((r) => r.take && r.take.status === "done");
+  for (const id of [...finishSel]) if (!ready.some((r) => r.take.id === id)) finishSel.delete(id);
+  const sceneRows = rows.map((r) => {
+    const t = r.take; const ok = t && t.status === "done";
+    const box = h("input", { type: "checkbox", disabled: !ok, checked: ok && finishSel.has(t.id), onchange: () => { box.checked ? finishSel.add(t.id) : finishSel.delete(t.id); renderFinish(); } });
+    return h("div", { class: "fin-row" + (ok ? "" : " not-ready") },
+      h("label", { class: "fin-pick" }, box),
+      h("button", { class: "fin-thumb", disabled: !ok, onclick: () => ok && play(t, `Scene ${r.n} · ${takeLabel(t)}`) }, ok ? posterImg(`${t.dir}/take.mp4`, 0.1) : h("span", { class: "hint" }, "no take")),
+      h("div", { class: "fin-info" }, h("b", {}, `Scene ${r.n}${r.s.title ? " · " + r.s.title : ""}`),
+        h("span", { class: "hint" }, ok ? `${takeLabel(t)} · ${((t.frames || 124) / 24).toFixed(1)} s · ${t.width}×${t.height}` : "no finished selected take — render it in Scenes"),
+        ok ? upscaleRow(t) : null),
+      h("div", { class: "fin-act" }, ok ? h("button", { onclick: () => openUpscale([t.id], `Upscale scene ${r.n}`) }, "⤢ Upscale…") : h("button", { onclick: () => { showWs("scenes"); openEditor(r.s.id); } }, "Open scene")));
+  });
+  const notUp = ready.filter((r) => !Object.keys(r.take.upscales || {}).length).map((r) => r.take.id);
+  const c = await guard(() => call(`/export/check?path=${encodeURIComponent(state.path)}`));
+  if (!c) return;
+  if (!studio.exports) studio.exports = (await guard(() => call(`/exports?path=${encodeURIComponent(state.path)}`)))?.exports || [];
+  const size = h("select", { id: "exportSize" }, [["auto", c.size ? `Largest scene (${c.size[0]}×${c.size[1]})` : "Largest scene"], ["720p", "720p"], ["1080p", "1080p"], ["original", "Original takes, no upscales"]].map(([v, l]) => h("option", { value: v }, l)));
+  const result = h("div", {});
+  const showResult = (d) => {
+    const m = d.manifest;
+    result.replaceChildren(h("div", { class: "card export-done" }, h("b", {}, "Exported"), h("video", { src: media(d.file), controls: true, playsinline: true, preload: "metadata", poster: thumbUrl(d.file, 0.5) }),
+      h("p", { class: "hint" }, `${m.total_seconds.toFixed(1)} s · ${m.width}×${m.height} · scenes 1–${m.scenes_exported} of ${m.scenes_total}`),
+      h("a", { class: "btn primary", href: media(d.file), download: d.file.split("/").pop() }, "⤓ Download")));
+  };
+  if (lastExport && lastExport.path === state.path) showResult(lastExport);
+  const label = c.complete ? "Export the video" : `Export scenes 1–${c.ready} (partial)`;
+  const go = h("button", { class: "primary big", disabled: !c.ready, ...busyAttr("export"), onclick: () => once("export", async () => {
+    go.textContent = "Exporting…";
+    try {
+      const d = await call("/export", { path: state.path, partial: !c.complete, size: size.value });
+      lastExport = { ...d, path: state.path }; studio.exports = null;
+      showResult(d); toast("Exported"); loadExports();
+    } finally { go.textContent = label; }
+  }) }, label);
+  body.replaceChildren(
+    h("section", { class: "card" },
+      h("div", { class: "card-head" }, h("h3", {}, "1 · Scenes"), h("span", { class: "spacer" }),
+        h("button", { class: "ghost small", onclick: () => { ready.forEach((r) => finishSel.add(r.take.id)); renderFinish(); } }, "Select all"),
+        h("button", { class: "ghost small", disabled: !finishSel.size, onclick: () => { finishSel.clear(); renderFinish(); } }, "Clear"),
+        h("button", { disabled: !finishSel.size && !notUp.length, onclick: () => openUpscale(finishSel.size ? [...finishSel] : notUp, "Upscale scenes") }, finishSel.size ? `⤢ Upscale ${finishSel.size} selected…` : `⤢ Upscale the ${notUp.length} not upscaled…`)),
+      h("p", { class: "hint" }, "Finish each scene on its own: upscale it (Sharpen or Re-detail, 720p or 1080p) and choose which version goes into the video. Upscales run one after another."),
+      rows.length ? h("div", { class: "fin-list" }, sceneRows) : h("p", { class: "hint" }, "No scenes yet.")),
+    h("section", { class: "card" },
+      h("div", { class: "card-head" }, h("h3", {}, "2 · Export")),
+      c.ready ? h("p", {}, c.complete ? `All ${c.total} scenes · ${c.seconds.toFixed(1)} s` : `Scenes 1–${c.ready} of ${c.total} are ready · ${c.seconds.toFixed(1)} s`,
+        c.upscaled.length ? ` · upscaled: ${c.upscaled.join(", ")}` : " · none upscaled",
+        c.upscaled.length && c.not_upscaled.length ? h("span", { class: "hint" }, ` (scene${c.not_upscaled.length > 1 ? "s" : ""} ${c.not_upscaled.join(", ")} resized to match, softer)`) : null) : h("p", { class: "hint" }, "Scene 1 has no finished take yet."),
+      !c.complete && c.ready ? h("p", { class: "hint warn" }, `Scene${c.missing.length > 1 ? "s" : ""} ${c.missing.join(", ")} ${c.missing.length > 1 ? "have" : "has"} no finished take — the export stops before ${c.missing.length > 1 ? "them" : "it"}.`) : null,
+      c.warnings.length ? h("ul", { class: "warn-list" }, c.warnings.map((w) => h("li", {}, `${w.message} (at ${w.at_seconds.toFixed(1)} s).`))) : null,
+      h("div", { class: "row" }, h("label", {}, "Video size", size), go),
+      h("p", { class: "hint" }, "Music, sound effects and overlays (logo, product photos, title cards) come here next."),
+      result),
+    h("section", { class: "card" },
+      h("div", { class: "card-head" }, h("h3", {}, "3 · Previous exports")),
+      studio.exports.length ? h("div", { class: "exp-list" }, studio.exports.map((x) => h("div", { class: "exp-row" },
+        h("button", { class: "fin-thumb", onclick: () => playFile(x.file, fmtStamp(x.created) || x.file) }, posterImg(x.file, 0.5)),
+        h("div", { class: "fin-info" }, h("b", {}, fmtStamp(x.created) || x.file.split("/").pop()), h("span", { class: "hint" }, `${(x.seconds || 0).toFixed(1)} s · ${x.width || "?"}×${x.height || "?"} · ${fmtSize(x.bytes)}${x.upscaled?.length ? " · upscaled " + x.upscaled.join(", ") : ""}`)),
+        h("div", { class: "fin-act" }, h("button", { onclick: () => playFile(x.file, fmtStamp(x.created) || x.file) }, "▶"), h("a", { class: "btn", href: media(x.file), download: x.file.split("/").pop() }, "⤓"),
+          h("button", { class: "icon", title: "Delete", onclick: () => guard(async () => { if (!confirm("Delete this exported video?")) return; const d = await call("/exports/delete", { path: state.path, file: x.file }); studio.exports = d.exports; renderFinish(); }) }, "✕")))))
+        : h("p", { class: "hint" }, "No exports yet.")));
+}
+
+// The Style & notes dialog (Scenes).
+$("styleBtn").onclick = () => { $("styleText").value = state.project.style || ""; $("notesText").value = state.project.notes || ""; $("styleDlg").showModal(); };

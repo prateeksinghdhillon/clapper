@@ -21,7 +21,7 @@ Storyboard ──► Scene editor ──► Render take ──► Takes (numbere
 - **Per-scene references.** Images and voice samples live in a named library (`@hero`, `@logo`, `@narrator`). Each scene uses the project defaults or its own list, and Clapper numbers them correctly (`<Picture N>`, `<Audio N>`) for every scene.
 
 **Making what a video needs**
-- **Library** of every image, sound and clip in the project, with where it came from. Any item becomes a reference with an `@name`.
+- **A studio for the material**: characters, places, props and styles with their description, looks (outfits, angles, variations), main look and voice — type only what changes ("in a winter coat", "at night", "in the bus stop") and Clapper builds the prompt from the description and references. Every image, sound and clip keeps its recipe and versions.
 - **✨ Create** images with FLUX.2 Klein (new, or the same character in a new pose or place, several references combined) and speech with Qwen3-TTS voice cloning. Add your own ComfyUI workflows as tools with a small `tool.json`.
 - **Sound clips**: a recorded or generated line placed in a scene becomes its soundtrack, word for word, and the picture is made around it.
 - **Start any scene** by continuing the previous one, from a library image, or fresh from the references; render with MiniMax H3 FL2VA or Ref2VA.
@@ -29,7 +29,7 @@ Storyboard ──► Scene editor ──► Render take ──► Takes (numbere
 - **Simple settings** with the time to expect for every choice (measured or estimated, learning from your own takes), and every option under *Advanced*.
 
 **Working with it**
-- **Web interface** served by ComfyUI: storyboard, scene editor, references, settings, export. It works on a phone too.
+- **Web interface** served by ComfyUI with three workspaces — Studio, Scenes, Finish — laid out for laptops, tablets and phones.
 - **Live progress.** Each render shows its phase, step, seconds per step and time left. You get Stop / Cancel buttons, machine stats (CPU, RAM, GPU, VRAM, temperatures) and ComfyUI's log.
 - **Saved as a project folder** with autosave and history. Close the browser or restart the computer and carry on where you left off. Interrupted renders can be re-queued with the same seed.
 - **Export** trims the carried-over frames, fades the audio at each join, warns about continuity problems, and asks before a partial export.

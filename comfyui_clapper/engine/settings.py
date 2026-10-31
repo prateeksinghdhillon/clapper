@@ -25,7 +25,9 @@ DEFAULT_SETTINGS: dict = {
         "spectrum": {"enabled": False},
     },
     "sampling": {"sampler": "res_multistep", "scheduler": "simple", "steps": 20, "denoise": 1.0},
-    "resolution": {"mode": "start_image", "megapixels": 0.30, "multiple": 32, "width": 416, "height": 736},
+    # aspect: "start_image" (the shape of the start image; without one, width × height), a ratio such as "9:16",
+    # or "custom" (exactly width × height). megapixels sets the size for the first two.
+    "resolution": {"mode": "start_image", "aspect": "start_image", "megapixels": 0.30, "multiple": 32, "width": 416, "height": 736},
     "continuity": {"frames": 22, "method": "masked", "audio": True},
     "references": {"image_size": "match"},
     "scene_seconds": 5.0,
@@ -44,6 +46,7 @@ DEFAULT_SETTINGS: dict = {
 }
 
 VIDEO_MODEL_MODES = ("fl2va", "ref2va", "ref2va_fresh")
+ASPECTS = ("start_image", "9:16", "16:9", "1:1", "4:5", "custom")
 
 SPEED_PROFILES: dict = {
     # The defaults above, unchanged.

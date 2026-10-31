@@ -169,3 +169,33 @@ def test_grab_frame_and_probe(project, tmp_path):
     assert (frame["width"], frame["height"]) == (64, 112)
     clip = media.add_with_info(project, take_dir / "take.mp4", role="clip")
     assert clip["kind"] == "video" and 0.9 < clip["duration"] < 1.2
+
+
+def test_poster_is_cached(project, tmp_path):
+    import shutil, subprocess
+    from comfyui_clapper.engine import media
+    if not Path(media.FFMPEG).exists() and not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg not installed")
+    d = project.root / "takes" / "s" / "t"; d.mkdir(parents=True)
+    subprocess.run([media.FFMPEG, "-v", "error", "-f", "lavfi", "-i", "color=c=blue:s=64x112:d=1", str(d / "take.mp4")], check=True)
+    a = media.poster(project, "takes/s/t/take.mp4", 0.5)
+    assert a.is_file() and a.parent.name == "thumbs" and media.poster(project, "takes/s/t/take.mp4", 0.5) == a
+    with pytest.raises(ProjectError):
+        media.poster(project, "../outside.mp4")
+
+
+def test_video_shape(project):
+    from comfyui_clapper.engine.director import canvas_size, project_settings, video_aspect
+    s = project_settings(project)
+    assert canvas_size(project, s) == (544, 544)   # the start image's shape (a 16×16 test png) at 0.3 MP
+    for aspect, size in (("9:16", (416, 736)), ("16:9", (736, 416)), ("1:1", (544, 544)), ("4:5", (480, 608))):
+        project.data["settings"] = {"resolution": {"aspect": aspect}}
+        assert canvas_size(project, project_settings(project)) == size, aspect
+    assert video_aspect(project) == "3:4"   # 480×608 → the nearest image-tool shape
+    project.data["settings"] = {"resolution": {"aspect": "16:9"}}
+    assert video_aspect(project) == "16:9"
+    project.data["settings"] = {"resolution": {"aspect": "custom", "width": 640, "height": 352}}
+    assert canvas_size(project, project_settings(project)) == (640, 352)
+    project.data["start_image"] = None
+    project.data["settings"] = {}
+    assert canvas_size(project, project_settings(project)) == (416, 736)   # old default unchanged

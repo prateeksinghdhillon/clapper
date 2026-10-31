@@ -110,3 +110,16 @@ def test_delete_version(project):
     assert not f.exists() and t["upscaled"] is None and t["upscales"] == {}
     with pytest.raises(ProjectError):
         upscale.delete_version(project, t["id"], "sharpen-720p")
+
+
+def test_list_and_delete_exports(project):
+    folder = project.root / "exports"; folder.mkdir(exist_ok=True)
+    (folder / "short-1.mp4").write_bytes(b"v")
+    (folder / "short-1.json").write_text(json.dumps({"created": "20261031-1", "total_seconds": 10.0, "width": 720, "height": 1274,
+                                                     "scenes_exported": 2, "scenes_total": 2, "segments": [{"scene_number": 1, "upscaled": "sharpen 720p"}, {"scene_number": 2, "upscaled": None}]}))
+    items = export.list_exports(project)
+    assert items[0]["file"] == "exports/short-1.mp4" and items[0]["upscaled"] == [1] and items[0]["width"] == 720
+    with pytest.raises(ProjectError):
+        export.delete_export(project, "../project.json")
+    export.delete_export(project, "exports/short-1.mp4")
+    assert export.list_exports(project) == [] and not (folder / "short-1.json").exists()

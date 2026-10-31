@@ -106,6 +106,31 @@ def export_size(segments: list[dict], size: str) -> list[int]:
     return [big["width"], big["height"]]
 
 
+def list_exports(project: Project) -> list[dict]:
+    """Exported videos, newest first, with their manifests."""
+    out = []
+    folder = project.root / "exports"
+    for mp4 in sorted(folder.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True) if folder.is_dir() else []:
+        manifest = {}
+        try:
+            manifest = json.loads(mp4.with_suffix(".json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+        out.append({"file": f"exports/{mp4.name}", "bytes": mp4.stat().st_size, "created": manifest.get("created"),
+                    "seconds": manifest.get("total_seconds"), "width": manifest.get("width"), "height": manifest.get("height"),
+                    "scenes": manifest.get("scenes_exported"), "scenes_total": manifest.get("scenes_total"),
+                    "upscaled": [s["scene_number"] for s in manifest.get("segments", []) if s.get("upscaled")]})
+    return out
+
+
+def delete_export(project: Project, file: str) -> None:
+    path = (project.root / file).resolve()
+    if path.parent != (project.root / "exports").resolve() or path.suffix != ".mp4" or not path.is_file():
+        raise ProjectError("unknown export")
+    path.unlink()
+    path.with_suffix(".json").unlink(missing_ok=True)
+
+
 def export_video(project: Project, *, name: str | None = None, partial: bool = False, size: str = "auto",
                  use_upscaled: bool = True) -> Path:
     if size not in EXPORT_SIZES:

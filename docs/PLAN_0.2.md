@@ -119,16 +119,17 @@ Settings must make sense to someone who has never heard of steps or megapixels, 
 
 ## Interface
 
-Four places, same header as today:
+Three workspaces, switched by a rail (laptop), tabs (tablet) or a bottom bar (phone); the ✨ Assistant opens beside any of them.
 
-| Screen | What it holds |
+| Workspace | What it holds |
 |---|---|
-| **Library** (new) | Grid of assets with filter chips (Characters · Places · Props · Styles · Voices · Audio · Clips · Frames). **+ New** menu: *Upload* · *Generate image* · *Vary…* · *Sheet…* · *Generate speech* · *Grab frame*. Tap an asset: preview, `@name`, definition, origin, versions, *Vary*, *Use in scene…*. |
-| **Storyboard** | As today. The scene editor gains a **Start** switch (Continue · Fresh · From image), reference chips with a library picker instead of a list, and an **Audio** row (voices, soundtrack clips with their length). |
-| **Finish** (replaces the Export dialog) | Selected takes in order, upscale per take, overlays, music and effects, preset, *Export*. |
-| **✨ Assistant** | The existing panel; new card types for tool jobs. |
+| **Studio** | The project's material, like a media studio rather than a step of video generation. Collections: *Cast & world* (characters, places, props, styles), *Files* (images, start images & frames, voices, speech lines, music & effects, clips, @ references), *From scenes* (takes, exports). A detail panel for any item: preview, role, belongs-to, versions, editable **recipe** (make a new version), *Change it*, *Speak*, @name and definition, where it is used. **＋ New**: a character/place/prop/style, the tools, uploads. |
+| **Scenes** | The storyboard and scene editor; *Style & notes*. |
+| **Finish** | Per-scene upscales and versions, export (size, partial), previous exports; next: music, effects, overlays. |
 
-One **job tray** (the existing status pill and live bar) shows every kind of job — takes, images, speech, upscales — with the same progress, stop and re-queue.
+### G. Characters, places, props, styles (done)
+
+A character (or place, prop, style) couples everything that makes it itself: a **name** (its @name), a **description** (added to every image made from it and sent to H3 as its definition), its **looks** (outfits, angles, variations, each labelled) with one **main look** that scenes use, and for characters a **voice**. Its page makes more of it with only the change typed: **new outfit / look**, **new angle / pose**, **put in a place** (start frames with the character and the place as references), **design it / more designs**; the built prompt can be seen and edited. Generating again from any recipe makes a **version** in the item's family.
 
 ## Data
 

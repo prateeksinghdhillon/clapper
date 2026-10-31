@@ -21,6 +21,7 @@ While you work:
 - **Python changes need a ComfyUI restart**, and only restart when ComfyUI's queue is empty. If ComfyUI runs as a service and you have no sudo, ComfyUI-Manager can restart it in place: `curl -X POST -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:8188/v2/manager/reboot`.
 - **Files in `comfyui_clapper/web/` only need a page reload.** There is no build step.
 - Run `node --check comfyui_clapper/web/app.js` (and the other JS files you touched) to catch syntax errors.
+- Try interface changes at laptop, tablet (about 820 px) and phone (about 390 px) widths. `HOME=/tmp/clapper-dev python tools/dev_server.py` serves the interface and API on port 8190 against your running ComfyUI, with its own profiles — handy for browser tests (for example with Playwright).
 - The startup log should list `comfyui_clapper` without `IMPORT FAILED`. Clapper's own messages are logged under `clapper`.
 
 ## Architecture map
@@ -48,7 +49,7 @@ While you work:
 | `…/engine/llm.py` | OpenAI-compatible chat client, provider settings, llama-swap load / eject / cache |
 | `…/engine/assistant.py` | Assistant instructions, project snapshot, tools, proposals, chats, compaction |
 | `…/engine/comfy_client.py` | Minimal client for ComfyUI's `/prompt`, `/queue` and `/history` |
-| `comfyui_clapper/web/` | The interface: `index.html`, `style.css`, `app.js`, `assistant.js` (plain JS, no framework) |
+| `comfyui_clapper/web/` | The interface (plain JS, no framework): `index.html`, `style.css`, `app.js` (shell, Scenes, settings, upscale), `studio.js` (Studio and Finish), `assistant.js` |
 | `comfyui_clapper/js/` | The ComfyUI sidebar tab only |
 | `cli/clapper.py` | Command line; works on project folders directly and queues in ComfyUI over HTTP |
 | `tools/` | `join_check.py` (measure a join), `assistant_eval.py` (score the assistant model) |

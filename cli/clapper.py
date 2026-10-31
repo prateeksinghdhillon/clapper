@@ -162,6 +162,35 @@ def cmd_asset(args) -> int:
     return 0
 
 
+def cmd_entity(args) -> int:
+    from comfyui_clapper.engine import tools
+
+    p = _open(args)
+    a = args.args
+    if args.action == "list":
+        for e in p.entities.values():
+            looks = p.entity_looks(e["id"])
+            print(f"{e['id']}  {e['kind']:9s} {e['name']}  @{e['ref']}  {len(looks)} look(s)  main={e.get('main') or '-'}")
+            for x in looks:
+                print(f"      {x['id']}  {'★' if x['id'] == e.get('main') else ' '} {x.get('look', '')}")
+    elif args.action == "create":
+        if len(a) < 2:
+            raise ProjectError("usage: entity PROJECT create KIND NAME [--description D] [--from ASSET_ID]")
+        e = p.create_entity(a[0], " ".join(a[1:]), description=args.description or "", from_asset=args.from_asset)
+        print(f"{e['id']}  @{e['ref']}")
+    elif args.action == "main":
+        if len(a) != 2:
+            raise ProjectError("usage: entity PROJECT main ENTITY_ID ASSET_ID")
+        p.set_entity_main(a[0], a[1])
+        print(f"main look of {a[0]} is {a[1]}")
+    elif args.action == "generate":
+        if len(a) < 2:
+            raise ProjectError("usage: entity PROJECT generate ENTITY_ID first|look|angle|place [TEXT…] [--place ID] [--count N]")
+        jobs = tools.queue_entity(p, ComfyClient(args.url), a[0], a[1], " ".join(a[2:]), place_id=args.place, count=args.count)
+        print(f"queued {len(jobs)} job(s): " + ", ".join(j["id"] for j in jobs) + " — run `refresh` when they are done")
+    return 0
+
+
 def cmd_frame(args) -> int:
     p = _open(args)
     a = media.grab_frame(p, args.take, args.seconds)
@@ -426,6 +455,13 @@ def main() -> int:
     s.add_argument("--title")
     s.add_argument("--definition")
     s.add_argument("--default", action="store_true", help="name: use in every scene that has no own list")
+    s = proj("entity", help="characters, places, props and styles: list, create, set the main look, generate looks")
+    s.add_argument("action", choices=["list", "create", "main", "generate"])
+    s.add_argument("args", nargs="*")
+    s.add_argument("--description")
+    s.add_argument("--from", dest="from_asset", help="create: start from this library image")
+    s.add_argument("--place", help="generate place: the place entity")
+    s.add_argument("--count", type=int, default=2)
     s = proj("frame", help="save a frame of a finished take to the library")
     s.add_argument("take", help="take id")
     s.add_argument("seconds", type=float)
@@ -491,7 +527,8 @@ def main() -> int:
     args = ap.parse_args()
     return {"profile": cmd_profile, "import-timeline": cmd_import_timeline, "adopt": cmd_adopt, "export": cmd_export, "take": cmd_take, "new": cmd_new, "ref": cmd_ref, "scene": cmd_scene, "render": cmd_render,
             "refresh": cmd_refresh, "usage": cmd_usage, "delete": cmd_delete, "render-rest": cmd_render_rest, "status": cmd_status, "select": cmd_select,
-            "asset": cmd_asset, "frame": cmd_frame, "video-model": cmd_video_model, "upscale": cmd_upscale}[args.cmd](args)
+            "asset": cmd_asset, "frame": cmd_frame, "video-model": cmd_video_model, "upscale": cmd_upscale,
+            "entity": cmd_entity}[args.cmd](args)
 
 
 if __name__ == "__main__":

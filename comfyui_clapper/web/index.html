@@ -19,9 +19,7 @@
   </button>
   <nav class="top-actions" id="topActions" hidden>
     <button class="ghost ai-btn" id="assistantBtn" title="Plan and write scenes with the assistant" aria-label="Assistant"><span class="ico">✨</span><span class="lbl">Assistant</span></button>
-    <button class="ghost wide-only" id="libraryBtn" title="Images, sounds and clips of this project, and its @name references">Library</button>
     <button class="ghost wide-only" id="settingsBtn">Settings</button>
-    <button class="primary" id="exportBtn" title="Join the selected takes into one video" aria-label="Export"><span class="ico">⤓</span><span class="lbl">Export</span></button>
   </nav>
   <button class="menu-btn" id="menuBtn" hidden title="Menu" aria-label="Menu"><span class="avatar" id="avatar"></span><span class="caret">▾</span></button>
 </header>
@@ -46,7 +44,6 @@
 
 <div class="pop app-menu" id="appMenu" hidden>
   <div class="menu-who"><b id="whoName"></b><span class="hint" id="whoId"></span></div>
-  <button class="project-only narrow-only" id="mLibrary">Library</button>
   <button class="project-only narrow-only" id="mSettings">Settings</button>
   <button class="project-only" id="mStorage">Storage</button>
   <button id="mLogs">ComfyUI log</button>
@@ -113,15 +110,49 @@
     </div>
   </section>
 
-  <!-- Project: storyboard + scene editor -->
-  <section id="projectView" class="view" hidden>
-    <div class="board-head">
-      <div>
-        <div class="board-stats" id="boardStats"></div>
+  <!-- Project: three workspaces — Studio (assets), Scenes, Finish -->
+  <section id="projectView" class="project-view" hidden>
+    <nav class="ws-nav" id="wsNav" aria-label="Workspaces">
+      <button data-ws="studio" title="Characters, places, images, sounds and clips"><span class="i">◧</span><span class="t">Studio</span></button>
+      <button data-ws="scenes" title="Storyboard: scenes and their takes"><span class="i">▦</span><span class="t">Scenes</span></button>
+      <button data-ws="finish" title="Upscale, export and previous exports"><span class="i">⤓</span><span class="t">Finish</span></button>
+      <button data-ws="assistant" class="ws-ai" title="Plan and write with the assistant"><span class="i">✨</span><span class="t">Assistant</span></button>
+    </nav>
+
+    <div class="ws" id="wsStudio" hidden>
+      <div class="ws-head">
+        <h2 class="ws-title">Studio</h2>
+        <input type="search" id="studioSearch" placeholder="Search names, prompts, titles…" autocomplete="off">
+        <span class="spacer"></span>
+        <label class="btn ghost file-label" title="Add images, sounds or video clips">⬆ Upload<input type="file" id="libFiles" multiple accept="image/*,audio/*,video/*,.m4a,.flac,.ogg,.opus"></label>
+        <button class="primary" id="studioNew">＋ New</button>
       </div>
-      <div class="board-actions"><button class="ghost" id="storageBtn" title="Disk space used by this project, and delete">Storage</button><button class="ghost" id="upscaleScenesBtn" hidden title="Upscale the scenes you have finished, each on its own">⤢ Upscale scenes…</button><button class="primary" id="renderRestBtn" hidden></button></div>
+      <div class="studio" id="studio">
+        <aside class="cats" id="studioCats" aria-label="Collections"></aside>
+        <div class="studio-main" id="studioMain"></div>
+        <aside class="panel" id="studioPanel" hidden></aside>
+      </div>
     </div>
-    <div class="board" id="board"></div>
+
+    <div class="ws" id="wsScenes" hidden>
+      <div class="ws-head board-head">
+        <h2 class="ws-title">Scenes</h2>
+        <div class="board-stats" id="boardStats"></div>
+        <span class="spacer"></span>
+        <div class="board-actions">
+          <button class="ghost" id="styleBtn" title="Shared style text sent with every scene, and the story notes">Style &amp; notes</button>
+          <button class="ghost" id="storageBtn" title="Disk space used by this project, and delete">Storage</button>
+          <button class="ghost" id="upscaleScenesBtn" hidden title="Upscale the scenes you have finished, each on its own">⤢ Upscale scenes…</button>
+          <button class="primary" id="renderRestBtn" hidden></button>
+        </div>
+      </div>
+      <div class="board" id="board"></div>
+    </div>
+
+    <div class="ws" id="wsFinish" hidden>
+      <div class="ws-head"><h2 class="ws-title">Finish</h2><span class="spacer"></span></div>
+      <div class="finish" id="finishBody"></div>
+    </div>
   </section>
 </main>
 
@@ -228,48 +259,27 @@
 </aside>
 
 <!-- Modal dialogs -->
-<dialog id="libraryDlg" class="dlg lib-dlg">
-  <div class="dlg-head"><h2>Library</h2><button class="icon" data-close>✕</button></div>
-  <div class="dlg-body" id="libBody">
-    <section class="block">
-      <div class="lib-toolbar">
-        <div class="chips" id="libFilter"></div>
-        <span class="spacer"></span>
-        <label class="lib-role">Add as<select id="libRole"></select></label>
-        <label class="primary file-btn">+ Add files<input type="file" id="libFiles" multiple accept="image/*,audio/*,video/*,.m4a,.flac,.ogg,.opus"></label>
-        <button class="ai-btn create-btn" id="libCreate" title="Make images or speech with a tool (FLUX.2, Qwen3-TTS or your own workflows)">✨ Create…</button>
-      </div>
-      <div class="jobs" id="libJobs"></div>
-      <p class="hint">Images, sounds (mp3, wav, m4a, ogg, flac…) and video clips. Drop files anywhere in this window. Give an item an <b>@name</b> to use it as a reference in scenes; ★ = used by scenes that have no own list · ▶ = the first scene's start image.</p>
-      <div class="lib-grid" id="libGrid"></div>
-    </section>
-    <details class="block" id="styleBox">
-      <summary>Shared style text and story notes</summary>
-      <div class="block-head"><h3>Shared style text</h3><span class="hint">Sent with every scene. Changing it changes every scene's prompt.</span></div>
-      <textarea id="styleText" rows="5"></textarea>
-      <button class="ghost" id="saveStyle">Save style text</button>
-      <div class="block-head"><h3>Story notes</h3><span class="hint">The assistant's lasting memory for this project: story, characters, tone, decisions. Not sent to H3.</span></div>
-      <textarea id="notesText" rows="4"></textarea>
-      <button class="ghost" id="saveNotes">Save story notes</button>
-    </details>
-  </div>
+
+
+<dialog id="pickDlg" class="dlg pick-dlg">
+  <div class="dlg-head"><h2 id="pickTitle">Choose</h2><button class="icon" data-close>✕</button></div>
+  <div class="dlg-body" id="pickBody"></div>
+  <div class="dlg-foot"><button class="ghost" data-close>Cancel</button><button class="primary" id="pickGo">Choose</button></div>
 </dialog>
 
-<dialog id="toolDlg" class="dlg tool-dlg">
-  <div class="dlg-head"><h2>Create</h2><button class="icon" data-close>✕</button></div>
+<dialog id="styleDlg" class="dlg">
+  <div class="dlg-head"><h2>Style &amp; notes</h2><button class="icon" data-close>✕</button></div>
   <div class="dlg-body">
-    <div class="seg tool-tabs" id="toolTabs"></div>
-    <p class="hint" id="toolDesc"></p>
-    <div class="tool-form" id="toolForm"></div>
-    <details class="adv" id="toolAdv"><summary>More options</summary><div class="tool-form" id="toolAdvForm"></div>
-      <label>Seed (empty = random)<input type="number" id="toolSeed"></label></details>
-    <div class="row tool-run">
-      <label>Results<select id="toolCount"><option>1</option><option selected>2</option><option>4</option><option>8</option></select></label>
-      <label>Save as<select id="toolRole"></select></label>
-      <label class="grow">Title (optional)<input id="toolTitle" placeholder="e.g. Aoi, side view"></label>
-      <button class="primary big" id="toolRun">Create</button>
-    </div>
-    <p class="hint">Results appear in the Library as they finish. Each keeps the tool, settings and seed that made it, so you can run it again or vary it.</p>
+    <section class="block">
+      <div class="block-head"><h3>Shared style text</h3><span class="hint">Sent with every scene: format, look, rules. Changing it changes every scene's prompt.</span></div>
+      <textarea id="styleText" rows="7"></textarea>
+      <button class="ghost" id="saveStyle">Save style text</button>
+    </section>
+    <section class="block">
+      <div class="block-head"><h3>Story notes</h3><span class="hint">The assistant's lasting memory for this project: story, characters, tone, decisions. Not sent to H3.</span></div>
+      <textarea id="notesText" rows="5"></textarea>
+      <button class="ghost" id="saveNotes">Save story notes</button>
+    </section>
   </div>
 </dialog>
 
@@ -303,11 +313,6 @@
   <div class="dlg-foot"><button class="ghost" data-close>Cancel</button><button class="primary" id="upGo">Upscale</button></div>
 </dialog>
 
-<dialog id="exportDlg" class="dlg">
-  <div class="dlg-head"><h2>Export video</h2><button class="icon" data-close>✕</button></div>
-  <div class="dlg-body" id="exportBody"></div>
-  <div class="dlg-foot"><button class="ghost" data-close>Cancel</button><button class="primary" id="exportGo">Export</button></div>
-</dialog>
 
 <dialog id="projectDlg" class="dlg">
   <div class="dlg-head"><h2 id="pdTitle">Project storage</h2><button class="icon" data-close>✕</button></div>
@@ -361,6 +366,7 @@
 
 <div class="toast" id="toast" hidden></div>
 <script src="/clapper/static/app.js"></script>
+<script src="/clapper/static/studio.js"></script>
 <script src="/clapper/static/assistant.js"></script>
 </body>
 </html>

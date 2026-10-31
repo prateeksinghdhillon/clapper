@@ -12,7 +12,8 @@ This guide explains the ideas behind Clapper and walks through every screen. For
 | **Scene** | One part of the video (usually 5 seconds): its text, its references, its length, and how it joins the scene before it. |
 | **Take** | One generation of one scene. Takes are numbered per scene (Take 1, Take 2, …), dated, and never overwritten. |
 | **Selected take** | The take of a scene that the video uses. Exactly one per scene. |
-| **Library** | Every image, sound and video clip of the project, each with a role (character, place, voice sample, speech line, music, …) and where it came from (uploaded, or a frame of a take). |
+| **Studio** | Every image, sound and video clip of the project, each with a role (character, place, voice sample, speech line, music, …) and where it came from (uploaded, a tool, or a frame of a take). |
+| **Character / place** (also prop, style) | A thing that must look the same in every scene: a name (its @name), a description, its looks (outfits, angles, variations) with one main look, and for characters a voice. |
 | **Reference** | A library item with an `@name` — an image (character, product, style sheet, logo) or an audio sample (a voice). Used in text as `@name`. |
 | **Sound clip** | A library sound placed at a time in a scene. The scene's soundtrack becomes that clip from that moment — for dialogue recorded or generated elsewhere. |
 | **Start image** | The image a scene opens on. The project's start image (▶) is used by the first scene and shown to the model in every scene as `<Picture 1>`; any later scene can start from its own image instead. |
@@ -99,10 +100,22 @@ One row at the top of every screen:
   - **ComfyUI queue**: how many jobs are running and waiting.
   - **GPU**: the state of the assistant model and of ComfyUI, the **Auto / Manual** switch, and **Load assistant**, **Eject assistant**, **Free ComfyUI memory** (see *Assistant*).
   - **ComfyUI log** and **Assistant settings…**.
-- In a project: **✨ Assistant** (opens the chat, see *Assistant*), **Library** (images, sounds and clips, @name references, style text and definitions), **Settings** (generation settings) and **⤓ Export** (join the selected takes into one video). On tablets and small laptops (narrower than about 1180 px) Library and Settings move into the profile menu; on phones Assistant and Export show only their icons.
-- **Profile menu** (the round initial ▾): your name and profile id; in a project also **Library** and **Settings** (on narrower screens) and **Storage**; then **ComfyUI log** (see *Logs panel*), **Assistant settings…**, **Change password…**, and **Log out** (ends the profile's session on every device).
+- In a project: **✨ Assistant** (opens the chat, see *Assistant*) and **Settings** (generation settings). On narrower screens Settings moves into the profile menu; on phones the Assistant is a tab at the bottom.
+- **Profile menu** (the round initial ▾): your name and profile id; in a project also **Settings** (on narrower screens) and **Storage**; then **ComfyUI log** (see *Logs panel*), **Assistant settings…**, **Change password…**, and **Log out** (ends the profile's session on every device).
 
 The assistant chat and the scene editor open as panels below the top bar, so the top bar and the live bar stay visible.
+
+### Workspaces
+
+A project has three workspaces; switch between them at any time — nothing stops or is lost:
+
+| Workspace | For |
+|---|---|
+| **Studio** | Everything a video is made from: characters, places, props and styles, and every image, sound and video clip — make them, change them, keep their versions |
+| **Scenes** | The storyboard: write scenes, render and choose takes |
+| **Finish** | Upscale each scene, export the video, previous exports |
+
+On a laptop they are a rail on the left, on a tablet tabs at the top, on a phone a bar at the bottom (with the ✨ Assistant as a fourth tab). Clapper reopens the workspace you used last.
 
 ### Live bar
 
@@ -113,11 +126,13 @@ Appears while anything renders: which scene, the phase (*Loading models → Enco
 
 Stopped takes stay in the list as *interrupted — stopped by you* with a **Re-queue** button.
 
-### Storyboard
+### Scenes: storyboard
 
 One card per scene, in order: a thumbnail of the selected take (hover or tap to play), the scene number, the join mode, a one-line summary, the length, which take is selected (*Take 2 of 3 selected*), and the badges.
 
 - The line above the cards shows the number of scenes, the planned length, how many scenes have a take, and the **disk space** the project uses (hover for the split; click to open *Storage*).
+- **Style & notes** — the shared style text sent with every scene (changing it changes every scene's prompt, so all scenes show *prompt edited since take*) and the story notes, the assistant's memory (not sent to H3).
+- **⤢ Upscale scenes…** — see *Finish*.
 - **Storage** — the project's disk space split into takes, exports, references and history, and **Delete this project** (below).
 - **+** between two cards inserts a new scene there.
 - **+ Add scene at the end** extends the video.
@@ -141,31 +156,61 @@ One card per scene, in order: a thumbnail of the selected take (hover or tap to 
 
 Everything you type is saved automatically.
 
-### Library
+### Studio
 
-Open it with **Library** in the top bar (on a phone: the profile menu).
+The Studio is where a video's material lives and grows. On the left (on tablets and phones: a row of chips) are its **collections**:
 
-- **+ Add files** (or drop files onto the window) — images, sounds (mp3, wav, m4a, ogg, flac, …) and video clips, several at once. *Add as* sets their role. Files are copied into the project, so moving or deleting the originals never breaks it. Durations and sizes are read automatically.
-- **Filter** — All · Images · Sound · Video · @ References.
-- Each item shows a preview, its **title** and **role** (both editable), its size or length, and where it came from (for example *frame of scene 2 Take 1 at 3.4 s*).
-- **Give it an @name** — makes the item a reference you can use in scene text; optionally a default (★) for every scene without its own list. A named item then shows its **definition** (sent to H3 in scenes that use it), its card for the assistant, and buttons to set or unset ★ and ▶ (the first scene's start image) or remove the name (the file stays).
-- **Remove** — moves an item without an `@name` to the project's `trash/` folder. Items used as a sound clip in a scene cannot be removed.
-- **Shared style text and story notes** (folded at the bottom) — the style text is sent with every scene; changing it changes every scene's prompt (all scenes will show *prompt edited since take*). Story notes are the assistant's memory and are not sent to H3.
+- **Cast & world** — **Characters**, **Places**, **Props**, **Styles**.
+- **Files** — all files, images, start images & frames, voices, speech lines, music & effects, video clips, and the items with an @name.
+- **From scenes** — every finished **scene take** and every **export**.
 
-### Create (images and speech)
+**Search** finds names, titles and the prompts that made things. **⬆ Upload** (or dropping files anywhere in the Studio) adds images, sounds (mp3, wav, m4a, ogg, flac, …) and video clips; files are copied into the project, and durations and sizes are read automatically. **＋ New** opens the *New* page (below).
 
-**✨ Create…** in the Library opens the tools. Each result is a new library item that remembers the tool, its settings and seed (**↻ Again…** reopens the tool with them).
+Click anything to open it in the **detail panel** (on the right on a laptop, sliding over the page on a tablet, full screen with ← on a phone):
+
+- a large preview, the **title** and **role**, its size or length and where it came from (*made with Image · seed 4242*, *frame of scene 2 Take 1 at 3.4 s*);
+- **Belongs to** — file an image under a character, place, prop or style, with a look label; **★ Make it … 's main look**; or **Make a character / place from it…**;
+- **Versions** — the item's family: what it was made from and everything made from it; tap one to open it;
+- **Recipe** (things made with a tool) — the prompt, images and settings that made it, editable; **Make new version** keeps the original and adds the result to the family. Images without a recipe have **Change it** ("at night with the street lamp on");
+- for voices and speech lines: **🗣 Speak in this voice** (with the sample's transcript, which improves the likeness);
+- **In scenes** — its @name (or **Give it an @name**), the definition sent to H3, the assistant's card, ★ default / ▶ start image, and which scenes use it;
+- **⤓ Download** and **Remove** (to the project's `trash/` folder; refused while an @name or a scene's sound clip uses it).
+
+### Characters, places, props and styles
+
+A character (likewise a place, prop or style) has its own page:
+
+- its **name**, which is also its `@name` in scenes (an image that already had an @name keeps it);
+- a **description** of what makes it look like itself ("a 17-year-old girl, short indigo bob with a white streak, amber eyes…"). It is added to every image made from it, and it is the definition H3 receives in every scene that uses it — one text keeps the pictures and the video consistent;
+- a **voice** (characters) — a voice sample from the library, used by 🗣 Speak;
+- its **looks** — every image of it with a label (*default*, *winter outfit*, *side view*, *at night*). **★** marks the **main look**: the image scenes use as its @name. **Make main** on another look switches every scene that uses it. **＋ Add from library** files images you already have under it.
+
+The action box makes more of it, using the description and the main look as image 1, so you type only what changes:
+
+| Action | You type | You get |
+|---|---|---|
+| **New outfit / look** (places: **Variation**) | "wearing a winter coat and a red scarf" · "at night in the rain" | new looks, filed under it |
+| **New angle / pose** | "from the side, walking" · "from above" | new looks |
+| **Put in a place** (characters) | a place, and "sitting on the bench, looking down the road" | start frames for scenes, with both as references (Files › Start images & frames) |
+| **Design it** / **More designs** | optional extra details | first designs from the description alone |
+
+**See / edit the prompt** shows the exact prompt that will be used; edit it to take full control. Each image takes about 4–10 s on a 16 GB card; running jobs show as tiles you can cancel.
+
+### New
+
+**＋ New** offers:
+
+- **Character / Place / Prop / Style** — a name, a description, and either **Design it now** (1–4 first designs; pick the main look afterwards) or **Start from an image I have**;
+- the tools: **Image (FLUX.2 Klein)**, **Speech (Qwen3-TTS voice clone)** and your own tools (below). Results appear under **Made here**; open one to name it, file it under a character or make versions;
+- **Upload files**.
 
 | Tool | Makes | Needs |
 |---|---|---|
-| **Image (FLUX.2 Klein)** | A new image from a description — a character design, a place, a prop, a start frame. Choose up to 4 library images to *change* them instead: the same character in a new pose, outfit or place, or several images combined ("the girl from image 1 sits in the shelter from image 2"). About 4 s per image at the default 4 steps on a 16 GB card. | FLUX.2 Klein 9B (`flux-2-klein-9b-fp8`), its text encoder `qwen_3_8b_fp8mixed` and `flux2-vae`; with images also the Klein consistency LoRA (strength under *More options*) |
-| **Speech (Qwen3-TTS voice clone)** | A spoken line in the voice of a sample from the library, in 10 languages. Use the result as a scene's sound clip. A few seconds per line. | The `qwen3-tts-comfyui` node pack and its 1.7B Base model; a clean voice sample of a few seconds (its transcript, if you type it on the sample, improves the likeness) |
+| **Image (FLUX.2 Klein)** | A new image from a description, or up to 4 library images changed or combined ("the girl from image 1 sits in the shelter from image 2"). About 4 s per image at the default 4 steps. The shape starts at the video's shape | FLUX.2 Klein 9B (`flux-2-klein-9b-fp8`), its text encoder `qwen_3_8b_fp8mixed` and `flux2-vae`; with images also the Klein consistency LoRA (strength under *More options*) |
+| **Speech (Qwen3-TTS voice clone)** | A spoken line in the voice of a library sample, in 10 languages. Use it as a scene's sound clip. A few seconds per line | The `qwen3-tts-comfyui` node pack and its 1.7B Base model; a clean voice sample of a few seconds |
 | **Your own tools** | Anything a ComfyUI workflow makes — see the [Reference](REFERENCE.md#adding-your-own-tool) | — |
 
-- Choose how many **results** (1–8, each its own seed), what to **save as** (role) and an optional title; results from one run are numbered.
-- Shortcuts on library items: **✨ Vary…** (image tool with that image picked), **🗣 Speak…** (speech tool with that voice), **↻ Again…** (the settings that made it).
-- Running and failed jobs are listed at the top of the Library with **Cancel**, **Edit & run again** and ✕; finished jobs simply appear as new items. Tools that cannot run on this ComfyUI (a node pack or model file missing) say what is missing.
-- Tool jobs share ComfyUI's queue with takes, in the order queued. Making the images and voices first, then rendering scenes, keeps model switching to a minimum.
+Tools that cannot run on this ComfyUI say what is missing. Tool jobs share ComfyUI's queue with takes in the order queued; making the images and voices first, then rendering scenes, keeps model switching to a minimum.
 
 A **voice sample** with an `@name` used in a scene is a *voice reference*: the scene's speaker gets that voice and says new words written in the text. A **sound clip** (scene editor) is played as-is. Use a voice reference for new lines in a known voice, a sound clip for lines you already have as audio.
 
@@ -179,6 +224,7 @@ Two views; Clapper remembers which one you use.
 
 | Choice | Options | What it changes |
 |---|---|---|
+| Video shape | **Portrait 9:16** · **Landscape 16:9** · **Square 1:1** · **Vertical 4:5** · **Match the start image**, each with its size while rendering | the shape of new scenes that start fresh or from an image (a continued scene keeps the size of the scene before it; a start image of another shape is centre-cropped); places and start frames made in the Studio follow it |
 | Quality and speed | **⚡ Draft** (Ref2VA, 4 steps, ≈2 min per 5 s scene) · **★ Standard** (FL2VA, 20 steps, ≈5.5 min — the most tested setup) | the model and its steps; *Custom* shows when Advanced values match neither |
 | Steps | per model in use, each with its time per scene | time; with these Turbo LoRAs more steps made no visible difference in testing |
 | Picture size while rendering | 416×736 (tested on 16 GB) and two larger sizes | time and memory; larger sizes are untested on 16 GB cards and may run out — upscale the finished takes instead |
@@ -187,24 +233,26 @@ Two views; Clapper remembers which one you use.
 
 Each time is marked **measured** (on the reference card, an RTX 5060 Ti 16 GB, or from this project's own finished takes) or **estimate** (scaled from measurements). Once you have rendered takes, their real timings replace the defaults. A line at the bottom gives the time for one scene and for the whole video.
 
-**Advanced** — everything: FL2VA steps presets, sampler and scheduler, default scene length, size (megapixels from the start image's shape, or a fixed width/height), continuity (carried frames, method, carry sound), reference image size, LoRAs, model names, the memory patch, and the video model with the Ref2VA model, LoRA and steps.
+**Advanced** — everything: FL2VA steps presets, sampler and scheduler, default scene length, video shape (also **custom**: an exact width × height in multiples of 32) and megapixels, continuity (carried frames, method, carry sound), reference image size, LoRAs, model names, the memory patch, and the video model with the Ref2VA model, LoRA and steps.
 
 **Reset to defaults** restores the proven setup. Settings apply to takes rendered afterwards; every take records the settings it used. See [Reference § Settings](REFERENCE.md#settings).
 
-### Upscale
+### Finish
 
-Render at the small, fast size, pick the best takes, then upscale them for the final video. **⤢ Upscale…** on a take, or in Export for every selected take that is not upscaled yet:
+Three steps on one page:
+
+**1 · Scenes** — every scene with its selected take. Finish each scene on its own: **⤢ Upscale…** a scene, or tick several (or none, for every scene not upscaled yet) and upscale them — they run one after another, so memory use stays the same however many you choose.
 
 | How | What it does | Time (7 s take, 16 GB card) |
 |---|---|---|
 | **Sharpen** | Real-ESRGAN ×2 on every frame, then an exact resize. Crisp edges; the picture stays exactly the same, including its flaws | 720p ≈ 1.2 min · 1080p ≈ 1.4 min |
 | **Re-detail** | The H3 latent upscaler, then H3 (Ref2VA) redraws fine detail at the new size, in tiles so it fits in 16 GB. Faces, eyes and hair become clean; small details can change. *Light* stays closest to the take, *Strong* redraws more | light 720p ≈ 7.5 min · light 1080p ≈ 19 min |
 
-Both keep the take's sound exactly. The original take stays; each method and size is kept as its own version of the take (a new run never replaces another). The take card lists every version with **▶** play, **⤓** download and **✕** delete, and a choice of which one the export uses (or the *Original*). **Export › Upscaled videos** lists all versions of all scenes in one place. The upscale dialog shows the expected time for the takes you chose.
+Both keep the take's sound exactly. Each method and size is kept as its own version of the take (a new run never replaces another); each scene lists its versions with **▶** play, **⤓** download and **✕** delete, and a choice of which one goes into the video (or the *Original*). Scene cards on the storyboard show *⤢ 1080p* when upscaled.
 
-### Export dialog
+**2 · Export** — what will be exported (*Scenes 1–5 of 10 · 25.0 s*), which scenes are upscaled, and the **video size**: the largest scene (scenes that are not upscaled are resized to match, which looks softer), 720p, 1080p, or the original takes. It says clearly when the full video is not ready and offers a **partial video** of the ready scenes (it stops before the first scene without a take — skipping a middle one would leave a jump), and lists **Check before exporting** warnings with the time where they happen. The result plays right there with a download button and is saved in the project's `exports/` folder with a JSON list of exactly which takes were used.
 
-Shows what will be exported (*Scenes 1–5 of 10 · 25.0 s*), which scenes are upscaled (with **⤢ Upscale the other N…** to do the rest) and the **video size**: the largest scene (scenes that are not upscaled are resized to match, which looks softer), 720p, 1080p, or the original takes without upscales. It says clearly when the full video is not ready and offers a **partial video** of the ready scenes (it always stops before the first scene without a take — skipping a middle scene would leave a jump), and lists **Check before exporting** warnings with the time where they happen. Nothing is written until you press the export button. The result opens in a player with its size and a download link and is saved in the project's `exports/` folder together with a JSON list of exactly which takes were used.
+**3 · Previous exports** — every export with play, download and delete (also in Studio › Exports).
 
 ### Storage and deleting a project
 
@@ -247,8 +295,8 @@ The local model is small and runs at about 2 bits: it follows the workflow well 
 
 ### Start a new video
 
-1. New project → Library: add or **✨ Create** the characters, places and start image, give them an `@name` (start image ▶, the rest ★) and write their definitions. Add a voice sample and **🗣 Speak** the lines you need.
-2. Style text: format, art style, rules that always apply.
+1. New project → **Studio**: make the **characters** and **places** (*＋ New › Character*: describe it and design it, or start from an image), make their looks, and **Put in a place** for start frames. Upload a voice sample and **🗣 Speak** the lines you need.
+2. **Settings › Video shape** (portrait, landscape, …) and **Scenes › Style & notes**: format, art style, rules that always apply.
 3. Scene 1 → **Render take**. Judge the style, the characters and the sound before going further.
 4. Write the remaining scenes (you can write them all first), then **Render remaining**.
 
@@ -281,7 +329,7 @@ Stop anything with **■ Stop**. Close the browser, restart ComfyUI or shut down
 
 ### Use it from a phone
 
-Open `http://<computer>:8188/clapper/` on a phone that can reach the computer (for example over Tailscale) and log in with your profile — the same profile can be logged in on the computer at the same time. The storyboard becomes a vertical list, the editor and the chat open full width below the top bar, and the top bar (with the status pill) and the live bar stay at the top.
+Open `http://<computer>:8188/clapper/` on a phone that can reach the computer (for example over Tailscale) and log in with your profile — the same profile can be logged in on the computer at the same time. The workspaces move to a bar at the bottom (Studio · Scenes · Finish · Assistant), the storyboard becomes a vertical list, the Studio's detail panel and the scene editor open full screen (← goes back), and the top bar (with the status pill) and the live bar stay at the top. Thumbnails of takes and exports are small cached images, so browsing stays light on a phone connection.
 
 ### Bring in a Continuum Timeline prompt
 

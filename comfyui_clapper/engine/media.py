@@ -39,6 +39,28 @@ def probe(path: str | Path) -> dict:
     return info
 
 
+def poster(project: Project, rel: str, seconds: float = 0.5, width: int = 360) -> Path:
+    """A small JPEG of one frame of a project video, cached in .cache/thumbs/ (made once per file version)."""
+    import hashlib
+
+    src = (project.root / rel).resolve()
+    if project.root.resolve() not in src.parents or not src.is_file():
+        raise ProjectError("unknown video")
+    key = hashlib.sha1(f"{rel}|{src.stat().st_mtime_ns}|{seconds:.2f}|{width}".encode()).hexdigest()[:20]
+    out = project.root / ".cache" / "thumbs" / f"{key}.jpg"
+    if out.is_file():
+        return out
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(".tmp.jpg")
+    for at in (seconds, 0.0):  # very short clips: fall back to the first frame
+        proc = subprocess.run([FFMPEG, "-v", "error", "-y", "-ss", f"{at:.2f}", "-i", str(src), "-frames:v", "1",
+                               "-vf", f"scale={width}:-2", "-q:v", "4", str(tmp)], capture_output=True, timeout=60)
+        if proc.returncode == 0 and tmp.is_file() and tmp.stat().st_size:
+            tmp.replace(out)
+            return out
+    raise ProjectError("could not read a frame from the video")
+
+
 def add_with_info(project: Project, source: str | Path, **kwargs) -> dict:
     """Add a library file and record its duration / size."""
     asset = project.add_asset(source, save=False, **kwargs)

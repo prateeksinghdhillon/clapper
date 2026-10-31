@@ -59,9 +59,9 @@ ComfyUI server ── comfyui_clapper ──────────────
       llm.py       OpenAI-compatible chat client, provider settings, llama-swap load/eject/cache
       assistant.py instructions, project snapshot, tools, proposals, chats, compaction
    nodes.py      Clapper · Scene Conditioning, Save Take, Load Image / Load Audio (path), Save Images / Save Audio (job)
-   web/          the interface (plain HTML/CSS/JS, no build step)
+   web/          the interface (plain HTML/CSS/JS, no build step): app.js (shell, Scenes, settings), studio.js (Studio, Finish)
    js/           ComfyUI sidebar tab
-Project folders on disk (project.json, refs/, assets/, trash/, takes/, exports/, history/, chat/)
+Project folders on disk (project.json, refs/, assets/, trash/, jobs/, takes/, exports/, history/, chat/, .cache/)
 tools/            join_check.py (measure a join), assistant_eval.py (score the assistant's scenes)
 ```
 
@@ -152,6 +152,11 @@ The next version's plan (library, image and speech tools, start modes, finishing
 | Speed comparison: 8 vs 20 steps (FL2VA); SageAttention via ComfyUI's `--use-sage-attention` (needs `sageattention` 1.0.6) | planned |
 | Upscaling selected takes: Sharpen and Re-detail, versions per take, export size | done |
 | Simple settings view with measured / estimated times; Advanced view | done |
+| Studio workspace (cast & world, files, scene takes, exports; detail panel; versions; recipes; New page) and Finish workspace; rail / tabs / bottom bar for laptop / tablet / phone | done |
+| Characters, places, props, styles: description, looks with a main look (@name follows), voice; new look / angle / in a place from the description and main look | done |
+| Video shape: portrait, landscape, square, 4:5, start image, custom | done |
+| Poster thumbnails for takes and exports (cached JPEGs instead of loading videos) | done |
+| Interface development server (`tools/dev_server.py`) | done |
 | Scene reordering in the interface (the API supports `move`) | planned |
 | Undo in the interface (history files exist) | planned |
 | Shared voice/character library across projects | planned |

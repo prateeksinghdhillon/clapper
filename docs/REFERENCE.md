@@ -19,10 +19,11 @@ Project settings are stored as `settings` in `project.json` and merged over thes
 | `sampling.scheduler` | `simple` | Any ComfyUI scheduler name |
 | `sampling.steps` | 20 | Steps. The Turbo LoRA is distilled for 8; 20 is the proven quality setting, 8 is ≈2.5× faster sampling |
 | `sampling.denoise` | 1.0 | |
-| `resolution.mode` | `start_image` | Size from the start image's aspect at `megapixels`; otherwise `width`×`height` |
+| `resolution.aspect` | `start_image` | The video shape of fresh scenes: `start_image` (the start image's shape; without one `width`×`height`), `9:16`, `16:9`, `1:1`, `4:5` (at `megapixels`), or `custom` (exactly `width`×`height`). Continued scenes keep their parent's size; a start image of another shape is centre-cropped |
+| `resolution.mode` | `start_image` | Older setting, read when `aspect` is missing (`start_image`, anything else = custom) |
 | `resolution.megapixels` | 0.30 | e.g. 1536×2752 → 416×736 |
 | `resolution.multiple` | 32 | Size rounding |
-| `resolution.width` / `height` | 416 / 736 | Used when there is no start image |
+| `resolution.width` / `height` | 416 / 736 | `custom` size, and the size for `start_image` without a start image |
 | `continuity.frames` | 22 | Carried frames: 5 (fast), 22 (balanced), 39 (strong) |
 | `continuity.method` | `masked` | `masked` (lock the carried latents in place) or `keyframe` (pin them as a guide) |
 | `continuity.audio` | true | Carry sound across the join as well |
@@ -50,6 +51,10 @@ Any Python ≥ 3.10 with Pillow works; the CLI talks to ComfyUI over HTTP. Scene
 | `asset PROJECT name ID NAME [--definition D] [--default]` | Give a library item an `@name` (makes it a reference) |
 | `asset PROJECT remove ID` | Move an item without `@name` to `trash/` |
 | `frame PROJECT TAKE_ID SECONDS` | Save a frame of a finished take to the library |
+| `entity PROJECT list` | Characters, places, props, styles with their looks (★ = main) |
+| `entity PROJECT create KIND NAME [--description D] [--from ASSET_ID]` | A character / place / prop / style, optionally from a library image (which becomes its main look) |
+| `entity PROJECT main ENTITY_ID ASSET_ID` | Make one of its looks the main look (its @name follows) |
+| `entity PROJECT generate ENTITY_ID first\|look\|angle\|place [TEXT…] [--place ID] [--count N]` | Make designs, a new look or angle, or start frames of it in a place |
 | `video-model PROJECT fl2va\|ref2va\|ref2va_fresh` | Which H3 model renders the scenes |
 | `render PROJECT N [N…] [--seed S] [--overrides JSON] [--wait]` | Queue a take for each scene |
 | `render-rest PROJECT [--from-scene N] [--overrides JSON]` | Queue every remaining scene, chained in order |
@@ -125,6 +130,12 @@ Served by ComfyUI under `/clapper/`. JSON in, JSON out; errors return `{"error":
 | `POST /clapper/api/asset/name` | `path`, `id`, `name`, `definition`, `default`, `start` | Give a library item an `@name` |
 | `POST /clapper/api/asset/remove` | `path`, `id` | Move an item without `@name` to `trash/` (refused while a scene uses it as a sound clip) |
 | `POST /clapper/api/ref/remove` | `path`, `name` | Remove an `@name` (refused while the style text or a scene's text mentions it); the item stays |
+| `POST /clapper/api/entity` | `path`, `action`: `create` (`kind`, `name`, `description`, `from_asset`) · `update` (`id`, `name`, `description`, `voice`, `default`) · `main` (`id`, `asset`) · `add` (`asset`, `id` or `null`, `look`) · `remove` (`id`) | Characters, places, props, styles. `create` returns `{entity, project}` |
+| `POST /clapper/api/entity/generate` | `path`, `id`, `action` (`first`/`look`/`angle`/`place`), `text`, `place`, `count`, `seed`, `aspect`, `prompt` (optional full prompt) | Image jobs built from the description and the main look; results are filed as looks (or as start frames for `place`) |
+| `POST /clapper/api/entity/preview` | same as generate | The prompt and images that would be used |
+| `GET /clapper/api/exports` | `path` | Exported videos with their size, length and upscaled scenes |
+| `POST /clapper/api/exports/delete` | `path`, `file` | Delete an export and its JSON |
+| `GET /clapper/thumb` | `path`, `file`, `t` | A cached 360 px JPEG of a project video frame (`.cache/thumbs/`) |
 | `GET /clapper/api/tools` | — | Tools with their form fields, `ok` and `missing` (node packs / model files), plus problems with your own tool folders |
 | `POST /clapper/api/tool/run` | `path`, `tool`, `inputs` {…}, `count` (1–8), `role`, `seed`, `title` | Queue one job per result; returns `{jobs, project}`. Results land in the library on the next `/refresh` |
 | `POST /clapper/api/upscale` | `path`, `take_ids` or `selected: true`, `method` (`sharpen`/`redetail`), `size` (`720p`/`1080p`), `strength` (`light`/`strong`), `seed` | Queue upscales (jobs of kind `upscale`); with `selected`, every scene's selected take without that version yet |
@@ -162,6 +173,7 @@ Served by ComfyUI under `/clapper/`. JSON in, JSON out; errors return `{"error":
   assets/images|audios|videos/<id>.<ext>   library files added with + Add files, CLI `asset add` or Save frame
   trash/                  library files removed from the library
   jobs/<job-id>/          a tool job's files until they move into the library
+  .cache/thumbs/          small poster images of takes and exports (safe to delete)
   takes/<scene-id>/<take-id>/
       take.mp4            H.264 + AAC, 24 fps
       audio.wav           the take's sound
@@ -171,7 +183,7 @@ Served by ComfyUI under `/clapper/`. JSON in, JSON out; errors return `{"error":
   chat/c_<id>.json        assistant chats; chat/frames/<take>/ frames used for take reviews
 ```
 
-`project.json` top level: `schema`, `name`, `created`, `updated`, `settings`, `style`, `notes`, `start_image`, `library` (`items` by name: `kind`, `file`, `sha256`, `description`, `definition`, `card`, `card_status`, `asset`; `defaults`), `assets` (by id: `kind`, `role`, `title`, `file`, `sha256`, `tags`, `transcript` (voice samples), `origin` — `{type: upload, source}`, `{type: frame, take, seconds}` or `{type: tool, tool, tool_title, job, seed, inputs}`, `parent`, `created`, `duration` / `width`, `height`), `scenes` (ordered: `id`, `title`, `text`, `seconds`, `join`, `refs` — `null` = defaults, `start_image` — absent/`null` = the project's start image for the first scene, `""` = none, or an image `@name`; `audio_clips` — `[{asset, at}]` with `at` in seconds of scene time; `selected_take`), `takes` (by id: `scene`, `number`, `status`, `created`, `finished`, `seed`, `parent_take`, `join`, `context_frames`, `frames`, `width`, `height`, `prompt_sha256`, `refs`, `scene_text`, `scene_refs`, `scene_join`, `scene_seconds`, `scene_start_image`, `scene_audio_clips`, `model` (`fl2va`/`ref2va`), `upscales` (by version: `file`, `method`, `size`, `strength`, `width`, `height`, `created`, `job`), `upscaled` (the version export uses), `prompt_id`, `render_seconds`, `s_per_it`, `steps`, `error`).
+`project.json` top level: `schema`, `name`, `created`, `updated`, `settings`, `style`, `notes`, `start_image`, `library` (`items` by name: `kind`, `file`, `sha256`, `description`, `definition`, `card`, `card_status`, `asset`; `defaults`), `entities` (by id: `kind` — character/place/prop/style, `name`, `description`, `main` (asset id), `ref` (its @name), `voice`, `default`, `created`), `assets` (by id: `kind`, `role`, `title`, `file`, `sha256`, `tags`, `transcript` (voice samples), `entity` and `look` (a look of a character/place), `uses` (entities a start frame was made from), `origin` — `{type: upload, source}`, `{type: frame, take, seconds}` or `{type: tool, tool, tool_title, job, seed, inputs}`, `parent`, `created`, `duration` / `width`, `height`), `scenes` (ordered: `id`, `title`, `text`, `seconds`, `join`, `refs` — `null` = defaults, `start_image` — absent/`null` = the project's start image for the first scene, `""` = none, or an image `@name`; `audio_clips` — `[{asset, at}]` with `at` in seconds of scene time; `selected_take`), `takes` (by id: `scene`, `number`, `status`, `created`, `finished`, `seed`, `parent_take`, `join`, `context_frames`, `frames`, `width`, `height`, `prompt_sha256`, `refs`, `scene_text`, `scene_refs`, `scene_join`, `scene_seconds`, `scene_start_image`, `scene_audio_clips`, `model` (`fl2va`/`ref2va`), `upscales` (by version: `file`, `method`, `size`, `strength`, `width`, `height`, `created`, `job`), `upscaled` (the version export uses), `prompt_id`, `render_seconds`, `s_per_it`, `steps`, `error`).
 
 Take statuses: `queued`, `rendering`, `done`, `failed`, `interrupted`.
 
@@ -356,6 +368,7 @@ Developer and evaluation scripts in `tools/`; run them with a Python that has th
 
 | Script | Does |
 |---|---|
+| `HOME=/tmp/clapper-dev python tools/dev_server.py [--port 8190] [--comfy URL]` | Runs the web interface and HTTP API outside ComfyUI's process, sending jobs to a running ComfyUI — for interface work and browser tests without logging anyone out (a scratch `HOME` gives it its own profiles and project list; projects must be inside it). Needs aiohttp, Pillow and psutil (ComfyUI's Python has them). |
 | `tools/join_check.py TAKE_A TAKE_B OUT_DIR` | Joins two take folders the way the export does and measures the join: frame-to-frame change across it versus inside each take, and how identical the carried frames are. Writes `joined.mp4` and `join_strip.png` (last 3 frames of A next to the first 3 kept frames of B). Needs numpy, Pillow and ffmpeg. |
 | `tools/assistant_eval.py PROJECT --brief "…" [--language L] [--edit-language L] [--thinking off\|auto\|N] [--sampling JSON] [--repeat N] [--out report.md]` | Measures how well the active assistant model follows the workflow and the [prompt guide](PROMPT_GUIDE.md). On a throwaway copy of the project (the original is only read) it runs four tasks — plan the video from the brief, edit scene 2, insert a scene, change the narration language of scene 1 — applies the proposals, and scores every resulting scene against hard rules (three fields in order, `[Shot 1]`, active `@names`, well-formed and tagged dialogue, speech that fits the length, no readable text) and soft ones (camera, timing cues, starting where the previous scene ends), plus scene count and duplicates. The project's own scenes are scored the same way as a baseline. `--repeat N` aggregates several runs. Writes a Markdown report and a JSON file. A local model is loaded through llama-swap; ComfyUI's queue must be empty. See *Measuring a model* above. |
 

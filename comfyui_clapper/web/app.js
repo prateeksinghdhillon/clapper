@@ -81,6 +81,9 @@ async function once(key, fn) {
 
 const media = (file) => `/clapper/media?path=${encodeURIComponent(state.path)}&file=${encodeURIComponent(file)}`;
 const takeVideo = (take) => media(`${take.dir}/take.mp4`);
+// A small cached poster image of a video frame (much lighter than loading the video just for a thumbnail).
+const thumbUrl = (file, t = 0.5) => `/clapper/thumb?path=${encodeURIComponent(state.path)}&file=${encodeURIComponent(file)}&t=${t}`;
+const posterImg = (file, t) => h("img", { src: thumbUrl(file, t), loading: "lazy", alt: "", onerror: (e) => { e.target.replaceWith(h("span", { class: "hint" }, "▶")); } });
 const scenes = () => state.project?.scenes || [];
 const takes = () => Object.values(state.project?.takes || {});
 const takesFor = (sid) => takes().filter((t) => t.scene === sid).sort((a, b) => (a.number ?? 0) - (b.number ?? 0) || a.created.localeCompare(b.created));
@@ -99,8 +102,7 @@ function setProject(data) {
   renderBoard();
   if (state.sceneId && sceneById(state.sceneId)) renderEditor(); else closeEditor();
   syncPolling(); chatRefsChanged();
-  if ($("libraryDlg").open && !$("libraryDlg").contains(document.activeElement)) renderLibrary();
-  else if ($("libraryDlg").open) renderJobs();
+  renderWorkspace();
 }
 
 // ------------------------------------------------------------------ profile login
@@ -190,7 +192,8 @@ async function openProject(path) {
     history.replaceState(null, "", `/clapper/?project=${encodeURIComponent(path)}`);
     if (state.path !== path) chatReset();
     $("homeView").hidden = true; $("projectView").hidden = false; $("topActions").hidden = false; document.body.classList.add("in-project");
-    setProject(data); refresh(true); loadUsage();
+    studio.exports = null; studio.sel = null; studio.page = null; studio.made = new Set();
+    setProject(data); showWs(state.ws || "scenes"); refresh(true); loadUsage();
   });
 }
 
@@ -314,7 +317,7 @@ function badgeEls(ids) {
 function thumbFor(take, num, join) {
   const box = h("div", { class: "thumb" });
   if (take && take.status === "done") {
-    const v = h("video", { src: takeVideo(take) + "#t=0.1", muted: true, playsinline: true, preload: "metadata", loop: true });
+    const v = h("video", { src: takeVideo(take), poster: thumbUrl(`${take.dir}/take.mp4`, 0.1), muted: true, playsinline: true, preload: "none", loop: true });
     v.muted = true;
     box.addEventListener("mouseenter", () => v.play().catch(() => {}));
     box.addEventListener("mouseleave", () => { v.pause(); });
@@ -827,7 +830,6 @@ $("storageBtn").onclick = () => openProjectDialog(state.path, state.project.name
 
 const logs = { timer: null, lines: [], userScrolled: false };
 $("logsBtn").onclick = $("mLogs").onclick = () => { closePops(); $("logsPanel").hidden = !$("logsPanel").hidden; if (!$("logsPanel").hidden) loadLogs(); else clearTimeout(logs.timer); };
-$("mLibrary").onclick = () => { closePops(); $("libraryBtn").click(); };
 $("mSettings").onclick = () => { closePops(); $("settingsBtn").click(); };
 $("mStorage").onclick = () => { closePops(); $("storageBtn").click(); };
 $("logsClose").onclick = () => { $("logsPanel").hidden = true; clearTimeout(logs.timer); };
@@ -877,7 +879,6 @@ function drawLogs() {
 
 document.querySelectorAll("dialog [data-close]").forEach((b) => (b.onclick = () => b.closest("dialog").close()));
 $("playerDlg").addEventListener("close", () => $("playerVideo").pause());
-$("libraryBtn").onclick = () => { renderLibrary(); $("libraryDlg").showModal(); };
 
 // ------------------------------------------------------------------ library
 
@@ -885,9 +886,7 @@ const assets = () => state.project?.assets || {};
 const assetNames = (id) => Object.entries(library()).filter(([, it]) => it.asset === id).map(([n]) => n);
 const ROLE_LABEL = { character: "Character", place: "Place", prop: "Prop", style: "Style", start: "Start image", frame: "Frame",
   voice: "Voice sample", speech: "Speech line", sound: "Sound effect", music: "Music", clip: "Clip", other: "Other" };
-const LIB_FILTERS = [["all", "All"], ["image", "Images"], ["audio", "Sound"], ["video", "Video"], ["named", "@ References"]];
 const fmtDur = (s) => (s == null ? "" : s < 60 ? `${s.toFixed(1)} s` : fmtTime(s));
-let libFilter = "all";
 
 function assetMeta(a) {
   const bits = [];
@@ -905,12 +904,6 @@ function roleSelect(value, onchange) {
   return sel;
 }
 
-function assetPreview(a) {
-  const src = media(a.file);
-  if (a.kind === "image") return h("img", { src, alt: a.title, loading: "lazy" });
-  if (a.kind === "audio") return h("div", { class: "audio-prev" }, h("span", { class: "big-ico" }, a.role === "music" ? "♫" : a.role === "voice" || a.role === "speech" ? "🗣" : "♪"), h("audio", { src, controls: true, preload: "none" }));
-  return h("video", { src, controls: true, preload: "metadata", playsinline: true });
-}
 
 function namedBox(name, item) {
   const defaults = state.project.library.defaults; const start = state.project.start_image;
@@ -946,53 +939,6 @@ function nameForm(a) {
   return [open, box];
 }
 
-function renderLibrary() {
-  renderJobs();
-  $("styleText").value = state.project.style || "";
-  $("notesText").value = state.project.notes || "";
-  $("libFilter").replaceChildren(...LIB_FILTERS.map(([v, label]) => h("span", { class: "chip" + (libFilter === v ? " on" : ""), onclick: () => { libFilter = v; renderLibrary(); } }, label)));
-  const roleSel = $("libRole"); if (!roleSel.options.length) roleSel.replaceChildren(...(state.project.asset_roles || Object.keys(ROLE_LABEL)).map((r) => h("option", { value: r }, ROLE_LABEL[r] || r)));
-  const list = Object.values(assets()).filter((a) => libFilter === "all" || (libFilter === "named" ? assetNames(a.id).length : a.kind === libFilter))
-    .sort((x, y) => (assetNames(y.id).length - assetNames(x.id).length) || (y.created || "").localeCompare(x.created || ""));
-  $("libGrid").replaceChildren(...(list.length ? list.map((a) => {
-    const names = assetNames(a.id);
-    const title = h("input", { class: "title", value: a.title, title: "Title (for you)" });
-    title.onchange = () => guard(async () => setProject(await call("/asset/update", { path: state.path, id: a.id, title: title.value })));
-    const [nameBtn, nameBox] = names.length || a.kind === "video" ? [null, null] : nameForm(a);
-    return h("div", { class: "lib-item" + (names.length ? " named-item" : "") }, assetPreview(a), title,
-      h("div", { class: "row meta" }, roleSelect(a.role, (r) => guard(async () => { setProject(await call("/asset/update", { path: state.path, id: a.id, role: r })); renderLibrary(); })),
-        h("span", { class: "hint" }, assetMeta(a))),
-      ...names.map((n) => namedBox(n, library()[n])),
-      nameBox,
-      a.kind === "audio" && a.role === "voice" ? (() => {
-        const t = h("input", { placeholder: "What the sample says (helps speech tools)", value: a.transcript || "" });
-        t.onchange = () => guard(async () => { setProject(await call("/asset/update", { path: state.path, id: a.id, transcript: t.value })); toast("Transcript saved"); });
-        return h("label", { class: "transcript" }, "Transcript", t);
-      })() : null,
-      h("div", { class: "row" }, nameBtn, ...toolButtons(a),
-        names.length ? null : h("button", { class: "ghost danger", title: "Move the file to the project's trash folder", onclick: () => guard(async () => {
-          if (!confirm(`Remove "${a.title}" from the library?`)) return;
-          setProject(await call("/asset/remove", { path: state.path, id: a.id })); renderLibrary();
-        }) }, "Remove")));
-  }) : [h("p", { class: "hint empty" }, libFilter === "all" ? "The library is empty. Add images, sounds or clips with + Add files, or drop them here." : "Nothing here yet.")]));
-}
-
-async function uploadFiles(files) {
-  if (!files.length) return;
-  const fd = new FormData();
-  fd.append("path", state.path); fd.append("role", $("libRole").value || "other");
-  for (const f of files) fd.append("file", f);
-  await once("upload", async () => {
-    toast(`Adding ${files.length} file(s)…`);
-    const d = await call("/asset", fd);
-    setProject(d.project); renderLibrary(); toast(`${d.added.length} added to the library`);
-  });
-}
-$("libFiles").onchange = () => { const f = [...$("libFiles").files]; $("libFiles").value = ""; uploadFiles(f); };
-$("libraryDlg").addEventListener("dragover", (e) => { e.preventDefault(); $("libraryDlg").classList.add("drop"); });
-$("libraryDlg").addEventListener("dragleave", (e) => { if (e.target === $("libraryDlg")) $("libraryDlg").classList.remove("drop"); });
-$("libraryDlg").addEventListener("drop", (e) => { e.preventDefault(); $("libraryDlg").classList.remove("drop"); uploadFiles([...(e.dataTransfer?.files || [])]); });
-
 // ------------------------------------------------------------------ tools (Create)
 
 const toolState = { list: null, problems: [], current: null, values: {} };
@@ -1003,17 +949,6 @@ async function loadTools(force) {
   const d = await call("/tools");
   toolState.list = d.tools; toolState.problems = d.problems || [];
   return toolState.list;
-}
-
-async function openTool(toolId, values = {}) {
-  await guard(async () => {
-    const list = await loadTools();
-    const tool = list.find((t) => t.id === toolId) || list.find((t) => t.ok) || list[0];
-    toolState.current = tool.id;
-    toolState.values = { ...values };
-    renderTool();
-    if (!$("toolDlg").open) $("toolDlg").showModal();
-  });
 }
 
 function toolField(f, values) {
@@ -1051,68 +986,16 @@ function toolField(f, values) {
     input.onchange = () => {
       set(input.value || null);
       // a transcript saved on the sample fills the matching field
-      const tool = toolState.list.find((t) => t.id === toolState.current);
+      const tool = (toolState.list || []).find((t) => t.id === toolState.current) || { fields: [] };
       const dep = tool.fields.find((x) => x.from_asset === "transcript");
       const a = assets()[input.value];
-      if (dep && a && a.transcript && !values[dep.key]) { values[dep.key] = a.transcript; renderTool(); }
+      if (dep && a && a.transcript && !values[dep.key]) { values[dep.key] = a.transcript; renderStudio(); }
     };
   }
   return h("label", { class: "tool-field" + (f.type === "images" ? " wide" : "") }, f.label + (f.required ? " *" : ""), input, f.hint ? h("span", { class: "hint" }, f.hint) : null);
 }
 
-function renderTool() {
-  const list = toolState.list || []; const tool = list.find((t) => t.id === toolState.current);
-  $("toolTabs").replaceChildren(...list.map((t) => h("button", { class: t.id === tool.id ? "on" : "", title: t.ok ? t.description : "Cannot run here: " + t.missing.join(", "),
-    onclick: () => { toolState.current = t.id; toolState.values = {}; renderTool(); } }, (t.kind === "audio" ? "🗣 " : "🖼 ") + t.title + (t.ok ? "" : " ⚠"))));
-  $("toolDesc").replaceChildren(tool.description, tool.ok ? "" : h("span", { class: "hint warn" }, ` — cannot run on this ComfyUI: missing ${tool.missing.join(", ")}.`),
-    toolState.problems.length ? h("span", { class: "hint warn" }, ` Your own tools with problems: ${toolState.problems.join("; ")}`) : "");
-  $("toolForm").replaceChildren(...tool.fields.filter((f) => !f.advanced).map((f) => toolField(f, toolState.values)));
-  const adv = tool.fields.filter((f) => f.advanced);
-  $("toolAdvForm").replaceChildren(...adv.map((f) => toolField(f, toolState.values)));
-  $("toolRole").replaceChildren(...(state.project.asset_roles || Object.keys(ROLE_LABEL)).map((r) => h("option", { value: r, selected: r === (toolState.values.__role || tool.default_role) }, ROLE_LABEL[r] || r)));
-  $("toolRun").disabled = !tool.ok || isBusy("tool");
-  $("toolRun").dataset.once = "tool";
-}
-
-$("libCreate").onclick = () => openTool(toolState.current || "image");
-$("toolRun").onclick = () => once("tool", async () => {
-  const tool = toolState.list.find((t) => t.id === toolState.current);
-  const inputs = Object.fromEntries(tool.fields.map((f) => [f.key, toolState.values[f.key] ?? f.default ?? null]));
-  const body = { path: state.path, tool: tool.id, inputs, count: Number($("toolCount").value), role: $("toolRole").value, title: $("toolTitle").value };
-  if ($("toolSeed").value) body.seed = Number($("toolSeed").value);
-  const d = await call("/tool/run", body);
-  setProject(d.project);
-  toast(`${d.jobs.length} queued — results appear in the Library`);
-  $("toolDlg").close();
-  if (!$("libraryDlg").open) { renderLibrary(); $("libraryDlg").showModal(); }
-}).then(renderTool);
-
 const JOB_CLS = { queued: "info", running: "info", done: "ok", failed: "bad", interrupted: "warn", cancelled: "muted" };
-function renderJobs() {
-  const list = jobs().filter((j) => j.status !== "done");
-  const done = jobs().filter((j) => j.status === "done");
-  const cur = state.live?.current;
-  $("libJobs").replaceChildren(...list.map((j) => {
-    const live = cur && j.prompt_id === cur.prompt_id && cur.total ? ` · step ${cur.step}/${cur.total}` : "";
-    return h("div", { class: "job" },
-      h("span", { class: `badge ${JOB_CLS[j.status] || "muted"}` }, j.status === "queued" ? "waiting" : j.status === "running" ? "making…" : j.status),
-      h("span", { class: "job-t", title: JSON.stringify(j.inputs) }, `${j.tool_title}: ${j.title || (j.inputs.prompt || j.inputs.text || "").slice(0, 70)}`, h("span", { class: "hint" }, live + (j.error ? " · " + j.error.slice(0, 120) : ""))),
-      h("span", { class: "spacer" }),
-      j.status === "queued" || j.status === "running"
-        ? h("button", { class: "danger", ...busyAttr(`cancel:${j.id}`), onclick: () => once(`cancel:${j.id}`, async () => setProject(await call("/tool/cancel", { path: state.path, job_id: j.id }))) }, "Cancel")
-        : h("button", { onclick: () => openTool(j.tool, { ...j.inputs }) }, "Edit & run again"),
-      j.status !== "queued" && j.status !== "running" ? h("button", { class: "icon", title: "Remove from this list", onclick: () => guard(async () => { setProject(await call("/tool/dismiss", { path: state.path, job_id: j.id })); renderLibrary(); }) }, "✕") : null);
-  }), done.length ? h("button", { class: "ghost small", onclick: () => guard(async () => { setProject(await call("/tool/dismiss", { path: state.path, finished: true })); renderLibrary(); }) }, `Clear ${done.length} finished job(s) from the history`) : null);
-}
-
-// Asset buttons that open a tool: vary an image, speak with a voice, run a tool result again.
-function toolButtons(a) {
-  const out = [];
-  if (a.kind === "image") out.push(h("button", { title: "Make new images from this one: same character in a new pose, place or outfit", onclick: () => openTool("image", { images: [a.id] }) }, "✨ Vary…"));
-  if (a.kind === "audio" && (a.role === "voice" || a.role === "speech")) out.push(h("button", { title: "Say new words in this voice", onclick: () => openTool("speech", { voice: a.id, voice_text: a.transcript || "" }) }, "🗣 Speak…"));
-  if (a.origin?.type === "tool") out.push(h("button", { title: "Open the tool with the settings that made this", onclick: () => openTool(a.origin.tool, { ...a.origin.inputs }) }, "↻ Again…"));
-  return out;
-}
 
 async function projectUpdate(fields) { const d = await guard(() => call("/project/update", { path: state.path, ...fields })); if (d) { setProject(d); renderLibrary(); } return d; }
 const toggleDefault = (name) => { const d = state.project.library.defaults; projectUpdate({ defaults: d.includes(name) ? d.filter((n) => n !== name) : [...d, name] }); };
@@ -1156,14 +1039,22 @@ function usedModel(s, fresh) {
   return mode === "ref2va" || (mode === "ref2va_fresh" && fresh) ? "ref2va" : "fl2va";
 }
 function stepsFor(s, model) { return model === "ref2va" ? s.video_model.ref2va.steps : s.sampling.steps; }
-function canvasFor(s, mp) {
-  // aspect of the start image when there is one, else of the width/height setting
-  const start = state.project?.start_image && library()[state.project.start_image];
-  const a = assets()[start?.asset] || {};
-  const w0 = a.width || s.resolution.width, h0 = a.height || s.resolution.height;
-  const k = Math.sqrt((mp * 1e6) / (w0 * h0)), m = s.resolution.multiple || 32;
+function canvasFor(s, mp, aspect) {
+  // the same rule as the server (director.canvas_size): a chosen shape, the start image's shape, or custom
+  const r = s.resolution; aspect = aspect || r.aspect || "start_image";
+  if (aspect === "custom") return [r.width, r.height];
+  let w0, h0;
+  if (aspect === "start_image") {
+    const start = state.project?.start_image && library()[state.project.start_image];
+    const a = assets()[start?.asset] || {};
+    if (!a.width) return [r.width, r.height];
+    w0 = a.width; h0 = a.height;
+  } else { [w0, h0] = aspect.split(":").map((x) => Number(x) * 1000); }
+  const k = Math.sqrt(((mp ?? r.megapixels) * 1e6) / (w0 * h0)), m = r.multiple || 32;
   return [Math.max(m, Math.round((w0 * k) / m) * m), Math.max(m, Math.round((h0 * k) / m) * m)];
 }
+const SHAPES = [["9:16", "Portrait 9:16", "phones, Reels, Shorts, Stories"], ["16:9", "Landscape 16:9", "YouTube, TV, laptops"],
+  ["1:1", "Square 1:1", "feeds"], ["4:5", "Vertical 4:5", "Instagram / Facebook feed posts"], ["start_image", "Match the start image", "the shape of the project's start image"]];
 function sceneFrames(seconds, continued, ctx) {
   const n = Math.max(1, Math.round(seconds * 24)) + (continued ? ctx : 0);
   return n <= 5 ? 5 : 5 + Math.ceil((n - 5) / 17) * 17;
@@ -1214,6 +1105,17 @@ function renderSimpleSettings(body) {
       preset === "custom" ? choiceCard(true, "⚙ Custom", ["Your own settings (see Advanced)"], () => {}) : null),
     h("p", { class: "hint" }, "Both models follow references and start images and continue scenes (tested); a side-by-side quality comparison of the two has not been made yet. For a sharp final video, render at this size and ", h("b", {}, "upscale the selected takes"), " (⤢ Upscale scenes… on the storyboard, or ⤢ Upscale… on a take) — much faster than rendering large.")));
 
+  // video shape
+  s.resolution.aspect = s.resolution.aspect || "start_image";
+  const hasStart = !!(state.project?.start_image && assets()[library()[state.project.start_image]?.asset]?.width);
+  body.append(h("section", { class: "settings-section" }, h("h3", {}, "Video shape"),
+    h("div", { class: "choices" }, SHAPES.filter(([v]) => v !== "start_image" || hasStart || s.resolution.aspect === "start_image").map(([v, name, note]) => {
+      const [w, hh] = canvasFor(s, null, v);
+      return choiceCard(s.resolution.aspect === v, name, [`${w} × ${hh} while rendering`, v === "start_image" && !hasStart ? "no start image yet — uses 416 × 736" : note], () => { s.resolution.aspect = v; renderSettings(); },
+        h("span", { class: "shape", style: `aspect-ratio:${w}/${hh}` }));
+    })),
+    h("p", { class: "hint" }, "For new scenes that start fresh or from an image; a scene that continues keeps the size of the scene before it. A start image of another shape is cropped to fit. Places and start frames made in the Studio use this shape too.")));
+
   // steps for the model(s) in use
   const models = [...new Set([usedModel(s, true), usedModel(s, false)])];
   for (const model of models) {
@@ -1235,7 +1137,7 @@ function renderSimpleSettings(body) {
       const e = estimateTake(s, { model, steps, mp, seconds: secs });
       return choiceCard(s.resolution.megapixels === mp, `${e.w} × ${e.h}`, [`≈ ${fmtMin(e.sec)} per scene`, mp === 0.3 ? "tested on a 16 GB card" : "more memory; untested on 16 GB — may run out"], () => { s.resolution.megapixels = mp; renderSettings(); }, tag(e.measured));
     })),
-    h("p", { class: "hint" }, "The shape follows the start image. Upscaling later gives 720p or 1080p.")));
+    h("p", { class: "hint" }, "Larger means sharper but slower. Upscaling the finished scenes (Finish) gives 720p or 1080p much faster.")));
 
   // scene length + joins
   body.append(h("section", { class: "settings-section" }, h("h3", {}, "Default scene length"),
@@ -1291,9 +1193,11 @@ function renderAdvancedSettings(body) {
     field("Scheduler", s.sampling.scheduler, (v) => (s.sampling.scheduler = v), { options: SCHEDULERS }),
     field("Default scene length (s)", s.scene_seconds, (v) => (s.scene_seconds = v), { step: 0.5, min: 1, max: 15 }))));
   body.append(h("section", { class: "settings-section" }, h("h3", {}, "Size"), h("div", { class: "settings-grid" },
-    field("Megapixels (from the start image's shape)", s.resolution.megapixels, (v) => (s.resolution.megapixels = v), { options: [0.3, 0.45, 0.6, 0.8] }),
-    field("Width when no start image", s.resolution.width, (v) => (s.resolution.width = v), { step: 32 }),
-    field("Height when no start image", s.resolution.height, (v) => (s.resolution.height = v), { step: 32 }))));
+    field("Video shape", s.resolution.aspect || "start_image", (v) => { s.resolution.aspect = v; renderSettings(); }, { options: ["start_image", "9:16", "16:9", "1:1", "4:5", "custom"] }),
+    field("Megapixels (for every shape but custom)", s.resolution.megapixels, (v) => (s.resolution.megapixels = v), { options: [0.3, 0.45, 0.6, 0.8] }),
+    field((s.resolution.aspect === "custom" ? "Width" : "Width when there is no start image") + " (multiple of 32)", s.resolution.width, (v) => (s.resolution.width = v), { step: 32 }),
+    field((s.resolution.aspect === "custom" ? "Height" : "Height when there is no start image") + " (multiple of 32)", s.resolution.height, (v) => (s.resolution.height = v), { step: 32 })),
+    h("p", { class: "hint" }, `Fresh scenes render at ${canvasFor(s).join(" × ")}. Continued scenes keep their parent take's size.`)));
   body.append(h("section", { class: "settings-section" }, h("h3", {}, "Continuity between scenes"), h("div", { class: "settings-grid" },
     field("Carried frames (5 fast · 22 balanced · 39 strong)", s.continuity.frames, (v) => (s.continuity.frames = v), { options: [5, 22, 39] }),
     field("Method", s.continuity.method, (v) => (s.continuity.method = v), { options: ["masked", "keyframe"] }),
@@ -1437,56 +1341,6 @@ $("upscaleScenesBtn").onclick = () => {
   const todo = upscalableScenes().filter((r) => !Object.keys(r.take.upscales || {}).length).map((r) => r.take.id);
   openUpscale(todo, "Upscale scenes");
 };
-
-$("exportBtn").onclick = () => guard(async () => {
-  const c = await call(`/export/check?path=${encodeURIComponent(state.path)}`);
-  const body = $("exportBody"); body.replaceChildren();
-  const go = $("exportGo");
-  if (!c.ready) {
-    body.append(h("p", { class: "note" }, "Scene 1 has no finished take yet, so there is nothing to export."));
-    go.hidden = true;
-  } else {
-    go.hidden = false;
-    body.append(h("div", { class: "export-summary" },
-      h("div", { class: "big" }, c.complete ? `All ${c.total} scenes · ${c.seconds.toFixed(1)} s` : `Scenes 1–${c.ready} of ${c.total} · ${c.seconds.toFixed(1)} s`),
-      h("p", { class: "muted" }, "Each scene uses its selected take. Carried-over frames are trimmed so nothing plays twice.")));
-    if (!c.complete) body.append(h("p", { class: "note" },
-      `The full video is not ready: scene${c.missing.length > 1 ? "s" : ""} ${c.missing.length > 1 ? c.missing[0] + "–" + c.missing[c.missing.length - 1] : c.missing[0]} ${c.missing.length > 1 ? "have" : "has"} no finished take yet. `,
-      `You can export the ${c.ready} ready scene${c.ready > 1 ? "s" : ""} now as a partial video, or render the rest first.`));
-    const sizeSel = h("select", { id: "exportSize" }, [["auto", c.size ? `Largest scene (${c.size[0]}×${c.size[1]})` : "Largest scene"], ["720p", "720p"], ["1080p", "1080p"], ["original", "Original takes, no upscales"]].map(([v, l]) => h("option", { value: v }, l)));
-    const selectedIds = scenes().slice(0, c.ready).map((s) => s.selected_take).filter(Boolean);
-    const notUp = c.not_upscaled.map((n) => scenes()[n - 1].selected_take);
-    body.append(h("div", { class: "export-up" },
-      h("p", {}, c.upscaled.length ? `Upscaled: scene${c.upscaled.length > 1 ? "s" : ""} ${c.upscaled.join(", ")}.` : "No scene is upscaled yet.",
-        c.upscaled.length && c.not_upscaled.length ? ` Scene${c.not_upscaled.length > 1 ? "s" : ""} ${c.not_upscaled.join(", ")} ${c.not_upscaled.length > 1 ? "are" : "is"} resized to match (softer).` : ""),
-      h("div", { class: "row" }, h("label", {}, "Video size", sizeSel),
-        notUp.length ? h("button", { onclick: () => { $("exportDlg").close(); openUpscale(notUp, c.upscaled.length ? `Upscale the ${notUp.length} remaining scene(s)` : `Upscale all ${notUp.length} scene(s)`); } }, c.upscaled.length ? `⤢ Upscale the other ${notUp.length}…` : `⤢ Upscale all ${selectedIds.length} first…`) : null)));
-    const withVersions = scenes().map((sc, i) => [sc, i + 1, state.project.takes[sc.selected_take]]).filter(([, , t]) => t && Object.keys(t.upscales || {}).length);
-    const others = takes().filter((t) => Object.keys(t.upscales || {}).length && !withVersions.some(([, , x]) => x.id === t.id));
-    if (withVersions.length || others.length) body.append(h("details", { class: "up-all" },
-      h("summary", {}, `Upscaled videos (${[...withVersions.map(([, , t]) => t), ...others].reduce((n, t) => n + Object.keys(t.upscales).length, 0)})`),
-      ...withVersions.map(([sc, n, t]) => h("div", { class: "up-scene" }, h("div", { class: "hint" }, `Scene ${n}${sc.title ? " · " + sc.title : ""} · ${takeLabel(t)} (selected)`), upscaleRow(t))),
-      ...others.map((t) => h("div", { class: "up-scene" }, h("div", { class: "hint" }, `Scene ${scenes().findIndex((s) => s.id === t.scene) + 1} · ${takeLabel(t)} (not selected)`), upscaleRow(t)))));
-    if (c.warnings.length) body.append(h("div", {}, h("b", {}, "Check before exporting"),
-      h("ul", { class: "warn-list" }, c.warnings.map((w) => h("li", {}, `${w.message} (at ${w.at_seconds.toFixed(1)} s).`)))));
-    const label = c.complete ? "Export full video" : `Export partial video (${c.ready} scene${c.ready > 1 ? "s" : ""})`;
-    go.dataset.once = "export"; go.disabled = isBusy("export");
-    go.textContent = isBusy("export") ? "Exporting…" : label;
-    go.onclick = () => once("export", async () => {
-      go.textContent = "Exporting…";
-      try {
-        const data = await call("/export", { path: state.path, partial: !c.complete, size: $("exportSize").value });
-        $("exportDlg").close();
-        const m = data.manifest;
-        $("playerTitle").textContent = m.scenes_exported < m.scenes_total ? "Partial export" : "Exported video";
-        $("playerVideo").src = media(data.file);
-        $("playerInfo").innerHTML = `${m.total_seconds.toFixed(1)} s · ${m.width}×${m.height} · scenes 1–${m.scenes_exported} of ${m.scenes_total}<br>Saved in the project: <code>${data.file}</code> · <a href="${media(data.file)}" download>download</a>`;
-        $("playerDlg").showModal();
-      } finally { go.textContent = label; }
-    });
-  }
-  $("exportDlg").showModal();
-});
 
 // ------------------------------------------------------------------ show / hide passwords
 

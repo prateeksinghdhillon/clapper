@@ -125,7 +125,10 @@ class ClapperSceneConditioning:
 
         start = spec.get("start_image") or {}
         if start.get("path"):
-            img = _resize(_load_image(start["path"])[:1], width, height, "disabled")
+            src = _load_image(start["path"])[:1]
+            # A start image of another shape is centre-cropped to the video's shape, never stretched.
+            same_shape = abs(src.shape[2] / src.shape[1] - width / height) < 0.02 * (width / height)
+            img = _resize(src, width, height, "disabled" if same_shape else "center")
             if start.get("present", True):
                 presentation.append({"type": "image", "data": img})
             if start.get("pin", True):

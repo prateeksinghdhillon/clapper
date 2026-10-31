@@ -19,7 +19,7 @@ from server import PromptServer
 from . import gpu, live, sysstats
 from .engine import director, estimates, media as media_tools, profiles, registry, repeats, tools, upscale
 from .engine.comfy_client import ComfyClient
-from .engine.export import export_check, export_video
+from .engine.export import delete_export, export_check, export_video, list_exports
 from .engine.project import ASSET_ROLES, Project, ProjectError, delete_project_folder, disk_usage, folder_name
 from .engine.settings import DEFAULT_SETTINGS, SPEED_PROFILES, VIDEO_MODEL_MODES
 
@@ -109,6 +109,7 @@ def _view(project: Project) -> dict:
     data["timing"] = estimates.timing(project)
     data["asset_roles"] = list(ASSET_ROLES)
     data["video_model_modes"] = list(VIDEO_MODEL_MODES)
+    data["video_aspect"] = director.video_aspect(project)
     return data
 
 
@@ -499,7 +500,7 @@ async def update_asset(request):
     try:
         async with _lock:
             project = _open(body["path"], request)
-            project.update_asset(body["id"], **{k: body[k] for k in ("title", "role", "tags", "notes", "transcript") if k in body})
+            project.update_asset(body["id"], **{k: body[k] for k in ("title", "role", "tags", "notes", "transcript", "look") if k in body})
         return _ok(_view(project))
     except (KeyError, ProjectError, OSError) as exc:
         return _err(exc)
@@ -586,7 +587,8 @@ async def run_tool(request):
             project = _open(body["path"], request)
             jobs = await loop.run_in_executor(None, lambda: tools.queue_tool(
                 project, _client(), body["tool"], body.get("inputs") or {}, count=int(body.get("count") or 1),
-                role=body.get("role"), seed=body.get("seed"), title=body.get("title", "")))
+                role=body.get("role"), seed=body.get("seed"), title=body.get("title", ""),
+                version_of=body.get("version_of") or None))
         return _ok({"jobs": [j["id"] for j in jobs], "project": _view(project)})
     except (KeyError, ProjectError, OSError, ValueError, RuntimeError) as exc:
         return _err(exc)
@@ -695,6 +697,66 @@ async def dismiss_tool(request):
             else:
                 tools.dismiss(project, body["job_id"])
         return _ok(_view(project))
+    except (KeyError, ProjectError, OSError) as exc:
+        return _err(exc)
+
+
+# ------------------------------------------------------------------ cast & world (entities)
+
+@routes.post("/clapper/api/entity")
+async def entity_action(request):
+    """action: create (kind, name, description, from_asset) | update (id, name, description, voice, default) |
+    main (id, asset) | add (asset, id or null, look) | remove (id)."""
+    body = await _body(request)
+    try:
+        async with _lock:
+            project = _open(body["path"], request)
+            action = body.get("action")
+            if action == "create":
+                e = project.create_entity(body["kind"], body.get("name", ""), description=body.get("description", ""),
+                                          from_asset=body.get("from_asset") or None)
+                return _ok({"entity": e["id"], "project": _view(project)})
+            if action == "update":
+                project.update_entity(body["id"], **{k: body[k] for k in ("name", "description", "voice", "default") if k in body})
+            elif action == "main":
+                project.set_entity_main(body["id"], body["asset"])
+            elif action == "add":
+                project.add_to_entity(body["asset"], body.get("id"), look=body.get("look", ""))
+            elif action == "remove":
+                project.remove_entity(body["id"])
+            else:
+                raise ProjectError(f"unknown entity action {action!r}")
+        return _ok(_view(project))
+    except (KeyError, ProjectError, OSError) as exc:
+        return _err(exc)
+
+
+@routes.post("/clapper/api/entity/generate")
+async def entity_generate(request):
+    """id, action first|look|angle|place, text, place (for place), count, seed, aspect, prompt (optional override)."""
+    body = await _body(request)
+    try:
+        loop = asyncio.get_running_loop()
+        async with _lock:
+            project = _open(body["path"], request)
+            jobs = await loop.run_in_executor(None, lambda: tools.queue_entity(
+                project, _client(), body["id"], body["action"], body.get("text", ""), place_id=body.get("place"),
+                count=int(body.get("count") or 2), seed=body.get("seed"), aspect=body.get("aspect"),
+                prompt=body.get("prompt") or None))
+        return _ok({"jobs": [j["id"] for j in jobs], "project": _view(project)})
+    except (KeyError, ProjectError, OSError, ValueError, RuntimeError) as exc:
+        return _err(exc)
+
+
+@routes.post("/clapper/api/entity/preview")
+async def entity_preview(request):
+    """The prompt an entity action would use (to show and edit before generating)."""
+    body = await _body(request)
+    try:
+        project = _open(body["path"], request)
+        inputs, _ = tools.entity_inputs(project, body["id"], body["action"], body.get("text", "") or "…",
+                                        place_id=body.get("place"), aspect=body.get("aspect"))
+        return _ok({"prompt": inputs["prompt"], "images": inputs["images"], "aspect": inputs["aspect"]})
     except (KeyError, ProjectError, OSError) as exc:
         return _err(exc)
 
@@ -869,6 +931,27 @@ async def export(request):
         return _err(exc)
 
 
+@routes.get("/clapper/api/exports")
+async def exports_list(request):
+    try:
+        project = _open(request.query["path"], request)
+        return _ok({"exports": list_exports(project)})
+    except (KeyError, ProjectError, OSError) as exc:
+        return _err(exc)
+
+
+@routes.post("/clapper/api/exports/delete")
+async def exports_delete(request):
+    body = await _body(request)
+    try:
+        async with _lock:
+            project = _open(body["path"], request)
+            delete_export(project, body["file"])
+        return _ok({"exports": list_exports(project)})
+    except (KeyError, ProjectError, OSError) as exc:
+        return _err(exc)
+
+
 @routes.get("/clapper/api/system")
 async def system(request):
     return _ok(sysstats.read())
@@ -932,6 +1015,19 @@ async def live_state(request):
 
 
 # ------------------------------------------------------------------ media
+
+@routes.get("/clapper/thumb")
+async def thumb(request):
+    """A small cached JPEG of a project video's frame: ?path=…&file=…&t=seconds."""
+    try:
+        project = _open(request.query["path"], request)
+        t = float(request.query.get("t", 0.5))
+        loop = asyncio.get_running_loop()
+        out = await loop.run_in_executor(None, lambda: media_tools.poster(project, request.query["file"], t))
+        return web.FileResponse(out, headers={"Cache-Control": "max-age=86400"})
+    except (KeyError, ProjectError, OSError, ValueError):
+        raise web.HTTPNotFound() from None
+
 
 @routes.get("/clapper/media")
 async def media(request):
