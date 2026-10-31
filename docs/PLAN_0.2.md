@@ -146,5 +146,5 @@ A character (or place, prop, style) couples everything that makes it itself: a *
 | M2 | Adapter system, image tools B1–B4, batches B8, versions A4 | **done** except B4 (sheets) — an original anime character made, varied, combined with a location into a start frame and used in scenes |
 | M3 | Speech B5 (B6 if the model is present) | **B5 done** (built with M2) — a generated line used as a scene's sound clip; B6 needs the Voice Design model |
 | M4 | Upscale D1 (Sharpen, Re-detail) with export using upscaled takes and one export size; simple settings F1–F4 — **done**; overlays D2 and audio tracks D3 — **done**; then presets D4, timeline D5, undo D6 | an upscaled export; a new user picks Draft/Standard and knows how long a video will take |
-| M5 | Assistant E1–E5 across the above; E6 | **E2–E3 done** (Studio tools, rewritten instructions), connection hardening done; E1 script-first and E4 timing next |
+| M5 | Assistant E1–E5 across the above; E6 | **E2–E3 done** (Studio tools, rewritten instructions), connection hardening, live context (changes, frames, request last) and self-checks done; E1 script-first and E4 timing next |
 | later | Shared library (A5), video references (C4), more video models through adapters, lip-sync | — |

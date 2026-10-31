@@ -35,38 +35,52 @@ COMPACT_AT = 0.6         # share of the context window that triggers compaction
 IMAGE_EDGE = 1024        # long edge of images sent to the model (about 1000 vision tokens)
 REPLY_TOKENS = 6000
 
-INSTRUCTIONS = """You are the director's assistant inside Clapper, a studio for making AI videos with the MiniMax H3 model, scene by scene. You help the user plan the story, create its characters and places, write each scene's H3 prompt and dialogue, choose references and settings, and review finished takes.
+INSTRUCTIONS = """You are the director's assistant inside Clapper, a studio for making AI videos with the MiniMax H3 video model, scene by scene. You plan the story, create the characters and places, write each scene's H3 prompt and dialogue, choose references and settings, and review finished takes.
+
+# What you receive with every message
+1. Sometimes a line "Changed in the project since your last message": edits the user made themselves or cards they applied. Trust the project block over your memory of the chat.
+2. The whole project between <project> tags, read fresh for this message: settings, style text, story notes, the cast (characters and places with their @names, descriptions, looks and voices), voice samples, references, every scene in full with how it starts, its references, sound clips and takes, and the proposals still waiting. Scenes are numbered from 1.
+3. Sometimes attached frames, described in a line "[Attached, in this order: …]": the real pictures of the video — the last frame of the scene a scene continues from, and frames of a scene's selected take.
+4. Last, under "# The user's message", what the user wants now. Answer that.
 
 # How Clapper works
-- A project is one video: an ordered list of scenes (usually 5 seconds each, 1 to 15). Each render of a scene is a take; the user picks one take per scene, and the export joins the picked takes. Clapper has three workspaces: Studio (the material), Scenes (the storyboard) and Finish (upscale, music, overlays, export).
-- Studio: characters, places, props and styles. Each has a name, a description (what stays the same in every look: age, build, face, hair, skin, colours; for places the layout and materials — it is added to every image made from it and sent to H3 as its definition), looks (outfits, angles, variations) with one main look, and for characters a voice. Its @name means its main look. A character that has no main look yet has no @name.
-- A new outfit, pose or angle is a new look (make_images); it never changes the description. Change the description only when the user changes who the character is.
-- How a scene starts: "continue" (default) carries on from the last 22 frames and sound of the previous scene, so its text must start where the previous scene ends; "fresh" is a cut to a new shot made from the references; "image" opens exactly on an image (a start frame made in the Studio, given as start_image). Scene 1 is fresh or image.
-- References are images or voice samples written as @name; Clapper turns them into <Picture N>/<Audio N> per scene. Never write <Picture N> yourself. A scene's text may only mention @names active in it (its references plus its start image). Fewer references per scene is better.
-- Sound: a voice reference (@name of a voice sample in refs) makes H3 speak NEW words in that voice. A sound clip (sound_clips) is an existing audio item — for example a line made with speak_line — that becomes the scene's soundtrack word for word from a given second. When a scene has a sound clip, write the same words in its <d> line, with the same speaker, starting at the same time.
-- The style text is sent with every scene: format, look, voices, rules. Nothing scene-specific goes there.
-- Costs: an image takes seconds, a spoken line a few seconds, a scene several minutes of GPU time. Suggest rendering one scene and checking it before rendering many.
+- A project is one video: an ordered list of scenes (usually 5 seconds, 1 to 15). Each render of a scene is a take; the user picks one take per scene; the export joins them. Workspaces: Studio (the material), Scenes (the storyboard), Finish (upscale, music, overlays, export).
+- Characters, places, props and styles live in the Studio. Each has a name; a description of what stays the same in every look (age, build, face, hair, colours; for places the layout, materials, light) — added to every image of it and sent to H3 as its definition; looks (outfits, angles, variations) with one main look, which is what its @name means in scenes; and for characters a voice. A new outfit, pose or angle is a new look (make_images), never a new description.
+- A scene starts in one of three ways: "continue" (default) carries on from the last 22 frames and sound of the previous scene's take — the new scene begins exactly at that picture; "fresh" is a cut to a new shot; "image" opens exactly on an image such as a start frame made in the Studio.
+- References are @names; Clapper turns them into <Picture N>/<Audio N> per scene. Write @name, never <Picture N>. A scene's text may only use @names in its references (plus its start image). Give a scene only the references that should be visible in it.
+- Sound: a voice sample in a scene's references makes H3 speak new words in that voice. A sound clip (an audio item, e.g. a line made with speak_line) becomes the scene's soundtrack word for word from a given second; write the same words in the scene's <d> line, same speaker, same time.
+- The style text goes with every scene: format, look, voices, rules. Nothing scene-specific goes there.
+- An image takes seconds, a spoken line a few seconds, a scene minutes of GPU time.
 
-# How you work
-- Each user message ends with the current project between <project> tags. Scenes are numbered from 1.
-- You never change the project yourself. Every change is a proposal (a tool call) that becomes a card the user applies or rejects. After proposing, say in one or two sentences what you proposed; don't repeat the card's text.
-- Images and speech you propose are generated only after the user applies the card, and appear in <project> a little later ("Being generated now"). Say "once you apply the card", never that they are being made already. Don't use a new character's @name in scenes until <project> shows it with an @name; propose the scenes in a later answer.
-- To plan a video, make ONE add_scenes call with all its scenes. Change only what the user asked for: a change to one scene is one edit_scene call.
-- Scene numbers mean the scenes listed in <project>. Scenes in a waiting add_scenes card have no number yet; to correct that card in the same answer, call add_scenes again with the same `after` (it replaces it).
-- When a reference's look matters and it has no card, call view_reference, then save precise features with save_reference_card. The user's definitions and descriptions beat your eyes.
-- Before writing or rewriting a scene that continues a scene with a finished take, call view_take on that earlier scene with part=end (if you can see images): the new scene starts from that exact picture, which can differ from what its text says. Open the new scene's text with that state.
-- To check a take, call view_take (unless its frames are attached). Never describe or judge an image or take you have not been shown. When a take does not match its scene, say what differs, then usually propose an edit_scene that makes the text clearer.
-- Keep lasting facts in the story notes with update_notes (story, characters, tone, the user's decisions); always write the complete notes.
-- Be brief. Ask a short question when something important is unclear (length, shape, language, look, who speaks) rather than guessing.
-- Write scene text exactly as the prompt guide below says.
+# How you act
+- Every change is a proposal: a tool call that becomes a card the user applies or rejects. You never change the project yourself. After proposing, say in one or two sentences what you proposed; the card shows the text.
+- Images and speech are made only after the user applies their card and appear in the project a little later. Say "once you apply the card". Use a new character's @name only once the project shows it.
+- Change only what was asked. A change to one scene is one edit_scene call for that scene. A new video is ONE add_scenes call with all its scenes.
+- Scene numbers mean the scenes in <project>. Scenes in a waiting add_scenes card have no number yet; to correct that card in the same answer, call add_scenes again with the same `after`.
+- Describe or judge only images and takes you have been shown (attached, or by view_reference / view_take). The user's descriptions and definitions beat your eyes.
+- Keep lasting facts (story, characters, tone, the user's decisions) in the story notes with update_notes, always as the complete notes.
+- Be brief. Ask one short question when something important is unclear instead of guessing.
 
-# Making a new video
-1. Agree on the basics if they are not clear: length, shape (portrait 9:16 for phones, landscape 16:9), language, the characters and places. Propose change_settings for the shape if needed.
-2. Style text (edit_project): format and total length, the look, who speaks and how, rules such as "no readable writing", and a line "subject_definitions:".
-3. Cast and world: create_character for each main character and place, with a precise description (age, build, face, hair, clothes and colours; for places the layout, materials, light and time of day). Characters who speak need a voice: edit_character with a voice sample from the library (ask the user to add one if there is none).
-4. When they have main looks: start frames with make_images (action place) for scenes that open on a composed picture; new looks or angles when the story needs them (another outfit, a side view).
-5. Dialogue lines that must sound exactly right: speak_line in the character's voice, then use the line as a sound clip in its scene.
-6. Scenes with ONE add_scenes call: only the parts people will watch; each with a short title, 5 seconds unless there is a reason, how it starts, refs (null = the defaults, or every @name its text mentions), sound_clips if any, and the three H3 fields each on its own line.
+# Steps for each kind of request
+- A question: answer from the project block and the attached frames.
+- Fix or rewrite a scene: (1) read it and the scenes before and after it in <project>; (2) look at how the previous take really ends — the attached last frame, or view_take with part=end; (3) decide the four things in the scene checklist at the end; (4) one edit_scene with the new text (and refs, start, seconds if they change). If its selected take was rendered from an earlier text, say so.
+- A new scene: the same steps, then add_scenes with `after`.
+- A take that looks wrong: compare its frames with its text, say first what already matches, then what differs, then propose an edit_scene that makes the text clearer — usually less action, a clearer camera position, or fewer references.
+- New material: create_character for a new character or place (a precise description, without repeating its name); make_images for new looks, angles or start frames; speak_line for exact dialogue in a character's voice; edit_character to change a description or voice.
+- A new video: agree on length, shape (portrait 9:16 or landscape 16:9), language and characters if unclear; style text (edit_project, with a line "subject_definitions:"); the cast with create_character; once they have main looks, start frames and lines; then all scenes in one add_scenes call.
+"""
+
+SCENE_CHECKLIST = """# Before you write any scene text
+Decide these four things first; then write the three H3 fields.
+1. Where it starts: for a continued scene, the exact picture the previous take ends on (look at it). The first sentence names that state when it matters ("The bus is pulling in beside the shelter, its side close to the camera.").
+2. The ONE main action of these seconds, plus at most a small reaction. Five beats ("walks to the door, climbs in, stands in the aisle, looks back, sees him smile") are too many for 5 seconds: split them over scenes.
+3. Where the camera is and which way people move — above all when someone enters or leaves something: to get on a bus, the camera stays outside behind her and she moves away from us into it.
+4. Who is visible: only those characters in refs; anyone named in the text must be in refs as @name.
+
+Good continued scene (5 s):
+integrated_multimodal_description: [Shot 1] The bus is pulling in beside the shelter, its side close to the camera. It stops and its folding door hisses open beside @aoi. The camera stays on the wet platform, behind her. She lowers her umbrella and climbs the two steps into the bus, her back to the camera, moving away from us. Medium shot from behind, the camera follows her to the doorway and stops, one continuous shot.
+overall_soundscape: In the first second, the loud hiss of the bus door. Then her sneakers on the metal steps, the idling engine and steady rain on the roof.
+non_diegetic_music: The same soft piano continues.
 """
 
 
@@ -135,10 +149,61 @@ def system_prompt(chat: dict) -> str:
         guide = GUIDE.read_text(encoding="utf-8")
     except OSError:
         guide = ""
-    text = INSTRUCTIONS + "\n# Prompt guide\n\n" + guide
+    # the checklist comes last: models follow what they read last most closely
+    text = INSTRUCTIONS + "\n# Prompt guide (reference)\n\n" + guide + "\n\n" + SCENE_CHECKLIST
     if chat.get("summary"):
         text += "\n\n# Summary of the earlier conversation\n\n" + chat["summary"]
     return text
+
+
+BADGE_WORDS = {
+    "no_take": "no take yet", "rendering": "a take is rendering now",
+    "prompt_changed": "its selected take was rendered from an EARLIER version of this text (the video shows the old version)",
+    "refs_changed": "its selected take was rendered with other references",
+    "continuity_changed": "the scene before it now has another selected take, so the join may jump",
+    "parent_missing": "the scene before it has no take", "prompt_error": "its text does not compile",
+}
+
+
+def scene_fingerprints(project: Project) -> dict:
+    """What the assistant last saw of each scene, to tell it what changed outside the chat."""
+    out = {}
+    for i, sc in enumerate(project.scenes, 1):
+        take = project.data["takes"].get(sc.get("selected_take") or "") or {}
+        out[sc["id"]] = {"n": i, "title": sc.get("title") or "", "text": hashlib_sha(sc.get("text") or ""),
+                         "setup": hashlib_sha(json.dumps([sc.get("refs"), sc.get("join"), sc.get("start_image"), sc.get("audio_clips"), sc.get("seconds")])),
+                         "take": take.get("id"), "take_number": take.get("number"), "take_status": take.get("status")}
+    return out
+
+
+def hashlib_sha(text: str) -> str:
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def changes_since(before: dict | None, after: dict) -> list[str]:
+    """Plain sentences: what changed in the scenes since the assistant's last turn (by the user or by applied cards)."""
+    if before is None:
+        return []
+    out = []
+    for sid, a in after.items():
+        b = before.get(sid)
+        label = f"scene {a['n']}" + (f" \"{a['title']}\"" if a["title"] else "")
+        if b is None:
+            out.append(f"{label} was added")
+            continue
+        if b["text"] != a["text"]:
+            out.append(f"{label}: its text was edited (read it again below)")
+        if b["setup"] != a["setup"]:
+            out.append(f"{label}: its references, start, length or sound clips changed")
+        if a["take"] and (b["take"] != a["take"] or b["take_status"] != a["take_status"]) and a["take_status"] == "done":
+            out.append(f"{label}: Take {a['take_number']} is now its finished, selected take")
+        if b["n"] != a["n"] and b["text"] == a["text"]:
+            out.append(f"{label} moved (it was scene {b['n']})")
+    for sid, b in before.items():
+        if sid not in after:
+            out.append(f"scene {b['n']}" + (f" \"{b['title']}\"" if b["title"] else "") + " was removed")
+    return out
 
 
 def _scene_refs_label(project: Project, scene: dict) -> str:
@@ -161,7 +226,8 @@ def snapshot(project: Project, chat: dict | None = None) -> str:
              f" · continuity {s['continuity']['frames']} frames"
              + (f" · video model {s['video_model']['mode']}" if (s.get("video_model") or {}).get("mode", "fl2va") != "fl2va" else "")
              + (f" · video shape {s['resolution'].get('aspect')}" if s["resolution"].get("aspect", "start_image") != "start_image" else ""),
-             f"Start image: {'@' + start if start else 'none (scene 1 describes the opening setting in words)'}",
+             *([f"Project start image (scene 1 opens on it unless it has its own): @{start}"] if start else
+               [] if any(sc.get("start_image") for sc in project.scenes) else ["Start image: none — scene 1 describes its opening in words"]),
              "Style text:", '"""' + (d.get("style") or "").strip() + '"""',
              "Story notes:", '"""' + (d.get("notes") or "").strip() + '"""',
              "References (★ default, ▶ start image):"]
@@ -208,12 +274,13 @@ def snapshot(project: Project, chat: dict | None = None) -> str:
     for i, sc in enumerate(scenes, 1):
         take = d["takes"].get(sc.get("selected_take") or "")
         takes = project.takes_for(sc["id"])
-        badges = ", ".join(project.scene_status(sc["id"])) or "ok"
+        badges = "; ".join(BADGE_WORDS.get(b, b) for b in project.scene_status(sc["id"])) or "its selected take matches its text"
         take_label = f"Take {take.get('number')} selected ({take['status']})" if take else "no take selected"
-        lines.append(f"{i}. \"{sc.get('title') or ''}\" · {sc.get('seconds') or s['scene_seconds']}s · join {sc['join'] if i > 1 else 'start'}"
-                     f" · refs: {_scene_refs_label(project, sc)} · {len(takes)} take(s), {take_label} · status: {badges}")
-        if sc.get("start_image") is not None:
-            lines.append("   starts: " + (f"from image @{sc['start_image']}" if sc["start_image"] else "fresh from the references (no start image)"))
+        mode = project.scene_mode(sc)
+        start_label = {"continue": "continues the scene before", "bridge": "bridges to the next scene", "fresh": "a fresh shot",
+                       "image": f"opens on the image @{project.scene_start(sc)}"}.get(mode, mode)
+        lines.append(f"{i}. \"{sc.get('title') or ''}\" · {sc.get('seconds') or s['scene_seconds']}s · {start_label}"
+                     f" · refs: {_scene_refs_label(project, sc)} · {len(takes)} take(s), {take_label} · {badges}")
         clips = sc.get("audio_clips") or []
         if clips:
             lines.append("   sound clips (the soundtrack becomes the clip from that time): " + ", ".join(
@@ -272,11 +339,16 @@ def build_messages(project: Project, chat: dict, provider: dict, *, with_snapsho
             events.append(m["text"])
         elif role == "user":
             text = m["text"] + (f"\n\n{m['note']}" if m.get("note") else "")
-            if events:
-                text = "[Since your last message: " + " ".join(events) + "]\n\n" + text
-                events = []
+            since = ("[Since your last message: " + " ".join(events) + "]\n\n") if events else ""
+            events = []
             if with_snapshot and i == last_user:
-                text += "\n\n" + (m.get("snapshot") or "")
+                # small models follow the end of a long message best: what changed and the project first, the request last
+                changed = m.get("changes") or []
+                head = since + (("Changed in the project since your last message (by the user or by applied cards): "
+                                 + "; ".join(changed) + ".\n\n") if changed else "")
+                text = head + (m.get("snapshot") or "") + "\n\n# The user's message\n" + text
+            else:
+                text = since + text
             parts = [p for p in (_image_part(project, r) for r in m.get("images", [])) if p] if vision else []
             out.append({"role": "user", "content": [*parts, {"type": "text", "text": text}] if parts else text})
         elif role == "assistant":
@@ -575,12 +647,58 @@ def _scene_fields(project: Project, args: dict, notes: list[str] | None = None) 
     return fields
 
 
+_CAMERA = re.compile(r"\b(shot|camera|close-up|close up|wide|dolly|pan|push-in|pull-back|tracking|one continuous)\b", re.I)
+
+
+def continuity_echo(project: Project, scene_id: str, text: str) -> str:
+    """For a scene that continues a finished take: quote its first sentence back, so the model compares it with
+    the picture the scene really starts from (small models act on such feedback far more than on a rule)."""
+    idx = project.scene_index(scene_id)
+    if idx == 0 or project.scene_mode(project.scene(scene_id)) not in ("continue", "bridge"):
+        return ""
+    prev = project.scenes[idx - 1]
+    take = project.data["takes"].get(prev.get("selected_take") or "")
+    if not take or take.get("status") != "done":
+        return ""
+    m = re.search(r"\[Shot \d+\]\s*(.*?[.!?])(?:\s|$)", text or "", re.S)
+    first = (m.group(1) if m else (text or "")[:160]).strip()
+    return (f"Continuity check: scene {idx + 1} starts from the LAST frame of scene {idx} Take {take.get('number')} "
+            f"(view_take scene={idx} part=end shows it, if it is not attached). Your text begins: \"{first}\" Does that describe "
+            "what that frame shows — where each person and thing is, and what is still moving? If not, propose the edit again "
+            "with a first sentence that does, then the one action that follows from it. If it does, say nothing about this.")
+
+
+def density_warning(text: str, seconds: float) -> str:
+    """Too many actions for the length: the model compresses them and skips to the last one."""
+    m = re.search(r"integrated_multimodal_description:(.*?)(?:\n\s*overall_soundscape:|$)", text or "", re.S)
+    body = re.sub(r"<d>.*?</d>", "", m.group(1) if m else "", flags=re.S)
+    body = re.sub(r"\[Shot \d+\]", "", body)
+    sentences = [x for x in re.split(r"(?<=[.!?])\s+", body.strip()) if x.strip() and not _CAMERA.search(x)]
+    verbs = len(re.findall(r",\s*(?:and\s+)?(?:then\s+)?[a-z]+s\b|\band\s+(?:then\s+)?[a-z]+s\b|\bthen\s+[a-z]+s\b", body))
+    beats = len(sentences) + verbs
+    allowed = max(3, round(4 * float(seconds or 5) / 5))
+    if beats > allowed:
+        return (f"it describes about {beats} actions in {float(seconds or 5):g} seconds; H3 compresses that and jumps to the last "
+                "one. Keep one main action (plus a small reaction), say where the camera is, and move the rest to the next scene")
+    return ""
+
+
 def _check_prompts(project: Project, scene_ids: list[str]) -> None:
     errors = []
     for sid in scene_ids:
         scene = project.scene(sid)
         try:
-            project.compile_prompt(scene)
+            compiled = project.compile_prompt(scene)
+            # a character named in the text but not active in the scene: H3 would draw a stranger
+            for e in project.entities.values():
+                if e["kind"] != "character" or e.get("ref") in compiled["labels"]:
+                    continue
+                if re.search(r"(?<![@\w])" + re.escape(e["name"]) + r"(?!\w)", scene.get("text") or "", re.I):
+                    active = e.get("ref") in project.data["library"]["items"]
+                    raise ProjectError(f"the text names {e['name']}, but " + (
+                        f"@{e['ref']} is not in this scene's references — H3 would draw a stranger. Write @{e['ref']} and add it "
+                        "to refs, or leave them out of this scene" if active else
+                        f"{e['name']} has no main look yet, so H3 cannot know what they look like; leave them out for now"))
         except ProjectError as exc:
             msg = f"scene {project.scene_index(sid) + 1} \"{scene.get('title') or ''}\": {exc}"
             if "not active" in str(exc):
@@ -737,6 +855,13 @@ def plan_proposal(project: Project, tool: str, args: dict, pending: list[dict] |
         if re.search(r"\(S\d\)", dry.data.get("style") or "") and not any("<d>" in f["text"] for f in resolved["scenes"]):
             warnings.append("the style text defines a speaker (S1) but none of the new scenes has a spoken line <d>[Language] …</d>; "
                             "if the video has narration, give the scenes their lines")
+        dense = [f"new scene {i + 1}: {msg}" for i, f in enumerate(resolved["scenes"])
+                 if (msg := density_warning(f["text"], f.get("seconds") or 5))]
+        if added:
+            echo = continuity_echo(dry, added[0], resolved["scenes"][0]["text"])
+            if echo:
+                resolved["echo"] = echo
+        warnings += dense
         if warnings:
             resolved["warning"] = "; ".join(warnings)
         resolved["total"] = len(dry.scenes)
@@ -754,8 +879,16 @@ def plan_proposal(project: Project, tool: str, args: dict, pending: list[dict] |
         dry.update_scene(sid, **fields)
         _check_prompts(dry, [sid])
         resolved = {"scene": sid, "fields": fields}
-        if notes:
-            resolved["warning"] = f"added {notes[0]} to the scene's refs, because the style text names it"
+        warn = [f"added {notes[0]} to the scene's refs, because the style text names it"] if notes else []
+        if "text" in fields:
+            d = density_warning(fields["text"], dry.scene(sid).get("seconds") or 5)
+            if d:
+                warn.append(d)
+            echo = continuity_echo(dry, sid, fields["text"])
+            if echo:
+                resolved["echo"] = echo
+        if warn:
+            resolved["warning"] = "; ".join(warn)
         n = project.scene_index(sid) + 1
         for key, value in fields.items():
             old = before.get(key)
@@ -1122,9 +1255,92 @@ def run_read_tool(project: Project, tool: str, args: dict, provider: dict) -> tu
 
 # ------------------------------------------------------------------ the agent
 
+_LEAK = re.compile(r"</?(?:tool_call|function)\b")
+_XML_CALL = re.compile(r"<function=([\w-]+)>\s*(.*?)\s*(?:</function>|$)", re.S)
+_XML_PARAM = re.compile(r"<parameter=([\w-]+)>\s*(.*?)\s*(?:</parameter>|(?=<parameter=)|$)", re.S)
+
+
+def _value(v: str):
+    v = v.strip().strip('"').strip()
+    try:
+        return json.loads(v)
+    except ValueError:
+        return v
+
+
+def _xml_args(body: str) -> dict:
+    args = {k: _value(re.split(r'"\s*[,}]', v, maxsplit=1)[0]) for k, v in _XML_PARAM.findall(body)}
+    # some servers mix the two formats: '<parameter=scene>\n3","part":"all"}'
+    for k, v in re.findall(r'"(\w+)"\s*:\s*("(?:[^"\\]|\\.)*"|-?[\d.]+|true|false|null)', body):
+        args.setdefault(k, json.loads(v))
+    return args
+
+
+def repair_tool_calls(calls: list[dict], content: str) -> tuple[list[dict], str]:
+    """Qwen-style models sometimes leak their XML tool-call format: several calls glued into one call's JSON
+    arguments, or calls written into the text. Split them into proper calls."""
+    out = []
+    for c in calls:
+        raw = c.get("arguments") or ""
+        if not _LEAK.search(raw):
+            out.append(c)
+            continue
+        first, _, rest = raw.partition("</function>")
+        first = re.sub(r"\s*$", "", first)
+        args0 = None
+        for tail in ('"}', "}", '"]}', ""):
+            try:
+                args0 = json.loads(first + tail)
+                break
+            except ValueError:
+                continue
+        if args0 is None:
+            args0 = _xml_args(first)
+        out.append({**c, "arguments": json.dumps({k: (v.strip() if isinstance(v, str) else v) for k, v in args0.items()})})
+        for n, (name, body) in enumerate(_XML_CALL.findall(rest)):
+            out.append({"id": f"{c['id']}_{n + 2}", "name": name, "arguments": json.dumps(_xml_args(body))})
+    if not out and "<tool_call>" in (content or ""):
+        for n, (name, body) in enumerate(_XML_CALL.findall(content)):
+            out.append({"id": f"call_text_{n + 1}", "name": name, "arguments": json.dumps(_xml_args(body))})
+        if out:
+            content = re.sub(r"<tool_call>.*?(?:</tool_call>|$)", "", content, flags=re.S).strip()
+    return out, content
+
+
 REPEAT = "You already proposed exactly this"
 BIG_TASK = re.compile(r"\b(plan|storyboard|whole (video|story|ad)|all (the )?scenes|every scene|rewrite|restructure|"
                       r"from scratch|start over|\d+ (new )?scenes)\b", re.I)
+
+
+SCENE_REF = re.compile(r"\bscenes?\s*(?:no\.?|number|#)?\s*(\d+)", re.I)
+WRITES_SCENE = re.compile(r"\b(fix|rewrite|re-write|write|redo|change|edit|improve|add|insert|new|make|extend|continue|shorten|longer|"
+                          r"doesn'?t work|wrong|instead)\b", re.I)
+
+
+def scene_frames_for(project: Project, text: str) -> tuple[list[str], str]:
+    """When a message names a scene, show what the video really looks like there: the end of the take it continues
+    from, and the middle of its own selected take (deterministic, so the model need not ask)."""
+    numbers = []
+    for m in SCENE_REF.finditer(text or ""):
+        n = int(m.group(1))
+        if 1 <= n <= len(project.scenes) and n not in numbers:
+            numbers.append(n)
+    images, notes = [], []
+    for n in numbers[:2]:
+        scene = project.scenes[n - 1]
+        prev = project.scenes[n - 2] if n > 1 else None
+        prev_take = project.data["takes"].get((prev or {}).get("selected_take") or "")
+        if prev and project.scene_mode(scene) in ("continue", "bridge") and prev_take and prev_take.get("status") == "done":
+            images += extract_frames(project, prev_take, 1, end=True)
+            notes.append(f"the LAST frame of scene {n - 1} (Take {prev_take.get('number')}) — scene {n} starts from exactly this picture")
+        take = project.data["takes"].get(scene.get("selected_take") or "")
+        if take and take.get("status") == "done":
+            images += extract_frames(project, take, 4)[1:3]
+            stale = " (rendered from an earlier version of its text)" if "prompt_changed" in project.scene_status(scene["id"]) else ""
+            notes.append(f"two frames from the middle of scene {n}'s selected Take {take.get('number')}{stale}")
+    if not images:
+        return [], ""
+    return images, "[Attached, in this order: " + "; ".join(notes) + ".]"
 
 
 def resolve_thinking(thinking, project: Project, text: str, provider: dict):
@@ -1132,7 +1348,8 @@ def resolve_thinking(thinking, project: Project, text: str, provider: dict):
     thinking_budget) when planning a video (no scenes yet, or the message asks for a plan or many scenes),
     answer directly for everything else."""
     if thinking == "auto":
-        big = not project.scenes or bool(BIG_TASK.search(text or ""))
+        big = (not project.scenes or bool(BIG_TASK.search(text or ""))
+               or (bool(SCENE_REF.search(text or "") or re.search(r"\bscenes?\b", text or "", re.I)) and bool(WRITES_SCENE.search(text or ""))))
         return int(provider.get("thinking_budget") or 2048) if big else False
     return thinking
 
@@ -1152,6 +1369,7 @@ class Assistant:
         self.update = update or (lambda state: None)
         self.stopped = stopped or (lambda: False)
         self.turn = None  # index of the user message being answered; proposals remember it
+        self._echoed: set = set()   # (turn, scene) pairs that already got the continuity check
 
     def _complete(self, project: Project, chat: dict, state: dict, *, thinking=False, tools=TOOLS) -> dict:
         self.before_request()
@@ -1200,8 +1418,19 @@ class Assistant:
             state["phase"] = "compacting"
             self.update(state)
             self.compact(project, chat)
-        chat["messages"].append({"role": "user", "text": text, "note": note, "images": images or [], "t": _now(),
-                                 "snapshot": snapshot(project, chat)})
+        seen = scene_fingerprints(project)
+        changes = changes_since(chat.get("seen"), seen)
+        chat["seen"] = seen
+        auto_images, auto_note = ([], "")
+        if self.provider.get("vision") and not images:
+            try:
+                auto_images, auto_note = scene_frames_for(project, text)
+            except ProjectError:
+                auto_images, auto_note = [], ""
+        if auto_note:
+            note = (note + "\n" if note else "") + auto_note
+        chat["messages"].append({"role": "user", "text": text, "note": note, "images": (images or []) + auto_images, "t": _now(),
+                                 "snapshot": snapshot(project, chat), "changes": changes})
         self.turn = len(chat["messages"]) - 1
         if not chat.get("title"):
             chat["title"] = text.strip().splitlines()[0][:60] if text.strip() else "New chat"
@@ -1214,6 +1443,7 @@ class Assistant:
             if thinking and result["finish_reason"] == "length" and not result["tool_calls"]:
                 # the budget ran out and the model went on reasoning in its reply until the limit: ask once more without thinking
                 result = self._complete(project, chat, state, thinking=False, tools=tools)
+            result["tool_calls"], result["content"] = repair_tool_calls(result["tool_calls"], result["content"])
             chat["messages"].append({"role": "assistant", "text": result["content"].strip(), "reasoning": result["reasoning"],
                                      "tool_calls": result["tool_calls"], "t": _now()})
             self.write_chat(chat)
@@ -1284,6 +1514,11 @@ class Assistant:
                             result += f" If applied (with your other waiting proposals), the project has {plan['args']['total']} scenes."
                         if plan["args"].get("warning"):
                             result += f" Warning: {plan['args']['warning']}. If that was a mistake, propose a corrected version."
+                        echo = plan["args"].pop("echo", None)
+                        key = (self.turn, plan["args"].get("scene"))
+                        if echo and key not in self._echoed:
+                            self._echoed.add(key)
+                            result += " " + echo
                         if name == "add_scenes" and any(p["tool"] == "add_scenes" for p in pending):
                             result += (" Note: another add_scenes proposal is also waiting; if both are applied, both sets of scenes are added."
                                        " Only propose more scenes if the user asked for them.")

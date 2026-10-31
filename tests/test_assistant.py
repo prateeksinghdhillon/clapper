@@ -271,7 +271,8 @@ def test_numbers_of_waiting_scenes_get_an_explanation(project):
 
 def test_auto_thinking_only_for_planning(project):
     prov = {"thinking_budget": 1024}
-    assert assistant.resolve_thinking("auto", project, "Make scene 2 slower", prov) is False
+    assert assistant.resolve_thinking("auto", project, "What does scene 2 show?", prov) is False
+    assert assistant.resolve_thinking("auto", project, "Make scene 2 slower", prov) == 1024   # writing a scene: think
     assert assistant.resolve_thinking("auto", project, "Plan a 30-second video", prov) == 1024
     assert assistant.resolve_thinking("auto", project, "Rewrite all scenes in French", prov) == 1024
     project.data["scenes"] = []
@@ -340,8 +341,8 @@ def test_snapshot_rides_only_on_the_newest_user_message(project):
     msgs = assistant.build_messages(project, chat, LOCAL)
     assert msgs[0]["role"] == "system" and "Prompt guide" in msgs[0]["content"]
     assert msgs[1]["content"] == "first"
-    assert msgs[3]["content"].startswith("[Since your last message: The user applied: X.]\n\nsecond")
-    assert msgs[3]["content"].endswith("<project>B</project>")
+    assert msgs[3]["content"].startswith("[Since your last message: The user applied: X.]") and msgs[3]["content"].endswith("# The user's message\nsecond")
+    assert "<project>B</project>\n\n# The user's message" in msgs[3]["content"]   # project first, request last
     stable = assistant.build_messages(project, chat, LOCAL, with_snapshot=False)
     assert "<project>B" not in json.dumps(stable)
     assert stable[:3] == msgs[:3]  # everything before the newest message is identical → prompt cache reuse
@@ -352,7 +353,7 @@ def test_snapshot_describes_the_project(project):
     text = assistant.snapshot(project)
     assert "@opening (image) ▶" in text and "@hero (image) ★" in text
     assert "The fox never speaks." in text
-    assert '1. "Open" · 5.0s · join start' in text and "2. \"Serve\"" in text
+    assert '1. "Open" · 5.0s · opens on the image @opening' in text and "2. \"Serve\"" in text
 
 
 def test_turn_with_proposal_notes_and_reference_view(project):
