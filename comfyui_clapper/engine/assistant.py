@@ -54,6 +54,7 @@ INSTRUCTIONS = """You are the director's assistant inside Clapper, a studio for 
 - To plan a video, make ONE add_scenes call with all its scenes. Change only what the user asked for: a change to one scene is one edit_scene call.
 - Scene numbers mean the scenes listed in <project>. Scenes in a waiting add_scenes card have no number yet; to correct that card in the same answer, call add_scenes again with the same `after` (it replaces it).
 - When a reference's look matters and it has no card, call view_reference, then save precise features with save_reference_card. The user's definitions and descriptions beat your eyes.
+- Before writing or rewriting a scene that continues a scene with a finished take, call view_take on that earlier scene with part=end (if you can see images): the new scene starts from that exact picture, which can differ from what its text says. Open the new scene's text with that state.
 - To check a take, call view_take (unless its frames are attached). Never describe or judge an image or take you have not been shown. When a take does not match its scene, say what differs, then usually propose an edit_scene that makes the text clearer.
 - Keep lasting facts in the story notes with update_notes (story, characters, tone, the user's decisions); always write the complete notes.
 - Be brief. Ask a short question when something important is unclear (length, shape, language, look, who speaks) rather than guessing.
@@ -348,8 +349,10 @@ TOOLS = [
         {"scene": _SCENE}, ["scene"]),
     _fn("view_reference", "Look at a reference image (you will see the picture).",
         {"name": {"type": "string", "description": "reference name without @"}}, ["name"]),
-    _fn("view_take", "Look at frames from a finished take of a scene (you will see 4 frames from start to end).",
-        {"scene": _SCENE, "take": {"type": "integer", "description": "take number; omit for the selected take"}}, ["scene"]),
+    _fn("view_take", "Look at frames from a finished take of a scene: 4 frames from start to end, or with part=end its last "
+        "frames — how it really ends, which is where a scene that continues it begins.",
+        {"scene": _SCENE, "take": {"type": "integer", "description": "take number; omit for the selected take"},
+         "part": {"type": "string", "enum": ["all", "end"], "description": "all (default) or end"}}, ["scene"]),
     _fn("update_notes", "Replace the project's story notes (your lasting memory: story, characters, tone, decisions). Applied at once.",
         {"notes": {"type": "string", "description": "the complete new notes"}}, ["notes"]),
     _fn("save_reference_card", "Save what a reference looks like, for your own later use (not sent to H3). Applied at once.",
@@ -1046,7 +1049,7 @@ def _apply(project: Project, proposal: dict, *, render=None, client=None) -> str
     return "applied"
 
 
-def extract_frames(project: Project, take: dict, count: int = 4) -> list[str]:
+def extract_frames(project: Project, take: dict, count: int = 4, *, end: bool = False) -> list[str]:
     video = project.root / take["dir"] / "take.mp4"
     if not video.is_file():
         raise ProjectError("this take has no video yet")
@@ -1056,15 +1059,19 @@ def extract_frames(project: Project, take: dict, count: int = 4) -> list[str]:
     skip = int(take.get("context_frames") or 0)  # carried-over frames belong to the previous scene
     rels = []
     for i in range(count):
-        index = skip + round((frames - skip - 1) * (0.08 + 0.84 * i / (count - 1)))
-        target = out_dir / f"f{i + 1}.jpg"
+        if end:   # the last second: what a continuing scene starts from
+            index = frames - 1 - round(i * 8)
+            target = out_dir / f"end{i + 1}.jpg"
+        else:
+            index = skip + round((frames - skip - 1) * (0.08 + 0.84 * i / (count - 1)))
+            target = out_dir / f"f{i + 1}.jpg"
         if not target.is_file():
             proc = subprocess.run([FFMPEG, "-v", "error", "-y", "-i", str(video), "-vf", f"select=eq(n\\,{index})",
                                    "-frames:v", "1", "-q:v", "3", str(target)], capture_output=True)
             if proc.returncode != 0 or not target.is_file():
                 raise ProjectError("could not extract frames: " + proc.stderr.decode(errors="replace")[-300:])
         rels.append(str(target.relative_to(project.root)))
-    return rels
+    return list(reversed(rels)) if end else rels
 
 
 def run_read_tool(project: Project, tool: str, args: dict, provider: dict) -> tuple[str, list[str]]:
@@ -1102,6 +1109,11 @@ def run_read_tool(project: Project, tool: str, args: dict, provider: dict) -> tu
             raise ProjectError("that take does not exist or is not finished")
         if not provider.get("vision"):
             return "This model cannot see images.", []
+        if args.get("part") == "end":
+            frames = extract_frames(project, take, 3, end=True)
+            return (f"Showing the last {len(frames)} frames (the final second) of scene {project.scene_index(sid) + 1} Take "
+                    f"{take.get('number')}, oldest first. A scene that continues this take starts from exactly this picture: "
+                    "describe that state first, then the one action that follows."), frames
         frames = extract_frames(project, take)
         return (f"Showing 4 frames, start to end, of scene {project.scene_index(sid) + 1} Take {take.get('number')} "
                 f"({take.get('frames')} frames at 24 fps). The scene text it was made from:\n{take.get('scene_text', '')}"), frames

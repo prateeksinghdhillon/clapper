@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Prompt guide: one main action per scene, the camera position and direction of movement when someone enters or leaves something, only the references that should be visible, and starting from how the previous *take* really ends. The assistant's `view_take` has `part: end` (the last frames), and it looks before writing a scene that continues a take.
+- A character's description no longer repeats its name ("Ren is Ren: Ren, …").
 - Local assistant: a **start command** (Assistant settings, e.g. `systemctl --user start llama-swap`) that Clapper runs when the assistant needs the model and llama-swap is not running; then it loads the model as before. Docs: running llama-swap as a boot-time user service.
 - Assistant instructions: a new outfit or angle is a new look and never rewrites a character's description; voice samples are listed with their ids.
 - **Finish › Sound & overlays**: music and sound tracks from the Studio placed on the timeline (volume, fades, loop, *dip under the scenes' sound* = ducking), the scenes' own volume, image overlays (logo, product photo: position, size, opacity, from/until, fade) and **title cards** rendered from typed text with a font for its script (Latin, Devanagari, CJK, Arabic, …). All exact and applied at export; a timeline strip shows them; *With sound & overlays* can be switched off. CLI `finish show|set|title`, `export --no-finish`; API `/finish`, `/finish/title`.

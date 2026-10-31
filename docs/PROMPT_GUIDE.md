@@ -105,6 +105,18 @@ This is the most important continuity rule. The new take begins exactly where th
 
 End each scene in a state the next scene can pick up ("In the final second the camera pans right to the counter, where the phone starts ringing"), and start the next scene from it.
 
+What counts is how the previous **take** ends, not what its text asked for: look at its last frames before writing the next scene (in Clapper the assistant uses `view_take` with `part: end`). If the take ended with something unexpected filling the frame — a vehicle pulling up close, a character turned away — start from that.
+
+### One action per scene, staged for the camera
+
+*From one tested case (a character boarding a bus): the original text, with five beats, the camera inside and the friend in the references, gave three takes in which she seemed to get off and turn back; the same scene rewritten by these rules boarded correctly on the first try, with the friend in the references and without. Treat them as strong guidance, not as proven rules.*
+
+
+- **One main action per 5 seconds**, plus at most a small reaction. "She walks to the door, climbs in, stands in the aisle, looks back and sees him smile" is five beats; the model compresses them and skips to the last one. Split it: scene A boards the bus, scene B finds him.
+- **Say where the camera is and which way people move**, especially when someone enters or leaves something. To get on a bus, keep the camera *outside* and *behind* her: "the camera stays on the platform behind her; she climbs the steps into the bus, her back to the camera, moving away from us". If the camera is inside, the model shows her facing the camera in the doorway — which reads as getting *off* — and then turns her round.
+- **Only give a scene the references that should be visible in it.** A character in the references tends to be shown early and large; a friend who is only discovered at the end of the boarding pulls the camera inside the bus. Leave them out of that scene, or bring them in with "in the final second, … is glimpsed through the door".
+- **Name the incoming state in the first line** when the previous take ends on something big ("The bus is pulling in beside the shelter, its side close to the camera.") and let the action grow from it.
+
 ## 5. Dialogue and narration
 
 - Write spoken words as `<d>[Language] exact words</d>` and always say **who** speaks: "the off-screen narrator (S1), excited, says: `<d>[English] Now there's an easier way.</d>`"
@@ -174,7 +186,9 @@ non_diegetic_music: The same playful strings, now joined by light percussion.
 ## 9. Checklist before rendering
 
 - [ ] **Prompt sent to H3** shows no error, and every `@name` became the right number.
-- [ ] The scene starts from the state where the previous scene ends, and ends in a state the next scene can use.
+- [ ] The scene starts from the state where the previous **take** ends (looked at, not assumed), and ends in a state the next scene can use.
+- [ ] One main action; the camera position and the direction of movement are stated when someone enters or leaves something.
+- [ ] Only the references that should be visible in this scene.
 - [ ] Every spoken line has a speaker and a `[Language]` tag; the amount of speech fits the length.
 - [ ] Sounds are in `overall_soundscape`, music in `non_diegetic_music` (or `N/A`).
 - [ ] No readable text is requested except where it is the point (and then with its reference).

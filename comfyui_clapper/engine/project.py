@@ -66,6 +66,17 @@ def _atomic_write_json(path: Path, data: dict) -> None:
     os.replace(tmp, path)
 
 
+def _strip_name(name: str, description: str) -> str:
+    """'Ren, a quiet boy' / 'Ren: a quiet boy' → 'a quiet boy' (the definition already says '@ren is Ren: …')."""
+    d = (description or "").strip()
+    n = (name or "").strip()
+    if n and d.lower().startswith(n.lower()) and d[len(n):len(n) + 1] in (",", ":", " ", "-", "—"):
+        rest = d[len(n):].lstrip(" ,:-—")
+        if rest:
+            return rest
+    return d
+
+
 def asset_kind_for(path: str | Path) -> str:
     kind = _EXT_KIND.get(Path(path).suffix.lower())
     if kind is None:
@@ -371,6 +382,7 @@ class Project:
         if not name.strip():
             raise ProjectError("give it a name")
         eid = _new_id("e")
+        description = _strip_name(name, description)
         # An image that already has an @name keeps it: scenes that use it go on working.
         adopted = [n for n in self.asset_names(from_asset) if not self.data["library"]["items"][n].get("entity")] if from_asset else []
         entity = {"id": eid, "kind": kind, "name": name.strip(), "description": description.strip(), "main": None,
@@ -387,6 +399,8 @@ class Project:
         unknown = set(fields) - {"name", "description", "voice", "notes", "default"}
         if unknown:
             raise ProjectError(f"cannot update {sorted(unknown)}")
+        if "description" in fields:
+            fields["description"] = _strip_name(fields.get("name") or entity["name"], fields["description"] or "")
         if fields.get("voice"):
             if self.asset(fields["voice"])["kind"] != "audio":
                 raise ProjectError("a voice must be a sound from the library")

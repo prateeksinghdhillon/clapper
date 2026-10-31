@@ -113,3 +113,12 @@ def test_existing_name_is_adopted(project):
 def test_look_label_cuts_at_words():
     assert tools._label("wearing a long winter coat and a red knitted scarf") == "wearing a long winter coat and a red knitted…"
     assert tools._label("in a suit") == "in a suit"
+
+
+def test_name_is_not_repeated_in_the_definition(project):
+    e = project.create_entity("character", "Ren", description="Ren, a quiet 18-year-old boy", from_asset=project.aoi_img["id"])
+    assert e["description"] == "a quiet 18-year-old boy"
+    assert project.data["library"]["items"]["ren"]["definition"] == "@ren is Ren: a quiet 18-year-old boy"
+    project.update_entity(e["id"], description="Ren: a tall boy")
+    assert e["description"] == "a tall boy"
+    assert project.create_entity("character", "Rena", description="Renaissance-style painter")["description"] == "Renaissance-style painter"
