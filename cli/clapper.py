@@ -29,6 +29,16 @@ def cmd_take(args: argparse.Namespace) -> int:
     settings = merge(DEFAULT_SETTINGS, SPEED_PROFILES[args.profile])
     if args.steps:
         settings = merge(settings, {"sampling": {"steps": args.steps}})
+    if args.unet:
+        settings = merge(settings, {"models": {"unet": args.unet}})
+    if args.lora is not None:
+        loras = []
+        for item in args.lora:
+            if item.lower() == "none":
+                continue
+            name, _, strength = item.partition(":")
+            loras.append({"name": name, "strength": float(strength or 1.0), "enabled": True})
+        settings["loras"] = loras
     prompt = Path(args.prompt_file).read_text(encoding="utf-8").strip()
 
     if args.start_image:
@@ -52,6 +62,12 @@ def cmd_take(args: argparse.Namespace) -> int:
                                  "frames": ctx, "audio": settings["continuity"]["audio"]}
         parent = json.loads((Path(args.continue_from) / "meta.json").read_text())
         width, height = parent["width"], parent["height"]
+    guides = []
+    for item in args.anchor_audio:
+        path, _, at = item.rpartition("@") if "@" in item else (item, "", "0")
+        guides.append({"path": str(Path(path).resolve()), "frame": int(round(float(at) * 24))})
+    if guides:
+        spec["audio_guides"] = guides
     frames = scene_frame_count(args.seconds, context_frames=ctx)
     seed = args.seed if args.seed is not None else random.randrange(1, 2**48)
     out = Path(args.out).resolve()
@@ -294,6 +310,11 @@ def main() -> int:
     t.add_argument("--seconds", type=float, default=5.0)
     t.add_argument("--profile", default="continuum_current", choices=sorted(SPEED_PROFILES))
     t.add_argument("--steps", type=int)
+    t.add_argument("--unet", help="diffusion model file, e.g. a Ref2VA model for a fresh scene")
+    t.add_argument("--lora", action="append", help="NAME[:STRENGTH]; repeat for several; 'none' for no LoRA "
+                   "(replaces the default LoRA list)")
+    t.add_argument("--anchor-audio", action="append", default=[], metavar="FILE[@SECONDS]",
+                   help="guide the scene's soundtrack to be this clip from SECONDS (default 0)")
     t.add_argument("--seed", type=int)
     t.add_argument("--out", required=True)
 

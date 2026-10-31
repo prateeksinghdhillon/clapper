@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Audio clips anchored in a scene: the scene's soundtrack becomes the clip from a chosen time and the picture is generated around it (`spec.audio_guides`; CLI `take --anchor-audio FILE@SECONDS`).
+- CLI `take`: `--unet` and `--lora` to render with another model, e.g. the Ref2VA model for a scene made from references only.
 - Change password from the profile menu (current password required; your other devices are logged out). Changing a password from the command line now logs that profile out everywhere.
 - Header redesigned for phones, tablets and laptops: always one row. A status pill replaces the machine stats, queue indicator and GPU pill (rendering progress, who holds the GPU, waiting jobs; GPU load and VRAM on wide screens) and opens the machine / queue / GPU panel. ✨ Assistant and Export stay in the bar (icons on phones); References and Settings move into the profile menu on narrower screens, together with Storage, the ComfyUI log, Assistant settings and Log out. The chat and the scene editor open below the header.
 - Assistant proposals are checked more strictly: scene text must have the three H3 fields once each, in order, not empty, with at most one line before them, and `[Shot 1]`; every spoken line must be `<d>[Language] words</d>` (closed with `</d>`) in its language's own script; proposals are checked together with the ones still waiting (a new style text that would break a proposed scene is caught); scenes that repeat or nearly repeat (≥ 90%) each other, a scene in the project or one in a waiting card are refused, naming that scene; a missing narration or style text is flagged.

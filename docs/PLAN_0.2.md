@@ -1,6 +1,6 @@
 # Clapper 0.2 plan — from director to studio
 
-Status: **draft for discussion**. When an item is built, move it to the roadmap in [DESIGN.md](DESIGN.md) with its real status.
+Status: **agreed; M0 done**. When an item is built, move it to the roadmap in [DESIGN.md](DESIGN.md) with its real status.
 
 ## The idea
 
@@ -21,21 +21,27 @@ Rules that follow from this:
 
 1. **The stages are separate.** A tool job makes an asset and stops. Nothing chains from Prepare into Shoot or from Shoot into Finish on its own. You generate characters today, write scenes tomorrow, upscale next week.
 2. **Everything lands in the project.** Every image, audio clip and video clip is an *asset* in the project library, kept with what made it (upload, or tool + prompt + seed + inputs), exactly like takes today. Any asset can become an `@name` reference.
-3. **Video generation only uses what is in the library.** While shooting, the GPU runs H3 only; the one possible model switch is Ref2VA for a fresh scene vs FL2VA for continued scenes, and test T1/T2 below may remove even that.
+3. **Video generation only uses what is in the library.** While shooting, the GPU runs H3 only, and one model (Ref2VA) can make every scene (tests T0–T2).
 4. **Defaults stay proven.** New modes are opt-in; a new scene still defaults to today's setup.
 5. **Simple first, complete underneath.** Each screen shows the common action; the rest is one tap away (an *Advanced* fold, an asset's menu), never removed.
 
-## Tests that decide the design (one GPU run each)
+## Tests that decide the design
 
-| # | Question | Why it matters | Grounding |
-|---|---|---|---|
-| T1 | Ref2VA + a first-frame guide (`MiniMaxH3AddGuide` at frame 0): does the scene start on the image and still follow references? | If yes, a "fresh" scene can also start from an image without FL2VA | `MiniMaxH3AddGuide` works on any H3 conditioning (core node) |
-| T2 | Ref2VA with Clapper's masked continuation (22 frames + audio) | If the join is clean, one model for the whole video — no switching at all | untested |
-| T3 | Audio anchored with `MiniMaxH3AddGuide(audio=…)`: does the video carry exactly that clip (same words, same timing) with picture generated around it? | "Speak this exact line" from a generated or imported clip | the core node documents audio anchoring; quality unknown |
-| T4 | Standalone reference audio (`<Audio N>`) | Voice likeness without fixing the words | built in 0.1, untested |
-| T5 | Ref2V Turbo 4-step LoRA vs 20 steps for fresh scenes | speed | — |
+Run with `clapper take` on an RTX 5060 Ti 16 GB at 416×736, Ref2VA int8 + Ref2V Turbo 4-step LoRA at 4 steps unless noted. Numbers are in the verified-results table in [DESIGN.md](DESIGN.md).
 
-Results go into the verified-results table in DESIGN.md.
+| # | Question | Result |
+|---|---|---|
+| T0 | Ref2VA, fresh scene from references only | **pass** — character close, action followed, ≈114 s |
+| T1 | Ref2VA + start image pinned at frame 0 | **pass** — opens exactly on the image, style kept |
+| T2 | Ref2VA with masked continuation | **pass** — clean join; later prompt beats followed only partly |
+| T3 | Audio clip anchored at a time | **pass** — the soundtrack is the clip (envelope 0.995, waveform 0.95) |
+| T4 | Voice reference `<Audio N>` | **likely pass** — new words, pitch and spectrum match the sample; listening check pending |
+| T5 | 4 vs 20 steps (Ref2VA, start image) | **4 steps** — 114 s vs 396 s, no visible gain at 20 |
+
+Decisions from these:
+
+- **One model can make the whole video.** Ref2VA handles a fresh start, an image start and continuation, so no switching is needed. Settings offer a **video model** choice: *Ref2VA for every scene* or *FL2VA for every scene* (0.1's proven setup and still the default), plus *Ref2VA for fresh scenes, FL2VA for the rest* for people who prefer FL2VA's continuation.
+- **Dialogue clips become part of the scene.** A generated or imported line anchored in a scene comes out word for word, with the picture made around it, so speech made with a TTS tool can be used directly. Laying audio over the video in Finish stays available (music, effects, re-timing).
 
 ## Features
 
@@ -70,8 +76,8 @@ Built-in adapters (to verify on a GPU as each is added):
 
 ### C. Shooting (M1)
 
-- **C1 Start mode per scene:** *Continue from previous scene* (0.1 default) · *Fresh from references* (Ref2VA) · *Start from image* (an image asset as first frame; FL2VA, or Ref2VA + guide if T1 passes). Optional *end on image* (last frame).
-- **C2 Model per mode** in Settings (model, LoRA, steps), with the proven setup as default for *continue* and a Ref2VA default for *fresh*.
+- **C1 Start mode per scene:** *Continue from previous scene* (0.1 default) · *Fresh from references* (Ref2VA) · *Start from image* (an image asset or a take's frame pinned as frame 0; works on both models, T1). Optional *end on image* (last frame).
+- **C2 Video model** in Settings: *FL2VA for every scene* (default), *Ref2VA for every scene*, or *Ref2VA for fresh scenes, FL2VA for the rest*; each model with its own LoRA and steps (Ref2V Turbo: 4 steps).
 - **C3 Audio in a scene:** voice references (`@narrator` → `<Audio N>`, T4) and **soundtrack clips** anchored at a time in the scene (T3), e.g. a generated line at 0.5 s. The scene editor shows the clip's length against the scene's.
 - **C4 Video references** (`<Video N>`) from video assets.
 - **C5 Queue by model.** *Render remaining* orders jobs so the model loads once per run.
@@ -121,7 +127,7 @@ One **job tray** (the existing status pill and live bar) shows every kind of job
 
 | M | Contents | Done when |
 |---|---|---|
-| M0 | Tests T1–T4 on a GPU (scripts, no interface) | results in DESIGN.md |
+| M0 | Tests T0–T5 on a GPU (CLI, no interface) | **done** — results in DESIGN.md |
 | M1 | Library (A1–A3), job model, start modes (C1, C2), audio import + voice refs + soundtrack clips (C3) as far as T3/T4 allow | a video with a fresh first scene and a scene that uses an imported clip, rendered from the interface |
 | M2 | Adapter system, image tools B1–B4, batches B8, versions A4 | a character made, varied and used as `@name` in a scene |
 | M3 | Speech B5 (B6 if the model is present) | a generated line used in a scene (C3) |

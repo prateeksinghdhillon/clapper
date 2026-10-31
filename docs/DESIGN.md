@@ -98,6 +98,13 @@ Key decisions:
 | Assistant settings sweep (same eval, after the `<d>`/structure/near-duplicate/apply checks, the style-reference completion and the budget fallback; right tool of 4 tasks; time per run of all 4) | thinking off 98% (2 runs), 3.0/4, 241 s · **auto, budget 2048 (default)** 96% (2 runs), 4/4, 327 s · always 1024: 100% but planning ran out of budget and made no tool call (1/4, fixed since by retrying without thinking) · always 2048 93%, 4/4, 412 s · always 4096 100%, 3/4, 633 s · demo sampling (0.7 / 0.95 / top-k 20 / min-p 0) 94–99%, 2.5–3.5/4, not reliably better · Qwen-style sampling 90%. Structure, `@names` and dialogue tags now pass in every configuration; what remains is scenes without narration and task scope. `thinking_budget_tokens` is honoured per request by this llama-server build |
 | Assistant vision | overall look right; small details wrong or invented at 2 bits (eye and beak colour); take reviews unreliable (proposed changes to a take that matched its scene) |
 | Reference following on the FL2VA model | characters and logo reproduced closely (the hybrid FL2VA+Ref2VA model is not required for images) |
+| Ref2VA int8 + Ref2V Turbo 4-step LoRA at 4 steps, fresh scene from references only (no start image) | 124 frames at 416×736 in ≈114 s including model load; the character reproduced closely, action followed; look a little softer than the style sheet |
+| Ref2VA, start image pinned at frame 0 (as for FL2VA) | opens exactly on the image, keeps its flat style, character and action right; ≈114 s — no FL2VA needed for an image start |
+| Ref2VA, masked continuation (22 frames + audio) | ≈144 s per 141-frame take; join clean (frame change across the join 7.8 vs 6.8–6.9 inside the takes; carried overlap diff 2.2); later prompt beats followed only partly. One model can make a whole video |
+| Anchored audio clip (`audio_guides`, at 0.5 s) | the soundtrack is the clip: envelope correlation 0.995 at zero lag, waveform correlation 0.95 (an unanchored take: 0.28 / 0.03); mouths stayed closed as prompted |
+| Voice reference (`<Audio 1>`) with new words | new words spoken (envelope correlation with the sample 0.13); pitch median 115 Hz vs the sample's 113 Hz (no voice reference: 131 Hz), spectral similarity 0.96 vs 0.84 — likely the same voice; not yet confirmed by listening |
+| Qwen3-TTS 1.7B Base, voice clone from a saved voice, English | a 4.4 s line in 12 s including model load |
+| Ref2VA: Ref2V Turbo LoRA at 4 vs 20 steps (same seed, start image) | 114 s vs 396 s; frames nearly identical, no visible gain at 20 — 4 steps is the Ref2VA default |
 
 ## Roadmap
 
@@ -121,11 +128,12 @@ The next version's plan (library, image and speech tools, start modes, finishing
 | Assistant: show a proposed scene's compiled H3 prompt on its card | planned |
 | Keyframe continuation method | untested |
 | Bridge join (insert/replace keeping later scenes) | untested |
-| Audio (voice) references | built, untested |
+| Audio (voice) references | built; measured close (see results), listening check pending |
+| Anchored audio clips in a scene | built (CLI); verified |
 | Video references | planned |
 | Overlays in export (exact logos, product photos, text cards with position, timing, simple animation) | planned |
 | Seam correction at joins (port Continuum's audio/video seam logic) | planned if joins show flicker |
-| Speed comparison: 8 vs 20 steps; SageAttention via ComfyUI's `--use-sage-attention` (needs `sageattention` 1.0.6) | planned |
+| Speed comparison: 8 vs 20 steps (FL2VA); SageAttention via ComfyUI's `--use-sage-attention` (needs `sageattention` 1.0.6) | planned |
 | Upscaling pass for selected takes (an H3 latent upscaler exists) | planned |
 | Scene reordering in the interface (the API supports `move`) | planned |
 | Undo in the interface (history files exist) | planned |

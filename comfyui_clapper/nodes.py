@@ -23,6 +23,7 @@ import comfy.model_management
 import comfy.nested_tensor
 import node_helpers
 from comfy_extras.nodes_audio import vae_decode_audio
+from comfy.ldm.minimax.model import FRAME_RESCALE
 from comfy_extras.nodes_minimax_h3 import _encode_ref_audio, _resize
 
 from .h3_temporal import audio_latent_t, context_slots, video_latent_t
@@ -180,6 +181,25 @@ class ClapperSceneConditioning:
                 kf["audio_latent"] = audio_ctx
             keyframes.append(kf)
             info.append(f"bridge: last {ctx_frames} frames pinned to start of {Path(bridge['take_dir']).name}")
+
+        # Audio clips anchored at a frame: the scene's soundtrack is guided to be this clip from that
+        # frame on (same mechanism as the core MiniMaxH3AddGuide audio input).
+        audio_t = audio_latent_t(frames)
+        for guide in spec.get("audio_guides") or []:
+            idx = int(guide.get("frame", 0))
+            if not 0 <= idx < frames:
+                raise ValueError(f"audio guide frame {idx} is outside the scene's {frames} frames")
+            if cont.get("take_dir") and idx < int(cont.get("frames", 22)):
+                raise ValueError("an audio guide in a continued scene must start after the carried frames")
+            guide_latent, _ = _encode_ref_audio(audio_vae, _load_audio(guide["path"]))
+            max_rt = math.floor(audio_t - FRAME_RESCALE * idx)
+            if max_rt < 1:
+                raise ValueError(f"audio guide frame {idx} is past the end of the scene's audio")
+            if guide_latent.shape[-1] > max_rt:
+                guide_latent = guide_latent[..., :max_rt].clone()
+            keyframes.append({"resolved_frame_index": idx, "audio_latent": guide_latent})
+            info.append(f"audio guide at frame {idx}: {Path(guide['path']).name} "
+                        f"({guide_latent.shape[-1] / 40:.2f}s used)")
 
         if presentation and (ref_blocks or any(p["type"] != "image" for p in presentation)):
             tokens = clip.tokenize(prompt, minimax_ref_items=presentation)

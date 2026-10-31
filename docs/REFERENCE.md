@@ -54,6 +54,7 @@ Any Python ≥ 3.10 with Pillow works; the CLI talks to ComfyUI over HTTP. Scene
 | `import-timeline PROJECT PROMPT_FILE --picture 1=name … [--audio 1=name …]` | Turn a Continuum Timeline prompt into scenes: the preamble becomes the style text, `<Picture N> is …` lines become reference definitions, each section becomes a scene |
 | `adopt PROJECT N TAKE_DIR [--parent TAKE_ID]` | Add an already-rendered take folder to a scene |
 | `take --prompt-file P [--start-image I] [--ref I …] [--continue-from TAKE_DIR] --out DIR …` | Render one take outside any project (testing) |
+| `take … [--unet FILE] [--lora NAME[:STRENGTH] …] [--anchor-audio FILE[@SECONDS] …] [--ref-audio FILE …]` | Same, with another diffusion model and LoRA list (`--lora none` for none), a soundtrack clip anchored at a time, or a voice reference |
 | `profile list` | Profiles, their projects, projects with no profile, and who is logged in |
 | `profile add ID [--name N] [--password P]` | Create a profile (asks for the password if omitted) |
 | `profile password ID [--password P]` | Change a password (asks for it if omitted, so it never shows in the shell history); every logged-in session of that profile ends |
@@ -262,6 +263,12 @@ H3 only accepts clip lengths of 17k+5 frames at 24 fps (5, 22, 39 … 124, 141 �
 - **bridge**: additionally pins the first 22 frames of the next scene's selected take at the end of the new take. Untested.
 
 The continuation needs the parent's `latent.safetensors` and the same width and height.
+
+### Anchored audio
+
+A scene can carry audio clips anchored at a time (`spec.audio_guides`: `[{"path": …, "frame": N}]`; CLI `--anchor-audio FILE@SECONDS`). Each clip is encoded with the audio VAE and attached as an audio keyframe at that frame, the same mechanism as the core `MiniMaxH3AddGuide` audio input. The scene's soundtrack then *is* that clip from that point on (measured: envelope correlation 0.995, waveform correlation 0.95 against the input), and the picture is generated around it. A clip longer than the rest of the scene is cut at the scene's end. In a continued scene the clip must start after the carried frames.
+
+This differs from a **voice reference** (`<Audio N>`, `--ref-audio`): a voice reference gives the speaker's voice, and the words come from the prompt.
 
 ### Export
 
