@@ -3,7 +3,9 @@
 A project is a folder:
     project.json            the single source of truth (atomic writes)
     history/                previous project.json versions (undo)
-    refs/                   copies of every reference file
+    refs/                   copies of reference files added as references
+    assets/<kind>s/         library files (images, audio, video) with their origin in `assets`
+    trash/                  removed library files, until emptied
     takes/<scene>/<take>/   one folder per take (latent, mp4, wav, meta.json)
     exports/
 """
@@ -23,6 +25,12 @@ SCHEMA = 1
 HISTORY_KEEP = 50
 REF_KINDS = ("image", "audio", "video")
 JOIN_MODES = ("continue", "cut", "bridge")
+ASSET_KINDS = ("image", "audio", "video")
+ASSET_ROLES = ("character", "place", "prop", "style", "start", "frame", "voice", "speech", "sound", "music",
+               "clip", "other")
+_EXT_KIND = {**{e: "image" for e in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")},
+             **{e: "audio" for e in (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".flac")},
+             **{e: "video" for e in (".mp4", ".mov", ".webm", ".mkv", ".m4v")}}
 TAKE_STATUSES = ("queued", "rendering", "done", "failed", "interrupted")
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 _TAG_RE = re.compile(r"@([a-z][a-z0-9_]{0,31})\b")
@@ -55,6 +63,14 @@ def _atomic_write_json(path: Path, data: dict) -> None:
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp, path)
+
+
+def asset_kind_for(path: str | Path) -> str:
+    kind = _EXT_KIND.get(Path(path).suffix.lower())
+    if kind is None:
+        raise ProjectError(f"unsupported file type {Path(path).suffix or '(none)'}: images, audio (mp3, wav, m4a, ogg, "
+                           "flac, …) and video (mp4, mov, webm) can be added")
+    return kind
 
 
 def folder_name(name: str) -> str:
@@ -92,7 +108,8 @@ def disk_usage(root: str | Path) -> dict:
     except OSError:
         entries = []
     for entry in entries:
-        key = entry.name if entry.name in parts else "other"
+        # The library (reference copies, assets/ and its trash/) is reported as one part, "refs".
+        key = "refs" if entry.name in ("assets", "trash") else entry.name if entry.name in parts else "other"
         if entry.is_dir(follow_symlinks=False):
             parts[key] += walk(Path(entry.path))
         elif entry.is_file(follow_symlinks=False):
@@ -132,6 +149,7 @@ class Project:
             "style": "",                      # shared text sent with every scene
             "start_image": None,              # library name pinned as frame 0 of the first scene
             "library": {"items": {}, "defaults": []},
+            "assets": {},                     # every library file with its origin; @names link to these
             "scenes": [],
             "takes": {},
         }
@@ -145,7 +163,9 @@ class Project:
         data = json.loads((root / "project.json").read_text(encoding="utf-8"))
         if data.get("schema") != SCHEMA:
             raise ProjectError(f"unsupported project schema {data.get('schema')}")
-        return cls(root, data)
+        project = cls(root, data)
+        project._link_library_assets()  # projects from before the asset library (kept in memory until saved)
+        return project
 
     def save(self, *, snapshot: bool = True) -> None:
         path = self.root / "project.json"
@@ -172,7 +192,11 @@ class Project:
         shutil.copy2(source, dest)
         item = {"kind": kind, "file": str(dest.relative_to(self.root)), "sha256": digest,
                 "description": description, "definition": definition, "source": str(source)}
+        old = self.data["library"]["items"].get(name)
         self.data["library"]["items"][name] = item
+        if old and old.get("asset") and old["file"] == item["file"]:
+            self.data.get("assets", {}).pop(old["asset"], None)  # the file was overwritten
+        self._link_library_assets()
         defaults = self.data["library"]["defaults"]
         if default and name not in defaults:
             defaults.append(name)
@@ -191,6 +215,144 @@ class Project:
         item.update(fields)
         self.save()
         return item
+
+    def remove_reference(self, name: str) -> None:
+        """Remove an @name (its asset and file stay in the library). Refused while text still mentions it."""
+        if name not in self.data["library"]["items"]:
+            raise ProjectError(f"unknown reference @{name}")
+        mention = re.compile(r"@" + re.escape(name) + r"\b")
+        users = [str(i + 1) for i, s in enumerate(self.scenes) if mention.search(s.get("text", ""))]
+        if mention.search(self.data.get("style", "")):
+            users.insert(0, "the style text")
+        if users:
+            raise ProjectError(f"@{name} is still mentioned in " + ", ".join(
+                u if u == "the style text" else f"scene {u}" for u in users) + "; remove the mentions first")
+        del self.data["library"]["items"][name]
+        lib = self.data["library"]
+        lib["defaults"] = [n for n in lib["defaults"] if n != name]
+        if self.data.get("start_image") == name:
+            self.data["start_image"] = None
+        for scene in self.scenes:
+            if scene.get("refs") is not None and name in scene["refs"]:
+                scene["refs"] = [n for n in scene["refs"] if n != name]
+            if scene.get("start_image") == name:
+                scene["start_image"] = None
+        self.save()
+
+    # ------------------------------------------------------------ assets
+
+    @property
+    def assets(self) -> dict:
+        return self.data.setdefault("assets", {})
+
+    def asset(self, asset_id: str) -> dict:
+        try:
+            return self.assets[asset_id]
+        except KeyError:
+            raise ProjectError(f"unknown library item {asset_id}") from None
+
+    def asset_path(self, asset_id: str) -> Path:
+        return self.root / self.asset(asset_id)["file"]
+
+    def asset_names(self, asset_id: str) -> list[str]:
+        return [n for n, item in self.data["library"]["items"].items() if item.get("asset") == asset_id]
+
+    def _link_library_assets(self) -> None:
+        """Every @name points at an asset; references made before the asset library get one (same file)."""
+        assets = self.assets
+        by_file = {a["file"]: a["id"] for a in assets.values()}
+        for name, item in self.data["library"]["items"].items():
+            if item.get("asset") in assets:
+                continue
+            aid = by_file.get(item["file"])
+            if aid is None:
+                aid = _new_id("a")
+                role = "start" if self.data.get("start_image") == name else ("voice" if item["kind"] == "audio" else "other")
+                assets[aid] = {"id": aid, "kind": item["kind"], "role": role, "title": item.get("description") or name,
+                               "file": item["file"], "sha256": item.get("sha256"), "tags": [],
+                               "origin": {"type": "upload", "source": item.get("source", "")},
+                               "parent": None, "created": item.get("created") or self.data.get("created")}
+                by_file[item["file"]] = aid
+            item["asset"] = aid
+
+    def add_asset(self, source: str | Path, *, kind: str | None = None, role: str = "other", title: str = "",
+                  origin: dict | None = None, parent: str | None = None, tags: list[str] | None = None,
+                  save: bool = True) -> dict:
+        """Copy a file into the library. `origin` says what made it (upload, frame of a take, a tool run)."""
+        source = Path(source)
+        if not source.is_file():
+            raise ProjectError(f"no such file {source}")
+        kind = kind or asset_kind_for(source)
+        if kind not in ASSET_KINDS:
+            raise ProjectError(f"kind must be one of {ASSET_KINDS}")
+        if role not in ASSET_ROLES:
+            raise ProjectError(f"role must be one of {ASSET_ROLES}")
+        if parent is not None:
+            self.asset(parent)
+        aid = _new_id("a")
+        dest = self.root / "assets" / f"{kind}s" / f"{aid}{source.suffix.lower()}"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, dest)
+        asset = {"id": aid, "kind": kind, "role": role, "title": title.strip() or source.stem, "file": str(dest.relative_to(self.root)),
+                 "sha256": _sha256(dest), "tags": list(tags or []), "origin": origin or {"type": "upload", "source": source.name},
+                 "parent": parent, "created": _now()}
+        self.assets[aid] = asset
+        if save:
+            self.save()
+        return asset
+
+    def update_asset(self, asset_id: str, **fields) -> dict:
+        asset = self.asset(asset_id)
+        unknown = set(fields) - {"title", "role", "tags", "notes"}
+        if unknown:
+            raise ProjectError(f"cannot update {sorted(unknown)}")
+        if "role" in fields and fields["role"] not in ASSET_ROLES:
+            raise ProjectError(f"role must be one of {ASSET_ROLES}")
+        asset.update(fields)
+        self.save()
+        return asset
+
+    def name_asset(self, asset_id: str, name: str, *, definition: str = "", description: str = "",
+                   default: bool = False) -> dict:
+        """Give a library item an @name so scenes can use it as a reference."""
+        asset = self.asset(asset_id)
+        if not _NAME_RE.match(name):
+            raise ProjectError("reference names are lowercase letters, digits and _, starting with a letter")
+        existing = self.data["library"]["items"].get(name)
+        if existing and existing.get("asset") != asset_id:
+            raise ProjectError(f"@{name} is already used by another item")
+        if asset["kind"] == "video":
+            raise ProjectError("video references are not supported yet")
+        item = {"kind": asset["kind"], "file": asset["file"], "sha256": asset.get("sha256"),
+                "description": description or (existing or {}).get("description") or asset.get("title", ""),
+                "definition": definition or (existing or {}).get("definition", ""), "source": f"library:{asset_id}",
+                "asset": asset_id}
+        for key in ("card", "card_status"):
+            if existing and key in existing:
+                item[key] = existing[key]
+        self.data["library"]["items"][name] = item
+        if default and name not in self.data["library"]["defaults"]:
+            self.data["library"]["defaults"].append(name)
+        self.save()
+        return item
+
+    def remove_asset(self, asset_id: str) -> None:
+        """Move a library file to trash/. Refused while an @name or a scene's audio clip uses it."""
+        asset = self.asset(asset_id)
+        names = self.asset_names(asset_id)
+        if names:
+            raise ProjectError("remove its @name first: " + ", ".join("@" + n for n in names))
+        users = [str(i + 1) for i, s in enumerate(self.scenes) if any(c.get("asset") == asset_id for c in s.get("audio_clips") or [])]
+        if users:
+            raise ProjectError("used as an audio clip in scene " + ", ".join(users))
+        del self.assets[asset_id]
+        path = self.root / asset["file"]
+        if path.exists() and not any(a["file"] == asset["file"] for a in self.assets.values()) \
+                and not any(i["file"] == asset["file"] for i in self.data["library"]["items"].values()):
+            trash = self.root / "trash"
+            trash.mkdir(exist_ok=True)
+            shutil.move(str(path), trash / path.name)
+        self.save()
 
     def ref_path(self, name: str) -> Path:
         try:
@@ -214,26 +376,64 @@ class Project:
         return next(i for i, s in enumerate(self.scenes) if s["id"] == scene_id)
 
     def add_scene(self, *, text: str = "", seconds: float | None = None, after: str | None = None,
-                  join: str = "continue", refs: list[str] | None = None, title: str = "") -> dict:
+                  join: str = "continue", refs: list[str] | None = None, title: str = "",
+                  start_image: str | None = None, audio_clips: list[dict] | None = None) -> dict:
         if join not in JOIN_MODES:
             raise ProjectError(f"join must be one of {JOIN_MODES}")
+        self._check_scene_fields({"start_image": start_image, "audio_clips": audio_clips or []})
         scene = {"id": _new_id("s"), "title": title, "text": text, "seconds": seconds, "join": join,
                  "refs": refs, "selected_take": None, "created": _now()}
+        if start_image is not None:
+            scene["start_image"] = start_image
+        if audio_clips:
+            scene["audio_clips"] = [dict(c) for c in audio_clips]
         position = len(self.scenes) if after is None else self.scene_index(after) + 1
         self.scenes.insert(position, scene)
         self.save()
         return scene
 
     def update_scene(self, scene_id: str, **fields) -> dict:
-        allowed = {"title", "text", "seconds", "join", "refs"}
+        allowed = {"title", "text", "seconds", "join", "refs", "start_image", "audio_clips"}
         unknown = set(fields) - allowed
         if unknown:
             raise ProjectError(f"cannot update {sorted(unknown)}")
         if "join" in fields and fields["join"] not in JOIN_MODES:
             raise ProjectError(f"join must be one of {JOIN_MODES}")
+        self._check_scene_fields(fields)
+        if fields.get("audio_clips") is not None:
+            fields["audio_clips"] = [{"asset": c["asset"], "at": float(c.get("at", 0))} for c in fields["audio_clips"]]
         self.scene(scene_id).update(fields)
         self.save()
         return self.scene(scene_id)
+
+    def _check_scene_fields(self, fields: dict) -> None:
+        start = fields.get("start_image")
+        if start:  # None = inherit the project's start image (first scene), "" = no start image
+            item = self.data["library"]["items"].get(start)
+            if item is None or item["kind"] != "image":
+                raise ProjectError(f"start image must be an image reference; @{start} is not one")
+        for clip in fields.get("audio_clips") or []:
+            asset = self.assets.get(clip.get("asset", ""))
+            if asset is None or asset["kind"] != "audio":
+                raise ProjectError("an audio clip must be an audio item from the library")
+            if float(clip.get("at", 0)) < 0:
+                raise ProjectError("an audio clip cannot start before the scene")
+
+    def scene_start(self, scene: dict) -> str | None:
+        """The start image's @name for this scene: its own, none (""), or the project's (None = inherit)."""
+        own = scene.get("start_image")
+        if own is None:
+            return self.data.get("start_image")
+        return own or None
+
+    def scene_mode(self, scene: dict) -> str:
+        """continue | bridge | fresh (from references) | image (from its start image)."""
+        index = self.scene_index(scene["id"]) if any(s["id"] == scene["id"] for s in self.scenes) else 0
+        if index > 0 and scene.get("join") in ("continue", "bridge"):
+            return scene["join"]
+        start = self.scene_start(scene)
+        pinned = start and (index == 0 or scene.get("start_image"))
+        return "image" if pinned else "fresh"
 
     def move_scene(self, scene_id: str, new_index: int) -> None:
         scene = self.scenes.pop(self.scene_index(scene_id))
@@ -264,7 +464,7 @@ class Project:
         missing = [r for r in refs if r not in items]
         if missing:
             raise ProjectError(f"scene uses unknown references: {', '.join('@' + m for m in missing)}")
-        start = self.data.get("start_image")
+        start = self.scene_start(scene)
         labels: dict[str, str] = {}
         picture = 0
         if start:
@@ -317,8 +517,17 @@ class Project:
         text = _TAG_RE.sub(sub, body)
         if errors:
             raise ProjectError("not active in this scene: " + ", ".join(sorted({"@" + e for e in errors})))
-        return {"prompt": text, "labels": labels, "images": images, "audios": audios,
-                "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()}
+        clips = [{"asset": c["asset"], "at": float(c.get("at", 0)), "file": self.assets[c["asset"]]["file"]}
+                 for c in scene.get("audio_clips") or [] if c.get("asset") in self.assets]
+        if len(clips) != len(scene.get("audio_clips") or []):
+            raise ProjectError("an audio clip of this scene is no longer in the library")
+        fingerprint = text
+        if clips or scene.get("start_image") is not None:
+            # Only scenes that use the newer fields hash them, so older takes keep matching their scenes.
+            fingerprint += "\n" + json.dumps({"start": scene.get("start_image"), "start_sha": items.get(start, {}).get("sha256") if start else None,
+                                               "clips": [(c["asset"], c["at"]) for c in clips]}, sort_keys=True)
+        return {"prompt": text, "labels": labels, "images": images, "audios": audios, "start": start, "clips": clips,
+                "sha256": hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()}
 
     # ------------------------------------------------------------ takes
 
@@ -351,6 +560,9 @@ class Project:
         fields = {"text": take["scene_text"], "refs": take.get("scene_refs"), "seconds": take.get("scene_seconds")}
         if take.get("scene_join"):
             fields["join"] = take["scene_join"]
+        for key in ("start_image", "audio_clips"):
+            if f"scene_{key}" in take:
+                fields[key] = take[f"scene_{key}"]
         return self.update_scene(take["scene"], **fields)
 
     def takes_for(self, scene_id: str) -> list[dict]:

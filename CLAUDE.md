@@ -10,7 +10,7 @@ This repository is general-purpose: no project-, brand- or client-specific names
 |---|---|
 | `comfyui_clapper/` | ComfyUI node pack; symlink it into `ComfyUI/custom_nodes/comfyui_clapper` |
 | `…/nodes.py` | `ClapperSceneConditioning`, `ClapperSaveTake` (torch/ComfyUI side) |
-| `…/engine/` | Pure Python, no torch: settings, graph, project, director, export, importer, registry, profiles, repeats, llm, assistant, comfy_client |
+| `…/engine/` | Pure Python, no torch: settings, graph, project (incl. the asset library), director, export, media (ffmpeg/ffprobe helpers), importer, registry, profiles, repeats, llm, assistant, comfy_client |
 | `…/api.py`, `assistant_api.py`, `gpu.py`, `live.py`, `sysstats.py` | Routes under `/clapper/`, assistant + GPU routes, GPU sharing (H3 vs local LLM), progress capture, machine stats |
 | `…/web/` | Interface (no build step); `…/js/` = ComfyUI sidebar tab only |
 | `cli/clapper.py` | CLI |

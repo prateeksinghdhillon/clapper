@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Library** (replaces the References dialog): every image, sound (mp3, wav, m4a, ogg, flac, …) and video clip of the project, added several at a time or by dropping files, each with a title, a role (character, place, prop, style, voice sample, speech line, music, …), its length or size and where it came from. Filters for images, sound, video and @ references. Any image or sound becomes a reference with **Give it an @name**; removing a name keeps the file; removed items go to the project's `trash/` folder. Older projects' references appear in the library automatically.
+- **Start** per scene: *Continue*, *From image* (open exactly on a library image — any scene, not only the first), *Fresh* (from the references only) or *Bridge*. The storyboard shows each scene's start.
+- **Sound clips** in a scene: choose a library sound and when it starts; the scene's soundtrack becomes that clip (verified word for word), and the editor warns when the clip runs past the scene's end. For recorded or generated dialogue.
+- **Save this frame to Library** in the take player, e.g. to start a later scene from it.
+- **Video model** setting: FL2VA for every scene (default, unchanged), Ref2VA for every scene (one model; Turbo LoRA at 4 steps, about 2 minutes per 5 s scene on a 16 GB card), or Ref2VA for fresh scenes and FL2VA when continuing. Each take records the model it used.
+- CLI: `asset add|list|name|remove`, `frame`, `video-model`, `scene --start-image NAME|none --audio-clip ID@SECONDS`; project errors print as one line. HTTP API: `/asset`, `/asset/update`, `/asset/name`, `/asset/remove`, `/asset/frame`, `/ref/remove`; scenes take `start_image` and `audio_clips`.
+- The assistant sees library items without an `@name`, each scene's start and sound clips, and the video model.
 - Audio clips anchored in a scene: the scene's soundtrack becomes the clip from a chosen time and the picture is generated around it (`spec.audio_guides`; CLI `take --anchor-audio FILE@SECONDS`).
 - CLI `take`: `--unet` and `--lora` to render with another model, e.g. the Ref2VA model for a scene made from references only.
 - Change password from the profile menu (current password required; your other devices are logged out). Changing a password from the command line now logs that profile out everywhere.

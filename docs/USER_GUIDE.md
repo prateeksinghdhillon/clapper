@@ -12,24 +12,39 @@ This guide explains the ideas behind Clapper and walks through every screen. For
 | **Scene** | One part of the video (usually 5 seconds): its text, its references, its length, and how it joins the scene before it. |
 | **Take** | One generation of one scene. Takes are numbered per scene (Take 1, Take 2, …), dated, and never overwritten. |
 | **Selected take** | The take of a scene that the video uses. Exactly one per scene. |
-| **Reference** | A named file in the project library — an image (character, product, style sheet, logo) or an audio sample (a voice). Used in text as `@name`. |
-| **Start image** | The image the first scene starts from. It is also shown to the model in every scene as `<Picture 1>`, so it keeps characters and setting consistent. |
+| **Library** | Every image, sound and video clip of the project, each with a role (character, place, voice sample, speech line, music, …) and where it came from (uploaded, or a frame of a take). |
+| **Reference** | A library item with an `@name` — an image (character, product, style sheet, logo) or an audio sample (a voice). Used in text as `@name`. |
+| **Sound clip** | A library sound placed at a time in a scene. The scene's soundtrack becomes that clip from that moment — for dialogue recorded or generated elsewhere. |
+| **Start image** | The image a scene opens on. The project's start image (▶) is used by the first scene and shown to the model in every scene as `<Picture 1>`; any later scene can start from its own image instead. |
 | **Style text** | Text sent with every scene: format, look, rules. |
 | **Definition** | A reference's own description ("@hero is a …"). Added to a scene's prompt only when that scene uses the reference. |
-| **Join** | How a scene connects to the previous one: *Continue*, *Bridge* or *Cut* (below). |
+| **Start** | How a scene begins: *Continue* the previous scene, *From image*, *Fresh* from the references only, or *Bridge* (below). |
 | **Parent take** | The take of the previous scene that a take continued from. Recorded on every take. |
 
 ### How scenes connect
 
 H3 generates at most about 15 seconds at a time, so Clapper makes a long video scene by scene. With **Continue**, a new take starts with the last 22 frames and the matching sound of its parent take locked in place; the model generates everything after that. The locked part is the same material, so the join is seamless, and motion, lighting and sound carry across. On export those 22 carried frames are trimmed, so nothing plays twice.
 
-| Join | What it does | Use when |
+| Start | What it does | Use when |
 |---|---|---|
 | **Continue** (default) | Starts from the end of the previous scene's selected take | The normal, flowing case |
+| **From image** | A cut: the scene opens exactly on an image from the library (its `@name` becomes `<Picture 1>` in that scene) | A new place or angle you prepared as an image, or a frame saved from another take |
+| **Fresh** | A cut: a new shot made from the references and the text only, no start image | A new shot where the model should compose the picture itself |
 | **Bridge** | Continues from the previous scene *and* lands on the first 22 frames of the next scene's selected take | Inserting a scene between two finished scenes, or replacing a middle scene while keeping the ones after it. **Experimental — not yet tested on a GPU.** |
-| **Cut** | A fresh start; nothing is carried over | A deliberate cut to a new place or time |
 
-The first scene is always a fresh start (from the start image if there is one).
+The first scene is *From image* (the project's start image, ▶) or *Fresh*.
+
+### Which model renders a scene
+
+MiniMax H3 comes as **FL2VA** (first/last frame) and **Ref2VA** (references). Settings › *Video model* chooses:
+
+| Choice | Fresh / from-image scenes | Continued scenes | Notes |
+|---|---|---|---|
+| FL2VA for every scene (default) | FL2VA | FL2VA | the proven setup, 20 steps with the Turbo LoRA |
+| Ref2VA for every scene | Ref2VA | Ref2VA | one model, no switching; with its Turbo LoRA at 4 steps a 5 s scene takes about 2 minutes on a 16 GB card |
+| Ref2VA for fresh scenes, FL2VA when continuing | Ref2VA | FL2VA | the GPU switches models between scenes, which adds load time |
+
+Both models follow image references, start from an image and continue a previous scene.
 
 ### Changing things never re-renders silently
 
@@ -84,8 +99,8 @@ One row at the top of every screen:
   - **ComfyUI queue**: how many jobs are running and waiting.
   - **GPU**: the state of the assistant model and of ComfyUI, the **Auto / Manual** switch, and **Load assistant**, **Eject assistant**, **Free ComfyUI memory** (see *Assistant*).
   - **ComfyUI log** and **Assistant settings…**.
-- In a project: **✨ Assistant** (opens the chat, see *Assistant*), **References** (the project library, style text and definitions), **Settings** (generation settings) and **⤓ Export** (join the selected takes into one video). On tablets and small laptops (narrower than about 1180 px) References and Settings move into the profile menu; on phones Assistant and Export show only their icons.
-- **Profile menu** (the round initial ▾): your name and profile id; in a project also **References** and **Settings** (on narrower screens) and **Storage**; then **ComfyUI log** (see *Logs panel*), **Assistant settings…**, **Change password…**, and **Log out** (ends the profile's session on every device).
+- In a project: **✨ Assistant** (opens the chat, see *Assistant*), **Library** (images, sounds and clips, @name references, style text and definitions), **Settings** (generation settings) and **⤓ Export** (join the selected takes into one video). On tablets and small laptops (narrower than about 1180 px) Library and Settings move into the profile menu; on phones Assistant and Export show only their icons.
+- **Profile menu** (the round initial ▾): your name and profile id; in a project also **Library** and **Settings** (on narrower screens) and **Storage**; then **ComfyUI log** (see *Logs panel*), **Assistant settings…**, **Change password…**, and **Log out** (ends the profile's session on every device).
 
 The assistant chat and the scene editor open as panels below the top bar, so the top bar and the live bar stay visible.
 
@@ -112,24 +127,32 @@ One card per scene, in order: a thumbnail of the selected take (hover or tap to 
 
 - **Title** (optional) and **What happens** — the scene text. Click an `@name` chip under the text to insert a reference at the cursor.
 - **Length (seconds)** — empty means the project default (Settings).
-- **Joins the previous scene by** — Continue / Bridge / Cut.
+- **Starts** — Continue / From image (then choose the image) / Fresh / Bridge.
 - **References in this scene** — *use project defaults*, or click chips to choose this scene's own list. Below it, the exact mapping for this scene (e.g. `@hero → <Picture 2>`).
+- **Sound clips** — add a sound from the library and set when it starts (seconds into the scene). The scene's soundtrack becomes that clip from that moment: the same words, timing and voice. If the clip runs past the end of the scene it is cut, and the editor says so. In a continued scene the time counts from the join. Describe what you hear in the text too (for example *"the narrator says …"* and the words) so the picture fits it.
 - **Prompt sent to H3** — the complete text the model receives: style text, the definitions of this scene's references, an automatic *"Continuation of Chunk N."* opener for continued scenes, and the scene text, with every `@name` replaced by its number. Errors are shown here and block rendering.
 - **Render take** — queue a new take. **Options**: a fixed seed, a different step count for this take only, or which take of the previous scene to continue from (default: its selected take). The button stays disabled until the take is queued, so an accidental double click queues only one take; Clapper also refuses the same render again within a few seconds (*"a take of this scene was queued a moment ago"*). To queue a second take at once, give it a different seed.
 - **Takes** — oldest first. Each shows its number, status, *Created* and *Finished* date and time (in your device's time zone), how long it took, seed, and which take it continued from. Buttons:
   - **Use this take** — select it for the video.
-  - **Play**.
+  - **Play** — the player also has **Save this frame to Library**: pause where you want and save that frame as an image (to start a later scene from it, or as a reference).
   - **Restore its prompt** — put this take's text, references, length and join back into the scene editor (to redo or vary that version).
   - **Stop / Cancel** while rendering or waiting; **Re-queue** after an interruption or failure.
 - **Remove scene from timeline** — its takes stay saved on disk.
 
 Everything you type is saved automatically.
 
-### References dialog
+### Library
 
-- **Shared style text** — sent with every scene. Changing it changes every scene's prompt (all scenes will show *prompt edited since take*).
-- **Library** — every reference with a preview, its `@name`, its description (for people) and its **definition** (for the model). ★ marks project defaults (used by scenes with no own list); ▶ marks the start image. Buttons set or unset ★ and ▶.
-- **Add reference** — choose a file (image or audio), a name (lowercase letters, digits, `_`), a description, whether it is a default, and whether it is the start image. The file is copied into the project, so moving or deleting the original never breaks the project.
+Open it with **Library** in the top bar (on a phone: the profile menu).
+
+- **+ Add files** (or drop files onto the window) — images, sounds (mp3, wav, m4a, ogg, flac, …) and video clips, several at once. *Add as* sets their role. Files are copied into the project, so moving or deleting the originals never breaks it. Durations and sizes are read automatically.
+- **Filter** — All · Images · Sound · Video · @ References.
+- Each item shows a preview, its **title** and **role** (both editable), its size or length, and where it came from (for example *frame of scene 2 Take 1 at 3.4 s*).
+- **Give it an @name** — makes the item a reference you can use in scene text; optionally a default (★) for every scene without its own list. A named item then shows its **definition** (sent to H3 in scenes that use it), its card for the assistant, and buttons to set or unset ★ and ▶ (the first scene's start image) or remove the name (the file stays).
+- **Remove** — moves an item without an `@name` to the project's `trash/` folder. Items used as a sound clip in a scene cannot be removed.
+- **Shared style text and story notes** (folded at the bottom) — the style text is sent with every scene; changing it changes every scene's prompt (all scenes will show *prompt edited since take*). Story notes are the assistant's memory and are not sent to H3.
+
+A **voice sample** with an `@name` used in a scene is a *voice reference*: the scene's speaker gets that voice and says new words written in the text. A **sound clip** (scene editor) is played as-is. Use a voice reference for new lines in a known voice, a sound clip for lines you already have as audio.
 
 Limits per scene: up to 9 images and 3 audio references. Video references are not supported yet.
 
@@ -163,8 +186,8 @@ A chat with a language model that knows how Clapper works and how H3 prompts are
 - **It proposes, you decide.** Every change (new scenes, a rewritten scene, the style text, a reference definition, settings, rendering) appears as a **card** with the new text (and the old one, for edits). **Apply** or **Reject** each card, or **Apply all**. Nothing in the project changes until you apply. Each card is checked before you see it: a scene that would not render (for example a `@name` that is not active in it) is sent back to the assistant to fix, never shown to you.
 - **What it always knows:** the whole project as it is at that moment (scenes with their full text, references with their definitions, style text, settings, which takes exist) and the *story notes*.
 - **What it can look at:** a reference image (it asks to), and frames of a take (**✨ Review** on a take sends four frames from start to end with the scene text).
-- **Story notes** (References dialog) are the assistant's lasting memory for the project: story, characters, tone, your decisions. The assistant keeps them up to date itself; you can edit them too. They are never sent to H3.
-- **Reference cards** (References dialog, per image): what the reference looks like, for the assistant. **✨ Describe** lets the assistant look at the image and write one; check and correct it, then **Save card**. Cards the assistant wrote itself are marked as unchecked until you save them. The assistant trusts your definition over its own eyes.
+- **Story notes** (Library, folded at the bottom) are the assistant's lasting memory for the project: story, characters, tone, your decisions. The assistant keeps them up to date itself; you can edit them too. They are never sent to H3.
+- **Reference cards** (Library, per named image): what the reference looks like, for the assistant. **✨ Describe** lets the assistant look at the image and write one; check and correct it, then **Save card**. Cards the assistant wrote itself are marked as unchecked until you save them. The assistant trusts your definition over its own eyes.
 - **Where to start:** in an empty project, **✨ Plan the video with the assistant** on the storyboard; in the scene editor, **✨ Ask the assistant**; on a finished take, **✨ Review**.
 - **Chats:** each project keeps its chats (choose them at the top of the panel, **＋** for a new one). The bar next to the model name shows how full the model's memory (context) is; at 60% the older messages are summarised automatically so the conversation can go on. Summarised messages stay visible in the panel; **Compact** does it now.
 - **Thinking:** by default (*Auto*, in Assistant settings) the assistant reasons before answering only when you plan a video (an empty storyboard, or a message asking for a plan, all scenes or a rewrite) and answers small edits directly. **think harder** makes it reason for one message, up to the thinking budget (2048 tokens by default): slower, and not reliably better for small edits.
@@ -182,7 +205,7 @@ The local model is small and runs at about 2 bits: it follows the workflow well 
 
 ### Start a new video
 
-1. New project → References: start image (▶), characters/props/style sheet (★) with definitions, optional voice sample.
+1. New project → Library: add the start image, characters, props, style sheet and any voice samples or recorded lines; give the images an `@name` (start image ▶, the rest ★) and write their definitions.
 2. Style text: format, art style, rules that always apply.
 3. Scene 1 → **Render take**. Judge the style, the characters and the sound before going further.
 4. Write the remaining scenes (you can write them all first), then **Render remaining**.

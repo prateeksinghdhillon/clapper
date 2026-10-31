@@ -19,7 +19,7 @@
   </button>
   <nav class="top-actions" id="topActions" hidden>
     <button class="ghost ai-btn" id="assistantBtn" title="Plan and write scenes with the assistant" aria-label="Assistant"><span class="ico">✨</span><span class="lbl">Assistant</span></button>
-    <button class="ghost wide-only" id="libraryBtn">References</button>
+    <button class="ghost wide-only" id="libraryBtn" title="Images, sounds and clips of this project, and its @name references">Library</button>
     <button class="ghost wide-only" id="settingsBtn">Settings</button>
     <button class="primary" id="exportBtn" title="Join the selected takes into one video" aria-label="Export"><span class="ico">⤓</span><span class="lbl">Export</span></button>
   </nav>
@@ -46,7 +46,7 @@
 
 <div class="pop app-menu" id="appMenu" hidden>
   <div class="menu-who"><b id="whoName"></b><span class="hint" id="whoId"></span></div>
-  <button class="project-only narrow-only" id="mLibrary">References</button>
+  <button class="project-only narrow-only" id="mLibrary">Library</button>
   <button class="project-only narrow-only" id="mSettings">Settings</button>
   <button class="project-only" id="mStorage">Storage</button>
   <button id="mLogs">ComfyUI log</button>
@@ -175,12 +175,14 @@
     <section class="block grid2">
       <label>Length (seconds)<input id="edSeconds" type="number" min="1" max="15" step="0.5"></label>
       <div>
-        <div class="label">Joins the previous scene by</div>
-        <div class="seg" id="edJoin">
-          <button data-v="continue" title="Starts from the last moment of the previous scene's selected take">Continue</button>
-          <button data-v="bridge" title="Continues from the previous scene AND lands on the start of the next scene">Bridge</button>
-          <button data-v="cut" title="Fresh start, no carried motion or sound">Cut</button>
+        <div class="label">Starts</div>
+        <div class="seg" id="edStart">
+          <button data-v="continue" title="Carries on from the last moment of the previous scene's selected take, picture and sound">Continue</button>
+          <button data-v="image" title="Opens exactly on an image from the library (a cut)">From image</button>
+          <button data-v="fresh" title="A new shot made from the references only (a cut)">Fresh</button>
+          <button data-v="bridge" title="Continues from the previous scene AND lands on the start of the next scene (untested)">Bridge</button>
         </div>
+        <label class="start-pick" id="edStartPick" hidden>Start image<select id="edStartImage"></select></label>
       </div>
     </section>
 
@@ -189,6 +191,12 @@
         <label class="switch"><input type="checkbox" id="edUseDefaults"> use project defaults</label></div>
       <div class="chips selectable" id="edRefs"></div>
       <p class="hint" id="edRefsHint"></p>
+    </section>
+
+    <section class="block">
+      <div class="block-head"><h3>Sound clips</h3><span class="hint">The scene's soundtrack becomes the clip from that moment: words, timing and voice exactly as recorded. For a voice to speak <i>new</i> words, add a voice sample as a reference instead.</span></div>
+      <div class="clips" id="edClips"></div>
+      <div class="row"><select id="edClipAdd"></select></div>
     </section>
 
     <details class="block" id="edCompiledBox">
@@ -220,36 +228,28 @@
 </aside>
 
 <!-- Modal dialogs -->
-<dialog id="libraryDlg" class="dlg">
-  <div class="dlg-head"><h2>References</h2><button class="icon" data-close>✕</button></div>
-  <div class="dlg-body">
+<dialog id="libraryDlg" class="dlg lib-dlg">
+  <div class="dlg-head"><h2>Library</h2><button class="icon" data-close>✕</button></div>
+  <div class="dlg-body" id="libBody">
     <section class="block">
+      <div class="lib-toolbar">
+        <div class="chips" id="libFilter"></div>
+        <span class="spacer"></span>
+        <label class="lib-role">Add as<select id="libRole"></select></label>
+        <label class="primary file-btn">+ Add files<input type="file" id="libFiles" multiple accept="image/*,audio/*,video/*,.m4a,.flac,.ogg,.opus"></label>
+      </div>
+      <p class="hint">Images, sounds (mp3, wav, m4a, ogg, flac…) and video clips. Drop files anywhere in this window. Give an item an <b>@name</b> to use it as a reference in scenes; ★ = used by scenes that have no own list · ▶ = the first scene's start image.</p>
+      <div class="lib-grid" id="libGrid"></div>
+    </section>
+    <details class="block" id="styleBox">
+      <summary>Shared style text and story notes</summary>
       <div class="block-head"><h3>Shared style text</h3><span class="hint">Sent with every scene. Changing it changes every scene's prompt.</span></div>
       <textarea id="styleText" rows="5"></textarea>
       <button class="ghost" id="saveStyle">Save style text</button>
-    </section>
-    <section class="block">
       <div class="block-head"><h3>Story notes</h3><span class="hint">The assistant's lasting memory for this project: story, characters, tone, decisions. Not sent to H3.</span></div>
       <textarea id="notesText" rows="4"></textarea>
       <button class="ghost" id="saveNotes">Save story notes</button>
-    </section>
-    <section class="block">
-      <div class="block-head"><h3>Library</h3><span class="hint">★ = used by scenes that have no own list · ▶ = start image (&lt;Picture 1&gt;)</span></div>
-      <div class="ref-grid" id="refGrid"></div>
-    </section>
-    <section class="block add-ref">
-      <h3>Add reference</h3>
-      <div class="grid3">
-        <label>File<input type="file" id="refFile" accept="image/*,audio/*"></label>
-        <label>Name (used as @name)<input id="refName" placeholder="hero"></label>
-        <label>Description<input id="refDesc" placeholder="Main character, front view"></label>
-      </div>
-      <div class="row">
-        <label class="switch"><input type="checkbox" id="refDefault" checked> use in every scene by default</label>
-        <label class="switch"><input type="checkbox" id="refStart"> start image</label>
-        <button class="primary" id="refAdd">Add</button>
-      </div>
-    </section>
+    </details>
   </div>
 </dialog>
 
@@ -317,7 +317,8 @@
 
 <dialog id="playerDlg" class="dlg player">
   <div class="dlg-head"><h2 id="playerTitle">Preview</h2><button class="icon" data-close>✕</button></div>
-  <div class="dlg-body"><video id="playerVideo" controls playsinline></video><p class="hint" id="playerInfo"></p></div>
+  <div class="dlg-body"><video id="playerVideo" controls playsinline></video><p class="hint" id="playerInfo"></p>
+    <div class="row" id="playerActions"><button id="playerFrame" title="Pause where you want, then save that frame as an image in the Library (e.g. to start a later scene from it)">Save this frame to Library</button></div></div>
 </dialog>
 
 <section class="logs" id="logsPanel" hidden>

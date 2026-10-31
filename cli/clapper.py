@@ -20,9 +20,10 @@ from comfyui_clapper.engine.comfy_client import ComfyClient  # noqa: E402
 from comfyui_clapper.engine.graph import build_take_graph  # noqa: E402
 from comfyui_clapper.engine.settings import DEFAULT_SETTINGS, SPEED_PROFILES, fit_resolution, merge  # noqa: E402
 from comfyui_clapper.h3_temporal import scene_frame_count  # noqa: E402
-from comfyui_clapper.engine import director, importer, profiles, registry  # noqa: E402
+from comfyui_clapper.engine import director, importer, media, profiles, registry  # noqa: E402
 from comfyui_clapper.engine.export import export_video  # noqa: E402
-from comfyui_clapper.engine.project import Project  # noqa: E402
+from comfyui_clapper.engine.project import ASSET_ROLES, Project, ProjectError  # noqa: E402
+from comfyui_clapper.engine.settings import VIDEO_MODEL_MODES  # noqa: E402
 
 
 def cmd_take(args: argparse.Namespace) -> int:
@@ -111,16 +112,69 @@ def cmd_scene(args) -> int:
     p = _open(args)
     text = Path(args.text_file).read_text(encoding="utf-8").strip() if args.text_file else (args.text or "")
     refs = None if args.refs is None else [r.lstrip("@") for r in args.refs.split(",") if r.strip()]
+    start = None if args.start_image is None else ("" if args.start_image.lower() == "none" else args.start_image.lstrip("@"))
+    clips = None
+    if args.audio_clip is not None:
+        clips = []
+        for item in args.audio_clip:
+            if item.lower() == "none":
+                continue
+            aid, _, at = item.partition("@")
+            clips.append({"asset": aid, "at": float(at or 0)})
     if args.update:
         fields = {k: v for k, v in (("text", text if (args.text_file or args.text) else None), ("seconds", args.seconds),
-                                     ("join", args.join), ("title", args.title)) if v is not None}
+                                     ("join", args.join), ("title", args.title), ("start_image", start),
+                                     ("audio_clips", clips)) if v is not None}
         if args.refs is not None:
             fields["refs"] = refs
         scene = p.update_scene(_scene_id(p, args.update), **fields)
     else:
         scene = p.add_scene(text=text, seconds=args.seconds, join=args.join or "continue", refs=refs,
-                            title=args.title or "", after=_scene_id(p, args.after) if args.after else None)
+                            title=args.title or "", after=_scene_id(p, args.after) if args.after else None,
+                            start_image=start, audio_clips=clips)
     print(f"scene {p.scene_index(scene['id']) + 1} = {scene['id']}")
+    return 0
+
+
+def cmd_asset(args) -> int:
+    p = _open(args)
+    if args.action == "add":
+        for f in args.files:
+            a = media.add_with_info(p, f, role=args.role, title=args.title if len(args.files) == 1 and args.title else "")
+            extra = f"{a['duration']:.2f} s" if a.get("duration") else (f"{a.get('width')}x{a.get('height')}" if a.get("width") else "")
+            print(f"{a['id']}  {a['kind']:5s} {a['role']:9s} {a['title']}  {extra}")
+    elif args.action == "list":
+        for a in p.assets.values():
+            names = " ".join("@" + n for n in p.asset_names(a["id"]))
+            extra = f"{a['duration']:.2f} s" if a.get("duration") else ""
+            print(f"{a['id']}  {a['kind']:5s} {a['role']:9s} {a['title']}  {extra}  {names}  [{a['origin'].get('type')}]")
+    elif args.action == "name":
+        if len(args.files) != 2:
+            raise ProjectError("usage: asset PROJECT name ID NAME")
+        aid, name = args.files[0], args.files[1].lstrip("@")
+        p.name_asset(aid, name, definition=args.definition or "", default=args.default)
+        print(f"{aid} is now @{name}")
+    elif args.action == "remove":
+        if len(args.files) != 1:
+            raise ProjectError("usage: asset PROJECT remove ID")
+        p.remove_asset(args.files[0])
+        print(f"removed {args.files[0]} (file moved to trash/)")
+    return 0
+
+
+def cmd_frame(args) -> int:
+    p = _open(args)
+    a = media.grab_frame(p, args.take, args.seconds)
+    print(f"{a['id']}  frame {a['width']}x{a['height']}  {a['title']}")
+    return 0
+
+
+def cmd_video_model(args) -> int:
+    p = _open(args)
+    settings = p.data.setdefault("settings", {})
+    settings.setdefault("video_model", {})["mode"] = args.mode
+    p.save()
+    print(f"video model: {args.mode}")
     return 0
 
 
@@ -341,6 +395,24 @@ def main() -> int:
     s.add_argument("--title")
     s.add_argument("--after", help="insert after scene N / id")
     s.add_argument("--update", help="update scene N / id instead of adding")
+    s.add_argument("--start-image", help="@name of an image reference to start this scene from, or 'none' to start "
+                   "from the references only (use with --join cut)")
+    s.add_argument("--audio-clip", action="append", metavar="ASSET_ID[@SECONDS]",
+                   help="audio library item that becomes the scene's soundtrack from SECONDS (scene time); repeat; "
+                   "'none' clears")
+    s = proj("asset", help="library items: add files, list, give an @name, remove")
+    s.add_argument("action", choices=["add", "list", "name", "remove"])
+    s.add_argument("files", nargs="*", help="add: files; name/remove: the item id (name: then the @name)")
+    s.add_argument("--role", choices=ASSET_ROLES, default="other")
+    s.add_argument("--title")
+    s.add_argument("--definition")
+    s.add_argument("--default", action="store_true", help="name: use in every scene that has no own list")
+    s = proj("frame", help="save a frame of a finished take to the library")
+    s.add_argument("take", help="take id")
+    s.add_argument("seconds", type=float)
+    s = proj("video-model", help="which H3 model renders the scenes")
+    s.add_argument("mode", choices=VIDEO_MODEL_MODES, help="fl2va (default) | ref2va | ref2va_fresh (Ref2VA for "
+                   "scenes that start fresh, FL2VA for continued ones)")
     s = proj("render", help="queue a take for each given scene")
     s.add_argument("scenes", nargs="+")
     s.add_argument("--seed", type=int)
@@ -391,8 +463,13 @@ def main() -> int:
 
     args = ap.parse_args()
     return {"profile": cmd_profile, "import-timeline": cmd_import_timeline, "adopt": cmd_adopt, "export": cmd_export, "take": cmd_take, "new": cmd_new, "ref": cmd_ref, "scene": cmd_scene, "render": cmd_render,
-            "refresh": cmd_refresh, "usage": cmd_usage, "delete": cmd_delete, "render-rest": cmd_render_rest, "status": cmd_status, "select": cmd_select}[args.cmd](args)
+            "refresh": cmd_refresh, "usage": cmd_usage, "delete": cmd_delete, "render-rest": cmd_render_rest, "status": cmd_status, "select": cmd_select,
+            "asset": cmd_asset, "frame": cmd_frame, "video-model": cmd_video_model}[args.cmd](args)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except ProjectError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)

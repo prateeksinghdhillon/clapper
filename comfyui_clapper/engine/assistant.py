@@ -157,13 +157,14 @@ def snapshot(project: Project, chat: dict | None = None) -> str:
     lines = ["<project>", f"Name: {d['name']}",
              f"Settings: default scene length {s['scene_seconds']}s · {s['sampling']['steps']} steps · "
              f"{'size from the start image' if s['resolution']['mode'] == 'start_image' and start else str(s['resolution']['width']) + 'x' + str(s['resolution']['height'])}"
-             f" · continuity {s['continuity']['frames']} frames",
+             f" · continuity {s['continuity']['frames']} frames"
+             + (f" · video model {s['video_model']['mode']}" if (s.get("video_model") or {}).get("mode", "fl2va") != "fl2va" else ""),
              f"Start image: {'@' + start if start else 'none (scene 1 describes the opening setting in words)'}",
              "Style text:", '"""' + (d.get("style") or "").strip() + '"""',
              "Story notes:", '"""' + (d.get("notes") or "").strip() + '"""',
              "References (★ default, ▶ start image):"]
     if not items:
-        lines.append("- none yet (the user adds them in the References dialog)")
+        lines.append("- none yet (the user adds them in the Library)")
     for name, item in items.items():
         marks = (" ▶" if name == start else "") + (" ★" if name in defaults else "")
         lines.append(f"- @{name} ({item['kind']}){marks}")
@@ -171,6 +172,15 @@ def snapshot(project: Project, chat: dict | None = None) -> str:
             if (item.get(key) or "").strip():
                 extra = " (written by you, not yet confirmed by the user)" if key == "card" and item.get("card_status") != "confirmed" else ""
                 lines.append(f"    {label}{extra}: {item[key].strip()}")
+    named = {item.get("asset") for item in items.values()}
+    unnamed = [a for a in project.assets.values() if a["id"] not in named]
+    if unnamed:
+        lines.append("Library items without an @name (not usable as references until the user names them; audio can be a scene's sound clip):")
+        for a in unnamed[:40]:
+            extra = f", {a['duration']:.1f}s" if a.get("duration") else ""
+            lines.append(f"- {a['id']} ({a['kind']}, {a['role']}{extra}): \"{a.get('title', '')}\"")
+        if len(unnamed) > 40:
+            lines.append(f"- … and {len(unnamed) - 40} more")
     scenes = project.scenes
     total = sum(sc.get("seconds") or s["scene_seconds"] for sc in scenes)
     lines.append(f"Scenes: {len(scenes)}, {total:g}s planned")
@@ -181,6 +191,12 @@ def snapshot(project: Project, chat: dict | None = None) -> str:
         take_label = f"Take {take.get('number')} selected ({take['status']})" if take else "no take selected"
         lines.append(f"{i}. \"{sc.get('title') or ''}\" · {sc.get('seconds') or s['scene_seconds']}s · join {sc['join'] if i > 1 else 'start'}"
                      f" · refs: {_scene_refs_label(project, sc)} · {len(takes)} take(s), {take_label} · status: {badges}")
+        if sc.get("start_image") is not None:
+            lines.append("   starts: " + (f"from image @{sc['start_image']}" if sc["start_image"] else "fresh from the references (no start image)"))
+        clips = sc.get("audio_clips") or []
+        if clips:
+            lines.append("   sound clips (the soundtrack becomes the clip from that time): " + ", ".join(
+                f"\"{(project.assets.get(c['asset']) or {}).get('title', c['asset'])}\" at {c['at']:g}s" for c in clips))
         lines.append('   text: """' + (sc.get("text") or "").strip() + '"""')
     if not scenes:
         lines.append("(no scenes yet)")

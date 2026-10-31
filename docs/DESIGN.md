@@ -44,7 +44,8 @@ ComfyUI server ── comfyui_clapper ──────────────
    live.py       observes ComfyUI progress events in-process
    sysstats.py   CPU / RAM / GPU / VRAM / temperatures
    engine/       pure Python, no torch — usable from the CLI and tests
-      project.py   project store, @name compile, definitions, badges, take numbering
+      project.py   project store, asset library, @name compile, definitions, start images, sound clips, badges, take numbering
+      media.py     ffprobe / ffmpeg helpers for library files (durations, sizes, frames of takes)
       director.py  plan / queue / chain / refresh / requeue
       graph.py     ComfyUI API graph for one take
       export.py    export plan, checks, ffmpeg join
@@ -57,7 +58,7 @@ ComfyUI server ── comfyui_clapper ──────────────
    nodes.py      Clapper · Scene Conditioning, Clapper · Save Take (torch side)
    web/          the interface (plain HTML/CSS/JS, no build step)
    js/           ComfyUI sidebar tab
-Project folders on disk (project.json, refs/, takes/, exports/, history/, chat/)
+Project folders on disk (project.json, refs/, assets/, trash/, takes/, exports/, history/, chat/)
 tools/            join_check.py (measure a join), assistant_eval.py (score the assistant's scenes)
 ```
 
@@ -129,7 +130,10 @@ The next version's plan (library, image and speech tools, start modes, finishing
 | Keyframe continuation method | untested |
 | Bridge join (insert/replace keeping later scenes) | untested |
 | Audio (voice) references | built; measured close (see results), listening check pending |
-| Anchored audio clips in a scene | built (CLI); verified |
+| Anchored audio clips in a scene (sound clips) | done (interface, CLI, API) |
+| Library: every image / sound / clip with role and origin; `@name` = a named library item; save a take's frame; trash | done |
+| Start mode per scene: continue · from image · fresh (references only) · bridge | done |
+| Video model per project: FL2VA · Ref2VA · Ref2VA for fresh scenes (per-take model recorded) | done |
 | Video references | planned |
 | Overlays in export (exact logos, product photos, text cards with position, timing, simple animation) | planned |
 | Seam correction at joins (port Continuum's audio/video seam logic) | planned if joins show flicker |

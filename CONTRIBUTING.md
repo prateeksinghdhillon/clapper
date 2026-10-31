@@ -35,7 +35,8 @@ While you work:
 | `comfyui_clapper/gpu.py` | Who holds the GPU: H3 or the local assistant model; auto mode ejects the model on every queued ComfyUI job |
 | `comfyui_clapper/live.py`, `sysstats.py` | Render progress captured in-process; CPU / RAM / GPU stats |
 | `comfyui_clapper/engine/` | **Pure Python, no torch**, shared by the server, the CLI and the tests |
-| `…/engine/project.py` | Project store, `@name` → `<Picture N>` compile, definitions, badges, take numbering |
+| `…/engine/project.py` | Project store, asset library (`assets`, `@name` links), scene start images and sound clips, `@name` → `<Picture N>` compile, definitions, badges, take numbering |
+| `…/engine/media.py` | ffprobe (duration, size) and ffmpeg (save a take's frame) for library files |
 | `…/engine/director.py` | Plan, queue, chain, refresh and re-queue takes |
 | `…/engine/graph.py` | The ComfyUI API graph for one take |
 | `…/engine/export.py` | Export checks and the ffmpeg join |

@@ -346,3 +346,41 @@ body.chat-open main { padding-left: min(460px, 100vw); }
   .chat { z-index: 32; }
   .grid2, .grid3 { grid-template-columns: 1fr; }
 }
+
+/* ---------------------------------------------------------------- library */
+.lib-dlg { width: min(1100px, 96vw); }
+.lib-dlg.drop { outline: 3px dashed var(--accent); outline-offset: -8px; }
+.lib-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.lib-toolbar .spacer { flex: 1; }
+.lib-role { display: flex; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap; }
+.file-btn { background: var(--accent); border: 1px solid var(--accent); color: #fff; font-weight: 600; position: relative; overflow: hidden; display: inline-flex; align-items: center; padding: 7px 14px; border-radius: 9px; cursor: pointer; }
+.file-btn input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(210px, 40vw), 1fr)); gap: 12px; margin-top: 8px; }
+.lib-item { border: 1px solid var(--line); border-radius: 10px; padding: 8px; background: var(--panel-2); display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; min-width: 0; }
+.lib-item.named-item { border-color: var(--accent); }
+.lib-item img, .lib-item video { width: 100%; aspect-ratio: 1; object-fit: contain; background: var(--panel); border-radius: 7px; }
+.lib-item audio { width: 100%; }
+.lib-item .title { font-weight: 600; font-size: 13px; padding: 4px 6px; }
+.lib-item .meta { gap: 6px; align-items: center; flex-wrap: wrap; }
+.lib-item .meta select { font-size: 12px; padding: 3px 6px; }
+.lib-item .row { gap: 6px; flex-wrap: wrap; } .lib-item button { padding: 3px 8px; font-size: 12px; }
+.lib-item .named { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--line); padding-top: 6px; }
+.lib-item .named .name { font-weight: 700; font-size: 13.5px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.lib-item .name-form input:not([type=checkbox]) { flex: 1; min-width: 0; }
+.audio-prev { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; aspect-ratio: 2; background: var(--panel); border-radius: 7px; padding: 6px; }
+.audio-prev .big-ico { font-size: 30px; opacity: .6; }
+.lib-grid .empty { grid-column: 1 / -1; padding: 24px; text-align: center; }
+
+/* ---------------------------------------------------------------- scene: start + sound clips */
+.start-pick { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; font-size: 13px; }
+.seg { flex-wrap: wrap; }
+.clips { display: flex; flex-direction: column; gap: 8px; }
+.clip-row { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; align-items: center; border: 1px solid var(--line); border-radius: 9px; padding: 6px 8px; background: var(--panel-2); }
+.clip-row audio { grid-column: 1 / -1; width: 100%; height: 34px; }
+.clip-row .at { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.clip-row .at input { width: 76px; }
+.clip-row .warn { grid-column: 1 / -1; color: var(--warn); }
+.clip-row .clip-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#playerActions { margin-top: 8px; }
+.card-fold summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
+.card-fold[open] summary { margin-bottom: 4px; }

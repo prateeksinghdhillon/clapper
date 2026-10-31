@@ -8,16 +8,16 @@ from ..h3_temporal import scene_frame_count
 from .comfy_client import ComfyClient
 from .graph import build_take_graph
 from .project import Project, ProjectError
-from .settings import DEFAULT_SETTINGS, fit_resolution, merge
+from .settings import DEFAULT_SETTINGS, apply_video_model, fit_resolution, merge
 
 
 def project_settings(project: Project, overrides: dict | None = None) -> dict:
     return merge(merge(DEFAULT_SETTINGS, project.data.get("settings") or {}), overrides or {})
 
 
-def canvas_size(project: Project, settings: dict) -> tuple[int, int]:
+def canvas_size(project: Project, settings: dict, start: str | None = None) -> tuple[int, int]:
     res = settings["resolution"]
-    start = project.data.get("start_image")
+    start = start or project.data.get("start_image")
     if res.get("mode") == "start_image" and start:
         from PIL import Image
 
@@ -31,15 +31,12 @@ def plan_take(project: Project, scene_id: str, *, seed: int | None = None, overr
     """Everything needed to render one take of a scene, without queueing it."""
     scene = project.scene(scene_id)
     index = project.scene_index(scene_id)
-    settings = project_settings(project, overrides)
     compiled = project.compile_prompt(scene)
-    width, height = canvas_size(project, settings)
     root = project.root.resolve()
 
     spec: dict = {
         "ref_images": [str(root / project.data["library"]["items"][n]["file"]) for n in compiled["images"]],
         "ref_audios": [str(root / project.data["library"]["items"][n]["file"]) for n in compiled["audios"]],
-        "ref_image_size": settings["references"]["image_size"],
     }
     join = scene["join"] if index > 0 else "cut"
     parent = None
@@ -49,12 +46,17 @@ def plan_take(project: Project, scene_id: str, *, seed: int | None = None, overr
         ok = {"done", "queued", "rendering"} if allow_pending_parent else {"done"}
         if parent is None or parent.get("status") not in ok:
             raise ProjectError("the previous scene has no finished selected take to continue from")
-    start = project.data.get("start_image")
+    # The project's video-model choice, then this take's own overrides on top.
+    settings = merge(apply_video_model(project_settings(project), fresh=parent is None), overrides or {})
+    start = compiled["start"]
+    width, height = canvas_size(project, settings, start)
+    spec["ref_image_size"] = settings["references"]["image_size"]
     if start:
-        # Presented to the text encoder in every scene (it is <Picture 1>); pinned as frame 0 only
-        # when the scene does not continue from a previous take (Continuum does the same).
+        # Presented to the text encoder (it is <Picture 1>); pinned as frame 0 only when the scene does not
+        # continue from a previous take: the first scene, or a scene with its own start image (Continuum does
+        # the same for the project's start image).
         spec["start_image"] = {"path": str(project.ref_path(start).resolve()), "present": True,
-                               "pin": parent is None and index == 0}
+                               "pin": parent is None and (index == 0 or bool(scene.get("start_image")))}
     context = 0
     if parent is not None:
         context = int(settings["continuity"]["frames"])
@@ -70,6 +72,15 @@ def plan_take(project: Project, scene_id: str, *, seed: int | None = None, overr
                              "audio": bool(settings["continuity"]["audio"])}
     seconds = scene.get("seconds") or settings["scene_seconds"]
     frames = scene_frame_count(seconds, context_frames=context)
+    if compiled["clips"]:
+        # Clip times are scene time (after any carried frames), so a continued scene's clip at 0.5 s starts
+        # half a second after the join.
+        spec["audio_guides"] = []
+        for clip in compiled["clips"]:
+            frame = context + int(round(clip["at"] * 24))
+            if frame >= frames - 1:
+                raise ProjectError(f"an audio clip starts at {clip['at']:g} s, after the end of the scene")
+            spec["audio_guides"].append({"path": str(root / clip["file"]), "frame": frame})
     if join == "bridge":
         frames = scene_frame_count(seconds, context_frames=context + int(settings["continuity"]["frames"]))
     return {"scene": scene, "settings": settings, "compiled": compiled, "spec": spec, "width": width,
@@ -86,7 +97,9 @@ def queue_take(project: Project, scene_id: str, client: ComfyClient, **kwargs) -
         frames=plan["frames"], context_frames=plan["context"], width=plan["width"], height=plan["height"],
         seconds=scene.get("seconds") or plan["settings"]["scene_seconds"],
         scene_text=scene.get("text", ""), scene_refs=scene.get("refs"), scene_join=scene.get("join"),
-        scene_seconds=scene.get("seconds"))
+        scene_seconds=scene.get("seconds"), scene_start_image=scene.get("start_image"),
+        scene_audio_clips=scene.get("audio_clips"), model=plan["settings"].get("model_used"),
+        steps=plan["settings"]["sampling"]["steps"])
     take_dir = project.root.resolve() / take["dir"]
     meta = {"project": project.data["name"], "scene": scene_id, "take": take["id"], "prompt": plan["compiled"]["prompt"],
             "labels": plan["compiled"]["labels"], "spec": plan["spec"], "seed": plan["seed"],

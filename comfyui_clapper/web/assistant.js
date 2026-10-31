@@ -320,7 +320,7 @@ function md(text) {
   return el;
 }
 
-// ------------------------------------------------------------------ reference cards (References dialog)
+// ------------------------------------------------------------------ reference cards (Library)
 
 function refCard(name, item) {
   const ta = h("textarea", { rows: 4, placeholder: "What it looks like, for the assistant (not sent to H3). ✨ Describe lets the assistant look at the image." });

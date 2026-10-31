@@ -17,11 +17,11 @@ from aiohttp import web
 from server import PromptServer
 
 from . import gpu, live, sysstats
-from .engine import director, profiles, registry, repeats
+from .engine import director, media as media_tools, profiles, registry, repeats
 from .engine.comfy_client import ComfyClient
 from .engine.export import export_check, export_video
-from .engine.project import Project, ProjectError, delete_project_folder, disk_usage, folder_name
-from .engine.settings import DEFAULT_SETTINGS, SPEED_PROFILES
+from .engine.project import ASSET_ROLES, Project, ProjectError, delete_project_folder, disk_usage, folder_name
+from .engine.settings import DEFAULT_SETTINGS, SPEED_PROFILES, VIDEO_MODEL_MODES
 
 WEB_ROOT = Path(__file__).parent / "web"
 HOME = Path.home().resolve()
@@ -101,10 +101,13 @@ def _view(project: Project) -> dict:
     for scene in project.scenes:
         try:
             c = project.compile_prompt(scene)
-            compiled[scene["id"]] = {"prompt": c["prompt"], "labels": c["labels"], "error": None}
+            compiled[scene["id"]] = {"prompt": c["prompt"], "labels": c["labels"], "start": c["start"],
+                                     "mode": project.scene_mode(scene), "error": None}
         except ProjectError as exc:
-            compiled[scene["id"]] = {"prompt": None, "labels": {}, "error": str(exc)}
+            compiled[scene["id"]] = {"prompt": None, "labels": {}, "start": None, "mode": None, "error": str(exc)}
     data["compiled"] = compiled
+    data["asset_roles"] = list(ASSET_ROLES)
+    data["video_model_modes"] = list(VIDEO_MODEL_MODES)
     return data
 
 
@@ -440,11 +443,129 @@ async def update_ref(request):
         return _err(exc)
 
 
+# ------------------------------------------------------------------ library (assets)
+
+async def _receive_files(request) -> tuple[dict, list[tuple[Path, str]]]:
+    """multipart form -> (fields, [(temp file, original name)])."""
+    reader = await request.multipart()
+    fields, files = {}, []
+    tmp_dir = Path(os.path.expanduser("~/.clapper/uploads"))
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    async for part in reader:
+        if part.name == "file":
+            original = Path(part.filename or "upload.bin").name
+            tmp = tmp_dir / f"{os.getpid()}-{len(files)}-{os.urandom(4).hex()}{Path(original).suffix.lower()}"
+            with open(tmp, "wb") as fh:
+                while chunk := await part.read_chunk():
+                    fh.write(chunk)
+            files.append((tmp, original))
+        else:
+            fields[part.name] = await part.text()
+    return fields, files
+
+
+@routes.post("/clapper/api/asset")
+async def upload_asset(request):
+    """multipart: path, role, title (one file only), one or more `file` parts. Images, audio (mp3, wav, m4a, ogg,
+    flac, …) and video (mp4, mov, webm)."""
+    files = []
+    try:
+        fields, files = await _receive_files(request)
+        if not files:
+            raise ProjectError("no file uploaded")
+        loop = asyncio.get_running_loop()
+        async with _lock:
+            project = _open(fields["path"], request)
+            added = []
+            for tmp, original in files:
+                title = fields.get("title") if len(files) == 1 and fields.get("title") else Path(original).stem
+                asset = await loop.run_in_executor(None, lambda: media_tools.add_with_info(
+                    project, tmp, role=fields.get("role") or "other", title=title,
+                    origin={"type": "upload", "source": original}))
+                added.append(asset["id"])
+        return _ok({"project": _view(project), "added": added})
+    except (KeyError, ProjectError, OSError, ValueError) as exc:
+        return _err(exc)
+    finally:
+        for tmp, _ in files:
+            tmp.unlink(missing_ok=True)
+
+
+@routes.post("/clapper/api/asset/update")
+async def update_asset(request):
+    """id + any of title, role, tags, notes."""
+    body = await _body(request)
+    try:
+        async with _lock:
+            project = _open(body["path"], request)
+            project.update_asset(body["id"], **{k: body[k] for k in ("title", "role", "tags", "notes") if k in body})
+        return _ok(_view(project))
+    except (KeyError, ProjectError, OSError) as exc:
+        return _err(exc)
+
+
+@routes.post("/clapper/api/asset/name")
+async def name_asset(request):
+    """id, name (@name), definition, default (bool), start (bool: make it the project's start image)."""
+    body = await _body(request)
+    try:
+        async with _lock:
+            project = _open(body["path"], request)
+            project.name_asset(body["id"], body["name"].strip().lstrip("@"), definition=body.get("definition", ""),
+                               description=body.get("description", ""), default=bool(body.get("default")))
+            if body.get("start"):
+                project.data["start_image"] = body["name"].strip().lstrip("@")
+                project.save()
+        return _ok(_view(project))
+    except (KeyError, ProjectError, OSError) as exc:
+        return _err(exc)
+
+
+@routes.post("/clapper/api/asset/remove")
+async def remove_asset(request):
+    body = await _body(request)
+    try:
+        async with _lock:
+            project = _open(body["path"], request)
+            project.remove_asset(body["id"])
+        return _ok(_view(project))
+    except (KeyError, ProjectError, OSError) as exc:
+        return _err(exc)
+
+
+@routes.post("/clapper/api/ref/remove")
+async def remove_ref(request):
+    """Remove an @name; its library item stays."""
+    body = await _body(request)
+    try:
+        async with _lock:
+            project = _open(body["path"], request)
+            project.remove_reference(body["name"])
+        return _ok(_view(project))
+    except (KeyError, ProjectError, OSError) as exc:
+        return _err(exc)
+
+
+@routes.post("/clapper/api/asset/frame")
+async def grab_frame(request):
+    """take_id, seconds: save that frame of a finished take to the library."""
+    body = await _body(request)
+    try:
+        loop = asyncio.get_running_loop()
+        async with _lock:
+            project = _open(body["path"], request)
+            asset = await loop.run_in_executor(None, lambda: media_tools.grab_frame(
+                project, body["take_id"], float(body.get("seconds", 0)), title=body.get("title", "")))
+        return _ok({"project": _view(project), "asset": asset})
+    except (KeyError, ProjectError, OSError, ValueError) as exc:
+        return _err(exc)
+
+
 # ------------------------------------------------------------------ scenes
 
 @routes.post("/clapper/api/scene")
 async def scene_action(request):
-    """action: add (text, seconds, join, refs, title, after) | update (id, fields…) | move (id, index) | remove (id)."""
+    """action: add (text, seconds, join, refs, title, after, start_image, audio_clips) | update (id, fields…) | move (id, index) | remove (id)."""
     body = await _body(request)
     try:
         async with _lock:
@@ -452,9 +573,10 @@ async def scene_action(request):
             action = body.get("action")
             if action == "add":
                 project.add_scene(text=body.get("text", ""), seconds=body.get("seconds"), join=body.get("join", "continue"),
-                                  refs=body.get("refs"), title=body.get("title", ""), after=body.get("after"))
+                                  refs=body.get("refs"), title=body.get("title", ""), after=body.get("after"),
+                                  start_image=body.get("start_image"), audio_clips=body.get("audio_clips"))
             elif action == "update":
-                fields = {k: body[k] for k in ("title", "text", "seconds", "join", "refs") if k in body}
+                fields = {k: body[k] for k in ("title", "text", "seconds", "join", "refs", "start_image", "audio_clips") if k in body}
                 project.update_scene(body["id"], **fields)
             elif action == "move":
                 project.move_scene(body["id"], int(body["index"]))

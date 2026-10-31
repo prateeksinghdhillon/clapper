@@ -28,6 +28,8 @@ Project settings are stored as `settings` in `project.json` and merged over thes
 | `continuity.audio` | true | Carry sound across the join as well |
 | `references.image_size` | `match` | `match` (scale down to the output area) or `max` (up to 2048 px short edge) |
 | `scene_seconds` | 5.0 | Default scene length |
+| `video_model.mode` | `fl2va` | `fl2va` = the settings above for every scene; `ref2va` = Ref2VA for every scene; `ref2va_fresh` = Ref2VA for scenes without a parent take (fresh or from an image), FL2VA for continued scenes |
+| `video_model.ref2va.unet` / `.loras` / `.steps` | `minimax_h3_ref2va_pruned_int8_convrot`, Ref2V Turbo 4-step v0.1 LoRA, 4 | Replace `models.unet`, `loras` and `sampling.steps` when Ref2VA renders a take. A take's own `--overrides` still apply on top |
 
 ## Command line
 
@@ -41,8 +43,14 @@ Any Python ≥ 3.10 with Pillow works; the CLI talks to ComfyUI over HTTP. Scene
 |---|---|
 | `new PROJECT --name NAME` | Create a project folder and add it to the project list |
 | `ref PROJECT NAME FILE [--kind image\|audio] [--description D] [--default] [--start]` | Add a reference (copied into the project) |
-| `scene PROJECT [--text T \| --text-file F] [--seconds S] [--join continue\|cut\|bridge] [--refs a,b \| --refs ""] [--title T] [--after N]` | Add a scene (`--refs ""` = no references, omitted = project defaults) |
+| `scene PROJECT [--text T \| --text-file F] [--seconds S] [--join continue\|cut\|bridge] [--refs a,b \| --refs ""] [--title T] [--after N] [--start-image NAME\|none] [--audio-clip ID@SECONDS …]` | Add a scene (`--refs ""` = no references, omitted = project defaults). `--start-image` with `--join cut`: open on that image, or `none` = fresh from the references. `--audio-clip`: a library sound becomes the soundtrack from that time (`none` clears) |
 | `scene PROJECT --update N [fields…]` | Change a scene |
+| `asset PROJECT add FILE… [--role R] [--title T]` | Add files to the library (images, audio, video); prints their ids, durations and sizes |
+| `asset PROJECT list` | Library items: id, kind, role, title, length, `@names`, origin |
+| `asset PROJECT name ID NAME [--definition D] [--default]` | Give a library item an `@name` (makes it a reference) |
+| `asset PROJECT remove ID` | Move an item without `@name` to `trash/` |
+| `frame PROJECT TAKE_ID SECONDS` | Save a frame of a finished take to the library |
+| `video-model PROJECT fl2va\|ref2va\|ref2va_fresh` | Which H3 model renders the scenes |
 | `render PROJECT N [N…] [--seed S] [--overrides JSON] [--wait]` | Queue a take for each scene |
 | `render-rest PROJECT [--from-scene N] [--overrides JSON]` | Queue every remaining scene, chained in order |
 | `refresh PROJECT` | Collect finished takes, detect interrupted ones |
@@ -104,13 +112,19 @@ Served by ComfyUI under `/clapper/`. JSON in, JSON out; errors return `{"error":
 | `POST /clapper/api/project/update` | `path`, any of `name`, `style`, `start_image`, `settings`, `defaults`, `notes` | Project-level changes |
 | `POST /clapper/api/ref` | multipart: `path`, `name`, `kind`, `description`, `default`, `start`, `file` | Add a reference |
 | `POST /clapper/api/ref/update` | `path`, `name`, `description` / `definition` / `card` / `card_status` | Edit a reference |
-| `POST /clapper/api/scene` | `path`, `action`: `add` (`text`, `seconds`, `join`, `refs`, `title`, `after`) · `update` (`id`, fields) · `move` (`id`, `index`) · `remove` (`id`) | Scene changes |
+| `POST /clapper/api/scene` | `path`, `action`: `add` (`text`, `seconds`, `join`, `refs`, `title`, `after`, `start_image`, `audio_clips`) · `update` (`id`, fields) · `move` (`id`, `index`) · `remove` (`id`) | Scene changes |
 | `POST /clapper/api/render` | `path`, `scene_id`, optional `seed`, `overrides`, `parent_take` | Queue a take. The same scene with the same `seed` (or none), `overrides` and `parent_take` is refused with 409 for 5 seconds after it was queued |
 | `POST /clapper/api/render_rest` | `path`, optional `from_scene`, `overrides` | Queue the remaining scenes, chained; refused while any of those scenes has a take rendering or waiting |
 | `POST /clapper/api/requeue` | `path`, `take_id` | New take with the same seed and parent; the same take is refused with 409 for 5 seconds after it was re-queued |
 | `POST /clapper/api/stop` | `path`, `take_id` or `all: true` | Interrupt/cancel takes (and the queued takes that continue from them) |
 | `POST /clapper/api/select` | `path`, `scene_id`, `take_id` | Select a take |
-| `POST /clapper/api/take/restore_prompt` | `path`, `take_id` | Copy a take's text/refs/length/join back into its scene |
+| `POST /clapper/api/take/restore_prompt` | `path`, `take_id` | Copy a take's text/refs/length/join/start image/sound clips back into its scene |
+| `POST /clapper/api/asset` | multipart: `path`, `role`, `title` (single file), one or more `file` | Add files to the library; returns `{project, added: [ids]}` |
+| `POST /clapper/api/asset/update` | `path`, `id`, any of `title`, `role`, `tags`, `notes` | Change a library item |
+| `POST /clapper/api/asset/name` | `path`, `id`, `name`, `definition`, `default`, `start` | Give a library item an `@name` |
+| `POST /clapper/api/asset/remove` | `path`, `id` | Move an item without `@name` to `trash/` (refused while a scene uses it as a sound clip) |
+| `POST /clapper/api/ref/remove` | `path`, `name` | Remove an `@name` (refused while the style text or a scene's text mentions it); the item stays |
+| `POST /clapper/api/asset/frame` | `path`, `take_id`, `seconds` | Save a frame of a finished take to the library; returns `{project, asset}` |
 | `POST /clapper/api/take/note` | `path`, `take_id`, `note` / `rating` | Annotate a take |
 | `POST /clapper/api/refresh` | `path` | Collect finished takes; returns queue counts |
 | `GET /clapper/api/export/check` | `?path=` | Ready scenes, missing scenes, length, warnings |
@@ -137,7 +151,9 @@ Served by ComfyUI under `/clapper/`. JSON in, JSON out; errors return `{"error":
 <project>/
   project.json            everything below; atomic writes
   history/                the last 50 versions of project.json (manual undo: copy one back)
-  refs/<name>.<ext>       copies of the reference files
+  refs/<name>.<ext>       copies of files added as references (older projects, CLI `ref`)
+  assets/images|audios|videos/<id>.<ext>   library files added with + Add files, CLI `asset add` or Save frame
+  trash/                  library files removed from the library
   takes/<scene-id>/<take-id>/
       take.mp4            H.264 + AAC, 24 fps
       audio.wav           the take's sound
@@ -147,7 +163,7 @@ Served by ComfyUI under `/clapper/`. JSON in, JSON out; errors return `{"error":
   chat/c_<id>.json        assistant chats; chat/frames/<take>/ frames used for take reviews
 ```
 
-`project.json` top level: `schema`, `name`, `created`, `updated`, `settings`, `style`, `notes`, `start_image`, `library` (`items` by name: `kind`, `file`, `sha256`, `description`, `definition`, `card`, `card_status`; `defaults`), `scenes` (ordered: `id`, `title`, `text`, `seconds`, `join`, `refs` — `null` = defaults, `selected_take`), `takes` (by id: `scene`, `number`, `status`, `created`, `finished`, `seed`, `parent_take`, `join`, `context_frames`, `frames`, `width`, `height`, `prompt_sha256`, `refs`, `scene_text`, `scene_refs`, `scene_join`, `scene_seconds`, `prompt_id`, `render_seconds`, `s_per_it`, `steps`, `error`).
+`project.json` top level: `schema`, `name`, `created`, `updated`, `settings`, `style`, `notes`, `start_image`, `library` (`items` by name: `kind`, `file`, `sha256`, `description`, `definition`, `card`, `card_status`, `asset`; `defaults`), `assets` (by id: `kind`, `role`, `title`, `file`, `sha256`, `tags`, `origin` — `{type: upload, source}` or `{type: frame, take, seconds}`, `parent`, `created`, `duration` / `width`, `height`), `scenes` (ordered: `id`, `title`, `text`, `seconds`, `join`, `refs` — `null` = defaults, `start_image` — absent/`null` = the project's start image for the first scene, `""` = none, or an image `@name`; `audio_clips` — `[{asset, at}]` with `at` in seconds of scene time; `selected_take`), `takes` (by id: `scene`, `number`, `status`, `created`, `finished`, `seed`, `parent_take`, `join`, `context_frames`, `frames`, `width`, `height`, `prompt_sha256`, `refs`, `scene_text`, `scene_refs`, `scene_join`, `scene_seconds`, `scene_start_image`, `scene_audio_clips`, `model` (`fl2va`/`ref2va`), `prompt_id`, `render_seconds`, `s_per_it`, `steps`, `error`).
 
 Take statuses: `queued`, `rendering`, `done`, `failed`, `interrupted`.
 

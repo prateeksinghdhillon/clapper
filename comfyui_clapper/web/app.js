@@ -26,7 +26,7 @@ const BADGES = {
   parent_missing: ["bad", "previous scene has no take"],
   prompt_error: ["bad", "prompt error"],
 };
-const JOIN_LABEL = { continue: "↪ continue", bridge: "⇄ bridge", cut: "✂ cut" };
+const JOIN_LABEL = { continue: "↪ continue", bridge: "⇄ bridge", cut: "✂ cut", image: "▣ from image", fresh: "✦ fresh" };
 
 const state = { me: null, project: null, path: null, sceneId: null, profiles: [], defaults: null, polling: null, queue: null, live: null, liveTimer: null };
 
@@ -340,7 +340,7 @@ function renderBoard() {
   const total = list.reduce((sum, s) => sum + sceneSeconds(s), 0);
   const done = list.filter((s) => (state.project.takes[s.selected_take] || {}).status === "done").length;
   $("boardStats").innerHTML = `<b>${list.length}</b> scenes · <b>${total.toFixed(1)}s</b> planned · <b>${done}/${list.length}</b> have a selected take` +
-    (state.usage ? ` · <span class="disk" id="diskStat" title="Takes ${fmtSize(state.usage.parts.takes)} · exports ${fmtSize(state.usage.parts.exports)} · references ${fmtSize(state.usage.parts.refs)} · history ${fmtSize(state.usage.parts.history)}"><b>${fmtSize(state.usage.total)}</b> on disk</span>` : "");
+    (state.usage ? ` · <span class="disk" id="diskStat" title="Takes ${fmtSize(state.usage.parts.takes)} · exports ${fmtSize(state.usage.parts.exports)} · library ${fmtSize(state.usage.parts.refs)} · history ${fmtSize(state.usage.parts.history)}"><b>${fmtSize(state.usage.total)}</b> on disk</span>` : "");
   $("diskStat")?.addEventListener("click", () => openProjectDialog(state.path, state.project.name));
   const firstMissing = list.findIndex((s) => (state.project.takes[s.selected_take] || {}).status !== "done");
   const busy = takes().some((t) => t.status === "queued" || t.status === "rendering");
@@ -357,10 +357,11 @@ function renderBoard() {
     const take = state.project.takes[scene.selected_take];
     const running = takesFor(scene.id).find((t) => t.status === "queued" || t.status === "rendering");
     const card = h("div", { class: "scene-card" + (scene.id === state.sceneId ? " active" : ""), onclick: () => openEditor(scene.id) },
-      thumbFor(running && !take ? running : take, i + 1, i === 0 ? null : scene.join),
+      thumbFor(running && !take ? running : take, i + 1, sceneMode(scene)),
       h("div", { class: "scene-meta" },
         h("div", { class: "scene-name" }, scene.title || firstLine(scene.text) || "Untitled scene"),
-        h("div", { class: "scene-sub" }, `${sceneSeconds(scene)}s · ` + (take ? `${takeLabel(take)} of ${takesFor(scene.id).length} selected` : `${takesFor(scene.id).length} take(s)`)),
+        h("div", { class: "scene-sub" }, `${sceneSeconds(scene)}s · ` + (take ? `${takeLabel(take)} of ${takesFor(scene.id).length} selected` : `${takesFor(scene.id).length} take(s)`) +
+          ((scene.audio_clips || []).length ? ` · ♪ ${scene.audio_clips.length}` : "")),
         h("div", { class: "badges" }, badgeEls(state.project.badges[scene.id] || []))));
     board.append(card);
   });
@@ -427,11 +428,17 @@ function renderEditor() {
   if (document.activeElement !== $("edText")) $("edText").value = scene.text || "";
   if (document.activeElement !== $("edSeconds")) $("edSeconds").value = scene.seconds || "";
   $("edSeconds").placeholder = effective()?.scene_seconds || 5;
-  document.querySelectorAll("#edJoin button").forEach((b) => {
-    b.classList.toggle("on", b.dataset.v === scene.join);
-    b.disabled = index === 0;
+  const mode = sceneMode(scene);
+  document.querySelectorAll("#edStart button").forEach((b) => {
+    b.classList.toggle("on", b.dataset.v === mode);
+    b.disabled = index === 0 && (b.dataset.v === "continue" || b.dataset.v === "bridge");
   });
-  renderBadges(); renderCompiled();
+  const images = Object.entries(library()).filter(([, it]) => it.kind === "image");
+  $("edStartPick").hidden = mode !== "image";
+  const startName = (state.project.compiled[scene.id] || {}).start || (scene.start_image || "");
+  $("edStartImage").replaceChildren(...(images.length ? images.map(([n]) => h("option", { value: n, selected: n === startName }, "@" + n))
+    : [h("option", { value: "" }, "no image references yet — name one in the Library")]));
+  renderBadges(); renderCompiled(); renderClips(scene);
 
   // references
   const lib = library(); const active = activeRefs(scene); const usesDefaults = scene.refs === null || scene.refs === undefined;
@@ -457,6 +464,56 @@ function renderEditor() {
   $("edTakesHint").textContent = list.length ? `${list.length} take(s) — the selected one is used in the video` : "";
   $("edTakes").replaceChildren(...(list.length ? list.map((t) => takeCard(scene, t)) : [h("p", { class: "hint" }, "No takes yet. Render one above.")]));
   syncRenderBtn();
+}
+
+function sceneMode(scene) {
+  const c = (state.project.compiled || {})[scene.id];
+  if (c && c.mode) return c.mode;
+  const index = scenes().indexOf(scene);
+  if (index > 0 && (scene.join === "continue" || scene.join === "bridge")) return scene.join;
+  const start = scene.start_image === undefined || scene.start_image === null ? state.project.start_image : scene.start_image;
+  return start && (index === 0 || scene.start_image) ? "image" : "fresh";
+}
+
+function setSceneMode(mode) {
+  const scene = sceneById(state.sceneId); if (!scene) return;
+  const images = Object.entries(library()).filter(([, it]) => it.kind === "image").map(([n]) => n);
+  let fields;
+  if (mode === "continue" || mode === "bridge") fields = { join: mode, start_image: null };
+  else if (mode === "fresh") fields = { join: "cut", start_image: "" };
+  else {
+    const current = (state.project.compiled[scene.id] || {}).start || state.project.start_image || images[0];
+    if (!current) { toast("Give an image an @name in the Library first, then choose it here.", true); return; }
+    fields = { join: "cut", start_image: current };
+  }
+  Object.assign(scene, fields); scheduleSave(fields); flushSave();
+}
+
+function renderClips(scene) {
+  const clips = scene.audio_clips || [];
+  const secs = sceneSeconds(scene);
+  $("edClips").replaceChildren(...clips.map((c, i) => {
+    const a = assets()[c.asset];
+    if (!a) return h("div", { class: "clip-row bad" }, "⚠ this clip is no longer in the library", h("button", { class: "icon", onclick: () => saveClips(clips.filter((_, j) => j !== i)) }, "✕"));
+    const at = h("input", { type: "number", min: 0, step: 0.1, value: c.at, title: "Seconds into the scene" });
+    at.onchange = () => saveClips(clips.map((x, j) => (j === i ? { ...x, at: Math.max(0, Number(at.value) || 0) } : x)));
+    const end = (c.at || 0) + (a.duration || 0);
+    return h("div", { class: "clip-row" },
+      h("div", { class: "clip-title" }, h("b", {}, a.title), h("span", { class: "hint" }, a.duration ? ` ${fmtDur(a.duration)}` : "")),
+      h("audio", { src: media(a.file), controls: true, preload: "none" }),
+      h("label", { class: "at" }, "starts at", at, "s"),
+      a.duration && end > secs ? h("span", { class: "hint warn" }, `ends at ${end.toFixed(1)} s — the scene is ${secs} s, so the clip is cut; make the scene longer?`) : null,
+      h("button", { class: "icon", title: "Remove from this scene", onclick: () => saveClips(clips.filter((_, j) => j !== i)) }, "✕"));
+  }));
+  const audio = Object.values(assets()).filter((a) => a.kind === "audio");
+  $("edClipAdd").replaceChildren(h("option", { value: "" }, audio.length ? "+ Add a sound clip from the library…" : "+ Add sound clips in the Library first"),
+    ...audio.map((a) => h("option", { value: a.id }, `${a.title}${a.duration ? " · " + fmtDur(a.duration) : ""} (${ROLE_LABEL[a.role] || a.role})`)));
+  $("edClipAdd").disabled = !audio.length;
+}
+
+function saveClips(clips) {
+  const scene = sceneById(state.sceneId); if (!scene) return;
+  scene.audio_clips = clips; scheduleSave({ audio_clips: clips }); flushSave(); renderClips(scene);
 }
 
 function syncRenderBtn() {
@@ -517,7 +574,13 @@ $("edUseDefaults").onchange = (e) => {
 $("edTitle").oninput = (e) => scheduleSave({ title: e.target.value });
 $("edText").oninput = (e) => scheduleSave({ text: e.target.value });
 $("edSeconds").oninput = (e) => scheduleSave({ seconds: e.target.value ? Number(e.target.value) : null });
-document.querySelectorAll("#edJoin button").forEach((b) => (b.onclick = () => { scheduleSave({ join: b.dataset.v }); flushSave(); }));
+document.querySelectorAll("#edStart button").forEach((b) => (b.onclick = () => setSceneMode(b.dataset.v)));
+$("edStartImage").onchange = () => { const v = $("edStartImage").value; if (!v) return; const scene = sceneById(state.sceneId); scene.start_image = v; scene.join = "cut"; scheduleSave({ start_image: v, join: "cut" }); flushSave(); };
+$("edClipAdd").onchange = () => {
+  const id = $("edClipAdd").value; $("edClipAdd").value = ""; if (!id) return;
+  const scene = sceneById(state.sceneId);
+  saveClips([...(scene.audio_clips || []), { asset: id, at: 0.5 }]);
+};
 
 $("edRender").onclick = () => {
   const sid = state.sceneId;
@@ -547,12 +610,21 @@ async function restorePrompt(tid) {
 async function selectTake(sid, tid) { await guard(async () => setProject(await call("/select", { path: state.path, scene_id: sid, take_id: tid }))); }
 async function requeue(tid) { await once(`requeue:${tid}`, async () => { const d = await call("/requeue", { path: state.path, take_id: tid }); toast("Re-queued"); setProject(d.project); }); }
 
+let playing = null;
 function play(take, title) {
+  playing = take;
   $("playerTitle").textContent = title;
   $("playerVideo").src = takeVideo(take);
   $("playerInfo").textContent = `${take.width}×${take.height} · ${take.frames} frames · seed ${take.seed} · created ${fmtWhen(take.created)}` + (take.finished ? ` · finished ${fmtWhen(take.finished)}` : "");
   $("playerDlg").showModal(); $("playerVideo").play().catch(() => {});
 }
+
+$("playerFrame").onclick = () => once("frame", async () => {
+  if (!playing) return;
+  const v = $("playerVideo"); v.pause();
+  const d = await call("/asset/frame", { path: state.path, take_id: playing.id, seconds: v.currentTime });
+  setProject(d.project); toast(`Frame at ${v.currentTime.toFixed(1)} s saved to the Library — give it an @name to start a scene from it`);
+});
 
 // ------------------------------------------------------------------ polling
 
@@ -687,7 +759,7 @@ async function loadUsage() {
   try { state.usage = await call(`/project/usage?path=${encodeURIComponent(state.path)}`); if (state.project) renderBoard(); } catch (e) { /* ignore */ }
 }
 
-const USAGE_PARTS = [["takes", "Takes", "var(--accent)"], ["exports", "Exports", "var(--ok)"], ["refs", "References", "var(--warn)"], ["history", "History", "var(--info)"], ["other", "Other", "var(--muted)"]];
+const USAGE_PARTS = [["takes", "Takes", "var(--accent)"], ["exports", "Exports", "var(--ok)"], ["refs", "Library", "var(--warn)"], ["history", "History", "var(--info)"], ["other", "Other", "var(--muted)"]];
 async function openProjectDialog(path, name) {
   await guard(async () => {
     const u = await call(`/project/usage?path=${encodeURIComponent(path)}`);
@@ -780,47 +852,119 @@ document.querySelectorAll("dialog [data-close]").forEach((b) => (b.onclick = () 
 $("playerDlg").addEventListener("close", () => $("playerVideo").pause());
 $("libraryBtn").onclick = () => { renderLibrary(); $("libraryDlg").showModal(); };
 
+// ------------------------------------------------------------------ library
+
+const assets = () => state.project?.assets || {};
+const assetNames = (id) => Object.entries(library()).filter(([, it]) => it.asset === id).map(([n]) => n);
+const ROLE_LABEL = { character: "Character", place: "Place", prop: "Prop", style: "Style", start: "Start image", frame: "Frame",
+  voice: "Voice sample", speech: "Speech line", sound: "Sound effect", music: "Music", clip: "Clip", other: "Other" };
+const LIB_FILTERS = [["all", "All"], ["image", "Images"], ["audio", "Sound"], ["video", "Video"], ["named", "@ References"]];
+const fmtDur = (s) => (s == null ? "" : s < 60 ? `${s.toFixed(1)} s` : fmtTime(s));
+let libFilter = "all";
+
+function assetMeta(a) {
+  const bits = [];
+  if (a.duration) bits.push(fmtDur(a.duration));
+  if (a.width) bits.push(`${a.width}×${a.height}`);
+  const o = a.origin || {};
+  if (o.type === "frame") bits.push(`frame of ${parentLabel(o.take)} at ${Number(o.seconds).toFixed(1)} s`);
+  else if (o.type === "tool") bits.push(`made with ${o.tool}`);
+  return bits.join(" · ");
+}
+
+function roleSelect(value, onchange) {
+  const sel = h("select", {}, (state.project.asset_roles || Object.keys(ROLE_LABEL)).map((r) => h("option", { value: r, selected: r === value }, ROLE_LABEL[r] || r)));
+  sel.onchange = () => onchange(sel.value);
+  return sel;
+}
+
+function assetPreview(a) {
+  const src = media(a.file);
+  if (a.kind === "image") return h("img", { src, alt: a.title, loading: "lazy" });
+  if (a.kind === "audio") return h("div", { class: "audio-prev" }, h("span", { class: "big-ico" }, a.role === "music" ? "♫" : a.role === "voice" || a.role === "speech" ? "🗣" : "♪"), h("audio", { src, controls: true, preload: "none" }));
+  return h("video", { src, controls: true, preload: "metadata", playsinline: true });
+}
+
+function namedBox(name, item) {
+  const defaults = state.project.library.defaults; const start = state.project.start_image;
+  const ta = h("textarea", { rows: 3, placeholder: `How H3 should understand @${name}, e.g. "@${name} is …". Added only to scenes that use it.` });
+  ta.value = item.definition || "";
+  ta.onchange = () => guard(async () => { setProject(await call("/ref/update", { path: state.path, name, definition: ta.value })); toast(`@${name} definition saved`); });
+  return h("div", { class: "named" },
+    h("div", { class: "name" }, "@" + name, name === start ? h("span", { class: "badge info", title: "start image of the first scene" }, "▶ start") : null,
+      defaults.includes(name) ? h("span", { class: "badge ok", title: "used by scenes without their own list" }, "★ default") : null),
+    h("label", {}, "Definition (sent to H3)", ta),
+    item.kind === "image" ? h("details", { class: "card-fold", open: !!(item.card && item.card_status !== "confirmed") },
+      h("summary", {}, "Card for the assistant" + (item.card ? (item.card_status === "confirmed" ? " ✓" : " · check it") : "")), refCard(name, item)) : null,
+    h("div", { class: "row" },
+      name !== start ? h("button", { onclick: () => toggleDefault(name) }, defaults.includes(name) ? "Unset ★" : "Set ★") : null,
+      item.kind === "image" ? h("button", { onclick: () => setStart(name === start ? null : name) }, name === start ? "Unset ▶" : "Set ▶") : null,
+      h("button", { class: "ghost danger", title: "The item stays in the library", onclick: () => guard(async () => {
+        if (!confirm(`Remove the name @${name}? The file stays in the library.`)) return;
+        setProject(await call("/ref/remove", { path: state.path, name })); renderLibrary();
+      }) }, "Remove @name")));
+}
+
+function nameForm(a) {
+  const suggestion = a.title.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "_").replace(/^[^a-z]+/, "").replace(/_+$/, "").slice(0, 32);
+  const input = h("input", { placeholder: "name, e.g. hero", value: suggestion });
+  const def = h("input", { type: "checkbox" }); def.checked = a.kind === "image" && ["character", "style", "prop", "place"].includes(a.role);
+  const go = h("button", { class: "primary", onclick: () => guard(async () => {
+    setProject(await call("/asset/name", { path: state.path, id: a.id, name: input.value.trim(), default: def.checked }));
+    renderLibrary(); toast(`@${input.value.trim()} ready to use in scenes`);
+  }) }, "Name it");
+  const box = h("div", { class: "name-form", hidden: true }, h("div", { class: "row" }, h("span", {}, "@"), input, go),
+    h("label", { class: "switch" }, def, "use in every scene by default"));
+  const open = h("button", { onclick: () => { box.hidden = !box.hidden; if (!box.hidden) input.focus(); } }, "Give it an @name");
+  return [open, box];
+}
+
 function renderLibrary() {
   $("styleText").value = state.project.style || "";
   $("notesText").value = state.project.notes || "";
-  const defaults = state.project.library.defaults; const start = state.project.start_image;
-  $("refGrid").replaceChildren(...Object.entries(library()).map(([name, item]) => {
-    const src = media(item.file);
-    const preview = item.kind === "image" ? h("img", { src, alt: name }) : item.kind === "audio" ? h("audio", { src, controls: true, preload: "none" }) : h("div", {}, item.kind);
-    return h("div", { class: "ref" }, preview, h("div", { class: "name" }, "@" + name, name === start ? " ▶" : "", defaults.includes(name) ? " ★" : ""),
-      item.description ? h("div", { class: "hint" }, item.description) : null,
-      (() => {
-        const ta = h("textarea", { rows: 4, placeholder: `How H3 should understand @${name}, e.g. "@${name} is …". Added only to scenes that use it.` });
-        ta.value = item.definition || "";
-        ta.onchange = () => guard(async () => { setProject(await call("/ref/update", { path: state.path, name, definition: ta.value })); toast(`@${name} definition saved`); });
-        return h("label", {}, "Definition (sent to H3)", ta);
-      })(),
-      item.kind === "image" ? refCard(name, item) : null,
-      h("div", { class: "row" },
-        name !== start ? h("button", { onclick: () => toggleDefault(name) }, defaults.includes(name) ? "Unset ★" : "Set ★") : null,
-        item.kind === "image" ? h("button", { onclick: () => setStart(name === start ? null : name) }, name === start ? "Unset ▶" : "Set ▶") : null));
-  }));
+  $("libFilter").replaceChildren(...LIB_FILTERS.map(([v, label]) => h("span", { class: "chip" + (libFilter === v ? " on" : ""), onclick: () => { libFilter = v; renderLibrary(); } }, label)));
+  const roleSel = $("libRole"); if (!roleSel.options.length) roleSel.replaceChildren(...(state.project.asset_roles || Object.keys(ROLE_LABEL)).map((r) => h("option", { value: r }, ROLE_LABEL[r] || r)));
+  const list = Object.values(assets()).filter((a) => libFilter === "all" || (libFilter === "named" ? assetNames(a.id).length : a.kind === libFilter))
+    .sort((x, y) => (assetNames(y.id).length - assetNames(x.id).length) || (y.created || "").localeCompare(x.created || ""));
+  $("libGrid").replaceChildren(...(list.length ? list.map((a) => {
+    const names = assetNames(a.id);
+    const title = h("input", { class: "title", value: a.title, title: "Title (for you)" });
+    title.onchange = () => guard(async () => setProject(await call("/asset/update", { path: state.path, id: a.id, title: title.value })));
+    const [nameBtn, nameBox] = names.length || a.kind === "video" ? [null, null] : nameForm(a);
+    return h("div", { class: "lib-item" + (names.length ? " named-item" : "") }, assetPreview(a), title,
+      h("div", { class: "row meta" }, roleSelect(a.role, (r) => guard(async () => { setProject(await call("/asset/update", { path: state.path, id: a.id, role: r })); renderLibrary(); })),
+        h("span", { class: "hint" }, assetMeta(a))),
+      ...names.map((n) => namedBox(n, library()[n])),
+      nameBox,
+      h("div", { class: "row" }, nameBtn,
+        names.length ? null : h("button", { class: "ghost danger", title: "Move the file to the project's trash folder", onclick: () => guard(async () => {
+          if (!confirm(`Remove "${a.title}" from the library?`)) return;
+          setProject(await call("/asset/remove", { path: state.path, id: a.id })); renderLibrary();
+        }) }, "Remove")));
+  }) : [h("p", { class: "hint empty" }, libFilter === "all" ? "The library is empty. Add images, sounds or clips with + Add files, or drop them here." : "Nothing here yet.")]));
 }
+
+async function uploadFiles(files) {
+  if (!files.length) return;
+  const fd = new FormData();
+  fd.append("path", state.path); fd.append("role", $("libRole").value || "other");
+  for (const f of files) fd.append("file", f);
+  await once("upload", async () => {
+    toast(`Adding ${files.length} file(s)…`);
+    const d = await call("/asset", fd);
+    setProject(d.project); renderLibrary(); toast(`${d.added.length} added to the library`);
+  });
+}
+$("libFiles").onchange = () => { const f = [...$("libFiles").files]; $("libFiles").value = ""; uploadFiles(f); };
+$("libraryDlg").addEventListener("dragover", (e) => { e.preventDefault(); $("libraryDlg").classList.add("drop"); });
+$("libraryDlg").addEventListener("dragleave", (e) => { if (e.target === $("libraryDlg")) $("libraryDlg").classList.remove("drop"); });
+$("libraryDlg").addEventListener("drop", (e) => { e.preventDefault(); $("libraryDlg").classList.remove("drop"); uploadFiles([...(e.dataTransfer?.files || [])]); });
+
 async function projectUpdate(fields) { const d = await guard(() => call("/project/update", { path: state.path, ...fields })); if (d) { setProject(d); renderLibrary(); } return d; }
 const toggleDefault = (name) => { const d = state.project.library.defaults; projectUpdate({ defaults: d.includes(name) ? d.filter((n) => n !== name) : [...d, name] }); };
 const setStart = (name) => projectUpdate({ start_image: name });
 $("saveStyle").onclick = async () => { if (await projectUpdate({ style: $("styleText").value })) toast("Style text saved"); };
 $("saveNotes").onclick = async () => { if (await projectUpdate({ notes: $("notesText").value })) toast("Story notes saved"); };
-$("refFile").onchange = () => {
-  const f = $("refFile").files[0]; if (!f || $("refName").value) return;
-  $("refName").value = f.name.replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^[^a-z]+/, "").slice(0, 32);
-};
-$("refAdd").onclick = () => guard(async () => {
-  const f = $("refFile").files[0]; if (!f) throw new Error("Choose a file");
-  const kind = f.type.startsWith("audio") ? "audio" : "image";
-  const fd = new FormData();
-  fd.append("path", state.path); fd.append("name", $("refName").value.trim()); fd.append("kind", kind);
-  fd.append("description", $("refDesc").value.trim()); fd.append("default", $("refDefault").checked ? "1" : "0");
-  fd.append("start", $("refStart").checked && kind === "image" ? "1" : "0"); fd.append("file", f);
-  setProject(await call("/ref", fd)); renderLibrary();
-  $("refFile").value = ""; $("refName").value = ""; $("refDesc").value = ""; $("refStart").checked = false;
-  toast("Reference added");
-});
 
 // ------------------------------------------------------------------ settings
 
@@ -843,6 +987,19 @@ function field(label, value, onchange, opts = {}) {
 
 function renderSettings() {
   const s = draft; const body = $("settingsBody"); body.replaceChildren();
+  s.video_model = s.video_model || structuredClone(state.defaults.video_model);
+  const VM = { fl2va: "FL2VA for every scene (proven default)", ref2va: "Ref2VA for every scene (one model, 4 steps)",
+    ref2va_fresh: "Ref2VA for fresh scenes, FL2VA when continuing" };
+  const vmSel = h("select", {}, Object.entries(VM).map(([v, label]) => h("option", { value: v, selected: s.video_model.mode === v }, label)));
+  vmSel.onchange = () => { s.video_model.mode = vmSel.value; renderSettings(); };
+  const r = s.video_model.ref2va;
+  body.append(h("section", { class: "settings-section" }, h("h3", {}, "Video model"),
+    h("label", {}, "Which H3 model renders the scenes", vmSel),
+    h("p", { class: "hint" }, "Ref2VA makes a scene from references alone, from a start image, or continuing the previous scene, so one model can make the whole video. With its Turbo LoRA at 4 steps a 5-second scene takes about 2 minutes on a 16 GB card. The model, LoRA and steps below are used only when Ref2VA renders; the Sampling, LoRA and model sections further down are for FL2VA."),
+    s.video_model.mode === "fl2va" ? null : h("div", { class: "settings-grid" },
+      field("Ref2VA model", r.unet, (v) => (r.unet = v), { type: "text" }),
+      field("Ref2VA LoRA (empty = none)", (r.loras[0] || {}).name || "", (v) => (r.loras = v ? [{ name: v, strength: (r.loras[0] || {}).strength ?? 1, enabled: true }] : []), { type: "text" }),
+      field("Ref2VA steps", r.steps, (v) => (r.steps = v), { min: 1, max: 60 }))));
   body.append(h("section", { class: "settings-section" }, h("h3", {}, "Quick presets"),
     h("div", { class: "profile-row" },
       h("button", { onclick: () => { s.sampling.steps = 20; renderSettings(); } }, "Continuum current (20 steps)"),
