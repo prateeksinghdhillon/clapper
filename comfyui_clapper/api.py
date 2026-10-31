@@ -17,7 +17,7 @@ from aiohttp import web
 from server import PromptServer
 
 from . import gpu, live, sysstats
-from .engine import director, estimates, media as media_tools, profiles, registry, repeats, tools, upscale
+from .engine import director, estimates, finish as finish_engine, media as media_tools, profiles, registry, repeats, tools, upscale
 from .engine.comfy_client import ComfyClient
 from .engine.export import delete_export, export_check, export_video, list_exports
 from .engine.project import ASSET_ROLES, Project, ProjectError, delete_project_folder, disk_usage, folder_name
@@ -924,10 +924,40 @@ async def export(request):
         loop = asyncio.get_running_loop()
         out = await loop.run_in_executor(None, lambda: export_video(project, partial=bool(body.get("partial")),
                                                                    size=body.get("size") or "auto",
-                                                                   use_upscaled=body.get("use_upscaled", True) is not False))
+                                                                   use_upscaled=body.get("use_upscaled", True) is not False,
+                                                                   use_finish=body.get("use_finish", True) is not False))
         manifest = json.loads(out.with_suffix(".json").read_text(encoding="utf-8"))
         return _ok({"file": str(out.relative_to(project.root)), "manifest": manifest})
     except (KeyError, ProjectError, OSError) as exc:
+        return _err(exc)
+
+
+@routes.post("/clapper/api/finish")
+async def finish_set(request):
+    """path, finish {scene_volume, tracks[], overlays[]}: music, sound and overlays applied at export."""
+    body = await _body(request)
+    try:
+        async with _lock:
+            project = _open(body["path"], request)
+            finish_engine.set_finish(project, body.get("finish") or {})
+        return _ok(_view(project))
+    except (KeyError, ProjectError, OSError) as exc:
+        return _err(exc)
+
+
+@routes.post("/clapper/api/finish/title")
+async def finish_title(request):
+    """path, text, style (bold/regular/serif), color, box (#rrggbbaa or null), size → a title-card image in the library."""
+    body = await _body(request)
+    try:
+        loop = asyncio.get_running_loop()
+        async with _lock:
+            project = _open(body["path"], request)
+            asset = await loop.run_in_executor(None, lambda: finish_engine.title_card(
+                project, body.get("text", ""), style=body.get("style", "bold"), color=body.get("color") or "#ffffff",
+                box=body.get("box"), size=int(body.get("size") or 96)))
+        return _ok({"asset": asset, "project": _view(project)})
+    except (KeyError, ProjectError, OSError, ValueError) as exc:
         return _err(exc)
 
 

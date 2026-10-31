@@ -132,7 +132,7 @@ def delete_export(project: Project, file: str) -> None:
 
 
 def export_video(project: Project, *, name: str | None = None, partial: bool = False, size: str = "auto",
-                 use_upscaled: bool = True) -> Path:
+                 use_upscaled: bool = True, use_finish: bool = True) -> Path:
     if size not in EXPORT_SIZES:
         raise ProjectError(f"size must be one of {EXPORT_SIZES}")
     segments = export_plan(project, partial=partial, use_upscaled=use_upscaled and size != "original")
@@ -161,12 +161,24 @@ def export_video(project: Project, *, name: str | None = None, partial: bool = F
         parts.append(f"[{i}:a]{chain}[a{i}]")
         labels.append(f"[v{i}][a{i}]")
     parts.append(f"{''.join(labels)}concat=n={len(segments)}:v=1:a=1[v][a]")
-    cmd += ["-filter_complex", ";".join(parts), "-map", "[v]", "-map", "[a]", "-r", str(FPS),
+    vout, aout = "v", "a"
+    from .finish import filters as finish_filters, finish_of, is_empty
+
+    fin = finish_of(project)
+    applied = use_finish and not is_empty(fin)
+    if applied:
+        total = sum(s["seconds"] for s in segments)
+        extra_inputs, extra_parts, vout, aout = finish_filters(project, fin, first_input=len(segments), width=width,
+                                                               height=height, total=total)
+        cmd += extra_inputs
+        parts += extra_parts
+    cmd += ["-filter_complex", ";".join(parts), "-map", f"[{vout}]", "-map", f"[{aout}]", "-r", str(FPS),
             "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", str(out)]
     proc = subprocess.run(cmd, capture_output=True)
     if proc.returncode != 0:
         raise ProjectError(f"ffmpeg failed: {proc.stderr.decode(errors='replace')[-1500:]}")
     manifest = {"project": project.data["name"], "created": stamp, "file": out.name, "width": width, "height": height,
+                "finish": fin if applied else None,
                 "segments": segments,
                 "total_seconds": round(sum(s["seconds"] for s in segments), 3),
                 "scenes_exported": len(segments), "scenes_total": len(project.scenes)}

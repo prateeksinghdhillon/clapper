@@ -351,9 +351,22 @@ $("aiSettingsBtn").onclick = $("mAiSettings").onclick = async () => {
 };
 $("aiAdd").onclick = () => {
   const id = "p" + Math.random().toString(16).slice(2, 8);
-  aiDraft.providers[id] = { kind: "openai", name: "Online model", base_url: "https://api.openai.com/v1", model: "", api_key: "", context: 128000, vision: true, _new: true };
+  aiDraft.providers[id] = { kind: "openai", name: "Online model", base_url: "https://api.openai.com/v1", model: "", api_key: "", context: 128000, vision: false, _new: true };
   renderAiSettings();
 };
+// Base URLs of common OpenAI-compatible services (the model name is up to you; vision depends on the model).
+const AI_PRESETS = [
+  ["OpenAI", "https://api.openai.com/v1", "gpt-4.1-mini", 1047576, true],
+  ["OpenRouter", "https://openrouter.ai/api/v1", "openai/gpt-4.1-mini", 1047576, true],
+  ["Groq", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", 131072, false],
+  ["Mistral", "https://api.mistral.ai/v1", "mistral-medium-latest", 131072, true],
+  ["DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", 65536, false],
+  ["Together", "https://api.together.xyz/v1", "meta-llama/Llama-3.3-70B-Instruct-Turbo", 131072, false],
+  ["Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash", 1048576, true],
+  ["Anthropic", "https://api.anthropic.com/v1", "claude-sonnet-5-5", 200000, true],
+  ["LM Studio (another computer)", "http://192.168.1.10:1234/v1", "", 32768, false],
+  ["Ollama (another computer)", "http://192.168.1.10:11434/v1", "", 32768, false],
+];
 function renderAiSettings() {
   const body = $("aiBody"); body.replaceChildren();
   body.append(h("p", { class: "hint" }, "The assistant works with the local model or with any OpenAI-compatible service (OpenAI, OpenRouter, Groq, LM Studio, Ollama, vLLM …). API keys stay on the computer running ComfyUI."));
@@ -369,6 +382,23 @@ function renderAiSettings() {
     const think = h("select", {}, [["off", "Off — answer directly"], ["auto", "Auto — think when planning a video"], ["always", "Always"]]
       .map(([v, label]) => h("option", { value: v, selected: v === mode }, label)));
     think.onchange = () => (p.thinking = think.value === "off" ? false : think.value === "auto" ? "auto" : (p.thinking_budget || 2048));
+    const preset = p.kind === "local" ? null : h("select", {}, h("option", { value: "" }, "Fill in from a preset…"), ...AI_PRESETS.map(([n], i) => h("option", { value: i }, n)));
+    if (preset) preset.onchange = () => {
+      const pr = AI_PRESETS[Number(preset.value)]; if (!pr) return;
+      Object.assign(p, { name: pr[0], base_url: pr[1], model: p.model || pr[2], context: pr[3], vision: pr[4] });
+      renderAiSettings();
+    };
+    const testOut = h("span", { class: "hint test-out" });
+    const test = h("button", { onclick: () => guard(async () => {
+      test.disabled = true; testOut.className = "hint test-out"; testOut.textContent = p.kind === "local" ? "Testing (may load the model first)…" : "Testing…";
+      try {
+        const { api_key_set, api_key_hint, _new, ...rest } = p;
+        const r = await call("/assistant/test", { id, provider: rest });
+        testOut.className = "hint test-out ok";
+        testOut.textContent = `✓ answered in ${r.seconds} s: “${r.reply}”` + (r.usage ? "" : " · sends no token counts (estimated instead)") + (r.reasoning ? " · shows its reasoning" : "");
+      } catch (e) { testOut.className = "hint test-out bad"; testOut.textContent = "✗ " + e.message; throw Object.assign(e, { silent: true }); }
+      finally { test.disabled = false; }
+    }) }, "Test connection");
     body.append(h("section", { class: "settings-section provider" },
       h("div", { class: "block-head" }, h("label", { class: "switch" }, active, h("b", {}, p.name || id), h("span", { class: "hint" }, p.kind === "local" ? " · this computer, shares the GPU" : " · online")),
         p.kind !== "local" ? h("button", { class: "ghost danger", onclick: () => { p.remove = true; renderAiSettings(); } }, p.remove ? "will be removed" : "Remove") : null),
@@ -379,7 +409,9 @@ function renderAiSettings() {
         f("Context (tokens)", "context", { type: "number" }),
         p.kind === "local" ? h("label", {}, "Thinking", think) : null,
         p.kind === "local" ? f("Thinking budget (tokens; also used by “think harder”)", "thinking_budget", { type: "number" }) : null,
-        h("label", { class: "switch" }, vision, "can see images"))));
+        h("label", { class: "switch" }, vision, "can see images"),
+        preset ? h("label", {}, "Preset", preset) : null),
+      h("div", { class: "row" }, test, testOut)));
   }
   addPasswordEyes(body);
 }

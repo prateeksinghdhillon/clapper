@@ -630,10 +630,11 @@ async function renderFinish() {
   if (!studio.exports) studio.exports = (await guard(() => call(`/exports?path=${encodeURIComponent(state.path)}`)))?.exports || [];
   const size = h("select", { id: "exportSize" }, [["auto", c.size ? `Largest scene (${c.size[0]}×${c.size[1]})` : "Largest scene"], ["720p", "720p"], ["1080p", "1080p"], ["original", "Original takes, no upscales"]].map(([v, l]) => h("option", { value: v }, l)));
   const result = h("div", {});
+  const useMix = h("input", { type: "checkbox", checked: true });
   const showResult = (d) => {
     const m = d.manifest;
     result.replaceChildren(h("div", { class: "card export-done" }, h("b", {}, "Exported"), h("video", { src: media(d.file), controls: true, playsinline: true, preload: "metadata", poster: thumbUrl(d.file, 0.5) }),
-      h("p", { class: "hint" }, `${m.total_seconds.toFixed(1)} s · ${m.width}×${m.height} · scenes 1–${m.scenes_exported} of ${m.scenes_total}`),
+      h("p", { class: "hint" }, `${m.total_seconds.toFixed(1)} s · ${m.width}×${m.height} · scenes 1–${m.scenes_exported} of ${m.scenes_total}${m.finish ? ` · ${m.finish.tracks.length} sound track(s), ${m.finish.overlays.length} overlay(s)` : ""}`),
       h("a", { class: "btn primary", href: media(d.file), download: d.file.split("/").pop() }, "⤓ Download")));
   };
   if (lastExport && lastExport.path === state.path) showResult(lastExport);
@@ -641,7 +642,7 @@ async function renderFinish() {
   const go = h("button", { class: "primary big", disabled: !c.ready, ...busyAttr("export"), onclick: () => once("export", async () => {
     go.textContent = "Exporting…";
     try {
-      const d = await call("/export", { path: state.path, partial: !c.complete, size: size.value });
+      const d = await call("/export", { path: state.path, partial: !c.complete, size: size.value, use_finish: useMix.checked });
       lastExport = { ...d, path: state.path }; studio.exports = null;
       showResult(d); toast("Exported"); loadExports();
     } finally { go.textContent = label; }
@@ -654,24 +655,153 @@ async function renderFinish() {
         h("button", { disabled: !finishSel.size && !notUp.length, onclick: () => openUpscale(finishSel.size ? [...finishSel] : notUp, "Upscale scenes") }, finishSel.size ? `⤢ Upscale ${finishSel.size} selected…` : `⤢ Upscale the ${notUp.length} not upscaled…`)),
       h("p", { class: "hint" }, "Finish each scene on its own: upscale it (Sharpen or Re-detail, 720p or 1080p) and choose which version goes into the video. Upscales run one after another."),
       rows.length ? h("div", { class: "fin-list" }, sceneRows) : h("p", { class: "hint" }, "No scenes yet.")),
+    mixCard(c.seconds),
     h("section", { class: "card" },
-      h("div", { class: "card-head" }, h("h3", {}, "2 · Export")),
+      h("div", { class: "card-head" }, h("h3", {}, "3 · Export")),
       c.ready ? h("p", {}, c.complete ? `All ${c.total} scenes · ${c.seconds.toFixed(1)} s` : `Scenes 1–${c.ready} of ${c.total} are ready · ${c.seconds.toFixed(1)} s`,
         c.upscaled.length ? ` · upscaled: ${c.upscaled.join(", ")}` : " · none upscaled",
         c.upscaled.length && c.not_upscaled.length ? h("span", { class: "hint" }, ` (scene${c.not_upscaled.length > 1 ? "s" : ""} ${c.not_upscaled.join(", ")} resized to match, softer)`) : null) : h("p", { class: "hint" }, "Scene 1 has no finished take yet."),
       !c.complete && c.ready ? h("p", { class: "hint warn" }, `Scene${c.missing.length > 1 ? "s" : ""} ${c.missing.join(", ")} ${c.missing.length > 1 ? "have" : "has"} no finished take — the export stops before ${c.missing.length > 1 ? "them" : "it"}.`) : null,
       c.warnings.length ? h("ul", { class: "warn-list" }, c.warnings.map((w) => h("li", {}, `${w.message} (at ${w.at_seconds.toFixed(1)} s).`))) : null,
-      h("div", { class: "row" }, h("label", {}, "Video size", size), go),
-      h("p", { class: "hint" }, "Music, sound effects and overlays (logo, product photos, title cards) come here next."),
+      h("div", { class: "row" }, h("label", {}, "Video size", size), h("label", { class: "switch" }, useMix, "With sound & overlays"), go),
       result),
     h("section", { class: "card" },
-      h("div", { class: "card-head" }, h("h3", {}, "3 · Previous exports")),
+      h("div", { class: "card-head" }, h("h3", {}, "4 · Previous exports")),
       studio.exports.length ? h("div", { class: "exp-list" }, studio.exports.map((x) => h("div", { class: "exp-row" },
         h("button", { class: "fin-thumb", onclick: () => playFile(x.file, fmtStamp(x.created) || x.file) }, posterImg(x.file, 0.5)),
         h("div", { class: "fin-info" }, h("b", {}, fmtStamp(x.created) || x.file.split("/").pop()), h("span", { class: "hint" }, `${(x.seconds || 0).toFixed(1)} s · ${x.width || "?"}×${x.height || "?"} · ${fmtSize(x.bytes)}${x.upscaled?.length ? " · upscaled " + x.upscaled.join(", ") : ""}`)),
         h("div", { class: "fin-act" }, h("button", { onclick: () => playFile(x.file, fmtStamp(x.created) || x.file) }, "▶"), h("a", { class: "btn", href: media(x.file), download: x.file.split("/").pop() }, "⤓"),
           h("button", { class: "icon", title: "Delete", onclick: () => guard(async () => { if (!confirm("Delete this exported video?")) return; const d = await call("/exports/delete", { path: state.path, file: x.file }); studio.exports = d.exports; renderFinish(); }) }, "✕")))))
         : h("p", { class: "hint" }, "No exports yet.")));
+  drawTimeline();
+}
+
+// ------------------------------------------------------------------ Finish: sound & overlays
+
+let mix = null;          // the editable copy of project.finish
+let mixTimer = null;
+const POS_LABEL = { "top-left": "Top left", top: "Top", "top-right": "Top right", left: "Left", center: "Centre", right: "Right",
+  "bottom-left": "Bottom left", bottom: "Bottom", "bottom-right": "Bottom right", custom: "Custom (x, y)" };
+function mixState() {
+  const f = state.project.finish || {};
+  if (!mix || mix.path !== state.path) mix = { path: state.path, scene_volume: f.scene_volume ?? 1, tracks: structuredClone(f.tracks || []), overlays: structuredClone(f.overlays || []) };
+  return mix;
+}
+function saveMix(redraw) {
+  clearTimeout(mixTimer);
+  mixTimer = setTimeout(() => guard(async () => {
+    const { scene_volume, tracks, overlays } = mix;
+    const d = await call("/finish", { path: state.path, finish: { scene_volume, tracks, overlays } });
+    state.project = d; mix.tracks = structuredClone(d.finish.tracks); mix.overlays = structuredClone(d.finish.overlays);
+    if (redraw) renderFinish();
+  }), 500);
+  if (redraw) drawTimeline();
+}
+const num = (label, value, onchange, opts = {}) => {
+  const i = h("input", { type: "number", value, step: opts.step || 0.1, min: opts.min ?? 0, max: opts.max, placeholder: opts.placeholder || "" });
+  i.oninput = () => onchange(i.value === "" ? null : Number(i.value));
+  return h("label", { class: "mini" }, label, i);
+};
+const slider = (label, value, onchange, { min = 0, max = 1.5, step = 0.05, pct = true } = {}) => {
+  const out = h("b", {}, pct ? `${Math.round(value * 100)}%` : String(value));
+  const r = h("input", { type: "range", min, max, step, value });
+  r.oninput = () => { out.textContent = pct ? `${Math.round(r.value * 100)}%` : r.value; onchange(Number(r.value)); };
+  return h("label", { class: "mini slider" }, h("span", {}, label, " ", out), r);
+};
+
+let timelineBox = null, mixTotal = 0;
+function drawTimeline() {
+  if (!timelineBox) return;
+  const total = mixTotal || 1;
+  const pct = (s) => `${Math.max(0, Math.min(100, (s / total) * 100)).toFixed(2)}%`;
+  const scenesRow = h("div", { class: "tl-row tl-scenes" });
+  let t = 0;
+  for (const [i, s] of scenes().entries()) {
+    const take = state.project.takes[s.selected_take];
+    if (!take || take.status !== "done") break;
+    const len = ((take.frames || 124) - (take.context_frames || 0)) / 24;
+    scenesRow.append(h("span", { class: "tl-scene", style: `left:${pct(t)};width:${pct(len)}`, title: `Scene ${i + 1}` }, String(i + 1)));
+    t += len;
+  }
+  const bar = (cls, start, len, label) => h("span", { class: `tl-bar ${cls}`, style: `left:${pct(start)};width:${pct(Math.max(0.15, len))}`, title: label }, label);
+  const tracks = mix.tracks.map((tr) => { const a = assets()[tr.asset] || {}; const len = tr.loop ? total - tr.start : Math.min((a.duration || total) - (tr.trim || 0), total - tr.start); return bar(a.role === "music" ? "music" : "sound", tr.start, len, a.title || "sound"); });
+  const ovs = mix.overlays.map((o) => { const a = assets()[o.asset] || {}; const end = o.end ?? total; return bar("overlay", o.start, end - o.start, a.title || "overlay"); });
+  const ticks = h("div", { class: "tl-ticks" }, ...Array.from({ length: Math.floor(total / 5) + 1 }, (_, k) => h("span", { style: `left:${pct(k * 5)}` }, `${k * 5}s`)));
+  // one lane per track and per overlay, so nothing hides behind something else
+  timelineBox.replaceChildren(scenesRow, ...[...tracks, ...ovs].map((b) => h("div", { class: "tl-row lane" }, b)), ticks);
+}
+
+function mixCard(total) {
+  const m = mixState(); mixTotal = total;
+  timelineBox = h("div", { class: "timeline" });
+  const trackRows = m.tracks.map((tr, i) => {
+    const a = assets()[tr.asset];
+    const set = (k, redraw) => (v) => { tr[k] = v; saveMix(redraw); };
+    return h("div", { class: "mix-row" },
+      h("div", { class: "mix-title" }, h("b", {}, a ? a.title : "missing sound"), h("span", { class: "hint" }, a?.duration ? ` ${fmtDur(a.duration)}` : ""),
+        h("span", { class: "spacer" }), h("button", { class: "icon", title: "Remove", onclick: () => { m.tracks.splice(i, 1); saveMix(true); renderFinish(); } }, "✕")),
+      a ? h("audio", { src: media(a.file), controls: true, preload: "none" }) : null,
+      h("div", { class: "mix-fields" },
+        num("Starts at (s)", tr.start, set("start", true)),
+        slider("Volume", tr.volume, set("volume")),
+        num("Fade in (s)", tr.fade_in, set("fade_in")), num("Fade out (s)", tr.fade_out, set("fade_out")),
+        h("label", { class: "switch" }, h("input", { type: "checkbox", checked: tr.loop, onchange: (e) => set("loop", true)(e.target.checked) }), "Loop to the end"),
+        h("label", { class: "switch", title: "Lower this track while the scenes' own sound (voices, effects, ambience) is loud" }, h("input", { type: "checkbox", checked: tr.duck, onchange: (e) => set("duck")(e.target.checked) }), "Dip under the scenes' sound")));
+  });
+  const ovRows = m.overlays.map((o, i) => {
+    const a = assets()[o.asset];
+    const set = (k, redraw) => (v) => { o[k] = v; saveMix(redraw); };
+    const pos = h("select", {}, Object.entries(POS_LABEL).map(([v, l]) => h("option", { value: v, selected: v === o.position }, l)));
+    pos.onchange = () => { o.position = pos.value; saveMix(); renderFinish(); };
+    return h("div", { class: "mix-row ov" },
+      h("div", { class: "mix-title" }, a ? h("img", { class: "ov-thumb", src: media(a.file), alt: "" }) : null, h("b", {}, a ? a.title : "missing image"),
+        h("span", { class: "spacer" }), h("button", { class: "icon", title: "Remove", onclick: () => { m.overlays.splice(i, 1); saveMix(true); renderFinish(); } }, "✕")),
+      h("div", { class: "mix-fields" },
+        h("label", { class: "mini" }, "Position", pos),
+        o.position === "custom" ? num("x (0–1)", o.x, set("x"), { step: 0.01, max: 1 }) : null,
+        o.position === "custom" ? num("y (0–1)", o.y, set("y"), { step: 0.01, max: 1 }) : null,
+        slider("Size (of the width)", o.width, set("width"), { min: 0.05, max: 1, step: 0.01 }),
+        slider("Opacity", o.opacity, set("opacity"), { min: 0, max: 1, step: 0.05 }),
+        num("From (s)", o.start, set("start", true)), num("Until (s)", o.end, set("end", true), { placeholder: "the end" }),
+        num("Fade (s)", o.fade, set("fade"))));
+  });
+  // title card form
+  const tc = { text: "", style: "bold", color: "#ffffff", box: true };
+  const tcText = h("textarea", { rows: 2, placeholder: "Title text — a second line is allowed" });
+  tcText.oninput = () => (tc.text = tcText.value);
+  const tcStyle = h("select", {}, [["bold", "Bold"], ["regular", "Regular"], ["serif", "Serif"]].map(([v, l]) => h("option", { value: v }, l)));
+  tcStyle.onchange = () => (tc.style = tcStyle.value);
+  const tcColor = h("input", { type: "color", value: "#ffffff" });
+  tcColor.oninput = () => (tc.color = tcColor.value);
+  const tcBox = h("input", { type: "checkbox", checked: true }); tcBox.onchange = () => (tc.box = tcBox.checked);
+  const titleForm = h("details", { class: "adv" }, h("summary", {}, "＋ Title card…"),
+    h("div", { class: "mix-fields" }, h("label", { class: "mini wide" }, "Text", tcText), h("label", { class: "mini" }, "Style", tcStyle), h("label", { class: "mini" }, "Colour", tcColor),
+      h("label", { class: "switch" }, tcBox, "Dark box behind"),
+      h("button", { class: "primary", ...busyAttr("title"), onclick: () => once("title", async () => {
+        if (!tc.text.trim()) throw new Error("Type the title text");
+        const d = await call("/finish/title", { path: state.path, text: tc.text, style: tc.style, color: tc.color, box: tc.box ? "#000000a0" : null, size: 110 });
+        state.project = d.project;
+        m.overlays.push({ asset: d.asset.id, start: 0, end: Math.min(3, total || 3), position: "top", width: 0.7, opacity: 1, fade: 0.4 });
+        saveMix(true); renderFinish(); toast("Title card added — it is also in the Studio");
+      }) }, "Make and add")),
+    h("p", { class: "hint" }, "Rendered as a sharp image with a font that has your text's script (Latin, Devanagari, CJK, Arabic, …), then placed like any overlay."));
+  return h("section", { class: "card" },
+    h("div", { class: "card-head" }, h("h3", {}, "2 · Sound & overlays"), h("span", { class: "hint" }, "Exact, added at export — nothing is re-rendered")),
+    total ? timelineBox : h("p", { class: "hint" }, "The timeline appears when scene 1 has a take."),
+    slider("Scenes' own sound", m.scene_volume, (v) => { m.scene_volume = v; saveMix(); }, { min: 0, max: 2 }),
+    h("h4", {}, "Music & sound"),
+    ...trackRows,
+    h("div", { class: "row" }, h("button", { onclick: () => pickAssets({ kind: "audio", title: "Add music or a sound" }, (ids) => {
+      for (const id of ids) { const a = assets()[id]; m.tracks.push({ asset: id, start: 0, volume: a?.role === "music" ? 0.5 : 1, fade_in: a?.role === "music" ? 1 : 0, fade_out: a?.role === "music" ? 2 : 0, loop: a?.role === "music", duck: a?.role === "music" }); }
+      saveMix(true); renderFinish();
+    }) }, "＋ Add music or sound"), h("span", { class: "hint" }, "From the Studio (upload music and effects there). Music loops and dips under the scenes' sound by default.")),
+    h("h4", {}, "Overlays"),
+    ...ovRows,
+    h("div", { class: "row" }, h("button", { onclick: () => pickAssets({ kind: "image", title: "Add an image overlay (logo, product photo…)" }, (ids) => {
+      for (const id of ids) m.overlays.push({ asset: id, start: 0, end: null, position: "bottom-right", width: 0.22, opacity: 1, fade: 0.4 });
+      saveMix(true); renderFinish();
+    }) }, "＋ Add image"), h("span", { class: "hint" }, "Logos and product photos stay exact — they are put on the picture, not generated.")),
+    titleForm);
 }
 
 // The Style & notes dialog (Scenes).

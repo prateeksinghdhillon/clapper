@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 
 from .export import FFMPEG
-from .llm import Client, LLMError
+from .llm import CONTEXT_ERROR, Client, HTTPError, LLMError
 from .project import JOIN_MODES, Project, ProjectError
 
 GUIDE = Path(__file__).resolve().parents[2] / "docs" / "PROMPT_GUIDE.md"
@@ -35,37 +35,36 @@ COMPACT_AT = 0.6         # share of the context window that triggers compaction
 IMAGE_EDGE = 1024        # long edge of images sent to the model (about 1000 vision tokens)
 REPLY_TOKENS = 6000
 
-INSTRUCTIONS = """You are the director's assistant inside Clapper, a tool for making long AI videos with the MiniMax H3 model, scene by scene. You help the user plan the story, split it into scenes, write each scene's H3 prompt, choose references and settings, and review finished takes.
+INSTRUCTIONS = """You are the director's assistant inside Clapper, a studio for making AI videos with the MiniMax H3 model, scene by scene. You help the user plan the story, create its characters and places, write each scene's H3 prompt and dialogue, choose references and settings, and review finished takes.
 
 # How Clapper works
-- A project is one video: an ordered list of scenes. A scene is usually 5 seconds (1 to 15). Each render of a scene is a take; the user picks one take per scene, and the export joins the picked takes into one video.
-- Joins: "continue" (default) starts the scene from the last 22 frames and sound of the previous scene's selected take, so there is no cut. "cut" is a fresh start. "bridge" is experimental; don't suggest it. Scene 1 always starts fresh, from the start image if there is one.
-- Because of "continue", a scene's text must start from where the previous scene ends, and end in a state the next scene can pick up.
-- References are images (characters, props, style sheets, logos) or voice samples, written as @name. Clapper turns @name into <Picture N>/<Audio N> for each scene. Never write <Picture N> yourself; always write @name.
-- A scene uses the project's default references (marked ★) unless it has its own list. A scene's text may only mention @names active in that scene (its references, plus the start image). Fewer references per scene is better.
-- The start image (marked ▶) is the first frame of scene 1 and is shown to H3 as <Picture 1> in every scene.
-- Each reference has a definition, sent to H3 in the scenes that use it ("@hero is the mascot: …"), and may have a card: notes on what it looks like, for you only.
+- A project is one video: an ordered list of scenes (usually 5 seconds each, 1 to 15). Each render of a scene is a take; the user picks one take per scene, and the export joins the picked takes. Clapper has three workspaces: Studio (the material), Scenes (the storyboard) and Finish (upscale, music, overlays, export).
+- Studio: characters, places, props and styles. Each has a name, a description (what makes it look like itself — it is added to every image made from it and sent to H3 as its definition), looks (outfits, angles, variations) with one main look, and for characters a voice. Its @name means its main look. A character that has no main look yet has no @name.
+- How a scene starts: "continue" (default) carries on from the last 22 frames and sound of the previous scene, so its text must start where the previous scene ends; "fresh" is a cut to a new shot made from the references; "image" opens exactly on an image (a start frame made in the Studio, given as start_image). Scene 1 is fresh or image.
+- References are images or voice samples written as @name; Clapper turns them into <Picture N>/<Audio N> per scene. Never write <Picture N> yourself. A scene's text may only mention @names active in it (its references plus its start image). Fewer references per scene is better.
+- Sound: a voice reference (@name of a voice sample in refs) makes H3 speak NEW words in that voice. A sound clip (sound_clips) is an existing audio item — for example a line made with speak_line — that becomes the scene's soundtrack word for word from a given second. When a scene has a sound clip, write the same words in its <d> line, with the same speaker, starting at the same time.
 - The style text is sent with every scene: format, look, voices, rules. Nothing scene-specific goes there.
-- Rendering one scene takes the GPU for several minutes. Suggest rendering one scene and checking it before rendering many.
+- Costs: an image takes seconds, a spoken line a few seconds, a scene several minutes of GPU time. Suggest rendering one scene and checking it before rendering many.
 
 # How you work
 - Each user message ends with the current project between <project> tags. Scenes are numbered from 1.
-- You never change the project directly. You propose changes with tools (add_scenes, edit_scene, edit_project, …); each becomes a card the user applies or rejects. Then tell the user in one or two sentences what you proposed. Don't repeat the prompt text in your reply; the card shows it.
-- To plan a video, make ONE add_scenes call with all its scenes.
-- Scene numbers always mean the scenes listed in <project>. New scenes in a proposal waiting for the user get numbers only once it is applied; never propose them again. To correct an add_scenes proposal from the same answer, call add_scenes again with the same `after`: the new card replaces the old one.
-- Change only what the user asked for: a change to one scene is one edit_scene call for that scene.
-- When a reference's look matters and it has no card, call view_reference, then save what you saw with save_reference_card: precise features only, and say when unsure. The user's definition is more reliable than your eyes when they disagree.
-- To check a finished take, call view_take (unless its frames are already attached to the message). Never describe or judge an image or take you have not been shown in this conversation.
-- To change an existing scene use edit_scene; add_scenes is only for new scenes. When a take does not match its scene, say what differs, then usually propose an edit_scene that makes the text clearer.
-- Keep lasting facts in the story notes with update_notes: the story, characters, tone, the user's preferences and decisions. Old messages get summarised; the notes stay. Always write the complete notes.
-- Be brief. Ask a short question when something important is unclear (length, format, language, look) rather than guessing.
+- You never change the project yourself. Every change is a proposal (a tool call) that becomes a card the user applies or rejects. After proposing, say in one or two sentences what you proposed; don't repeat the card's text.
+- Images and speech you propose are generated only after the user applies the card, and appear in <project> a little later ("Being generated now"). Don't use a new character's @name in scenes until <project> shows it with an @name; propose the scenes in a later answer.
+- To plan a video, make ONE add_scenes call with all its scenes. Change only what the user asked for: a change to one scene is one edit_scene call.
+- Scene numbers mean the scenes listed in <project>. Scenes in a waiting add_scenes card have no number yet; to correct that card in the same answer, call add_scenes again with the same `after` (it replaces it).
+- When a reference's look matters and it has no card, call view_reference, then save precise features with save_reference_card. The user's definitions and descriptions beat your eyes.
+- To check a take, call view_take (unless its frames are attached). Never describe or judge an image or take you have not been shown. When a take does not match its scene, say what differs, then usually propose an edit_scene that makes the text clearer.
+- Keep lasting facts in the story notes with update_notes (story, characters, tone, the user's decisions); always write the complete notes.
+- Be brief. Ask a short question when something important is unclear (length, shape, language, look, who speaks) rather than guessing.
 - Write scene text exactly as the prompt guide below says.
 
-# Planning a new video
-1. If the style text is empty, propose one with edit_project: format and total length, the look (in the style of @style if such a reference exists), who speaks and how, rules such as "no readable writing". Include a line "subject_definitions:".
-2. For every reference without a definition, propose one with set_reference_definition.
-3. Propose all scenes with ONE add_scenes call. Scenes are only the parts of the video people will watch: never make a scene for a definition, the style text or the start image. You cannot create images; if there is no start image, scene 1 describes the opening setting in words.
-4. Each scene: a short title; 5 seconds unless there is a reason; join "continue" (scene 1 always starts fresh); refs null to use the default references, or a list containing every @name its text mentions; text with the three H3 fields, each on its own line.
+# Making a new video
+1. Agree on the basics if they are not clear: length, shape (portrait 9:16 for phones, landscape 16:9), language, the characters and places. Propose change_settings for the shape if needed.
+2. Style text (edit_project): format and total length, the look, who speaks and how, rules such as "no readable writing", and a line "subject_definitions:".
+3. Cast and world: create_character for each main character and place, with a precise description (age, build, face, hair, clothes and colours; for places the layout, materials, light and time of day). Characters who speak need a voice: edit_character with a voice sample from the library (ask the user to add one if there is none).
+4. When they have main looks: start frames with make_images (action place) for scenes that open on a composed picture; new looks or angles when the story needs them (another outfit, a side view).
+5. Dialogue lines that must sound exactly right: speak_line in the character's voice, then use the line as a sound clip in its scene.
+6. Scenes with ONE add_scenes call: only the parts people will watch; each with a short title, 5 seconds unless there is a reason, how it starts, refs (null = the defaults, or every @name its text mentions), sound_clips if any, and the three H3 fields each on its own line.
 """
 
 
@@ -158,7 +157,8 @@ def snapshot(project: Project, chat: dict | None = None) -> str:
              f"Settings: default scene length {s['scene_seconds']}s · {s['sampling']['steps']} steps · "
              f"{'size from the start image' if s['resolution']['mode'] == 'start_image' and start else str(s['resolution']['width']) + 'x' + str(s['resolution']['height'])}"
              f" · continuity {s['continuity']['frames']} frames"
-             + (f" · video model {s['video_model']['mode']}" if (s.get("video_model") or {}).get("mode", "fl2va") != "fl2va" else ""),
+             + (f" · video model {s['video_model']['mode']}" if (s.get("video_model") or {}).get("mode", "fl2va") != "fl2va" else "")
+             + (f" · video shape {s['resolution'].get('aspect')}" if s["resolution"].get("aspect", "start_image") != "start_image" else ""),
              f"Start image: {'@' + start if start else 'none (scene 1 describes the opening setting in words)'}",
              "Style text:", '"""' + (d.get("style") or "").strip() + '"""',
              "Story notes:", '"""' + (d.get("notes") or "").strip() + '"""',
@@ -172,6 +172,21 @@ def snapshot(project: Project, chat: dict | None = None) -> str:
             if (item.get(key) or "").strip():
                 extra = " (written by you, not yet confirmed by the user)" if key == "card" and item.get("card_status") != "confirmed" else ""
                 lines.append(f"    {label}{extra}: {item[key].strip()}")
+    ents = list(project.entities.values())
+    if ents:
+        lines.append("Cast & world (characters, places, props, styles; their main look is their @name):")
+        for e in ents:
+            looks = project.entity_looks(e["id"])
+            main = project.assets.get(e.get("main") or "")
+            voice = project.assets.get(e.get("voice") or "")
+            lines.append(f"- {e['name']} ({e['kind']}) · " + (f"@{e['ref']}" if main else "no main look yet (no @name until it has one)")
+                         + f" · {len(looks)} look(s)" + (f": " + ", ".join(f"{'★' if x['id'] == e.get('main') else ''}{x.get('look') or x['title']}" for x in looks[:8]) if looks else "")
+                         + (f" · voice {voice['id']} \"{voice['title']}\"" if voice else (" · no voice" if e["kind"] == "character" else "")))
+            if e.get("description"):
+                lines.append(f"    description: {e['description']}")
+    busy = [j for j in (d.get("jobs") or {}).values() if j["status"] in ("queued", "running") and j.get("kind") != "upscale"]
+    if busy:
+        lines.append(f"Being generated now: {len(busy)} job(s) — " + "; ".join((j.get("title") or j["tool"]) for j in busy[:6]))
     named = {item.get("asset") for item in items.values()}
     unnamed = [a for a in project.assets.values() if a["id"] not in named]
     if unnamed:
@@ -231,8 +246,22 @@ def build_messages(project: Project, chat: dict, provider: dict, *, with_snapsho
     last_user = max((i for i, m in enumerate(history) if m["role"] == "user"), default=-1)
     out = [{"role": "system", "content": system_prompt(chat)}]
     events: list[str] = []
+    local = provider.get("kind") == "local"
+    held: list[dict] = []      # images a tool showed: sent after the last tool reply of that round
+    open_calls: list[str] = []  # tool calls of the last assistant message still waiting for a reply
+
+    def close_round():
+        # every tool call needs a reply before anything else is sent (strict APIs answer 400 otherwise)
+        for cid in open_calls:
+            out.append({"role": "tool", "tool_call_id": cid, "content": "(no result: the answer was stopped)"})
+        open_calls.clear()
+        out.extend(held)
+        held.clear()
+
     for i, m in enumerate(history):
         role = m["role"]
+        if role not in ("tool", "attachment"):
+            close_round()
         if role == "event":
             events.append(m["text"])
         elif role == "user":
@@ -245,17 +274,43 @@ def build_messages(project: Project, chat: dict, provider: dict, *, with_snapsho
             parts = [p for p in (_image_part(project, r) for r in m.get("images", [])) if p] if vision else []
             out.append({"role": "user", "content": [*parts, {"type": "text", "text": text}] if parts else text})
         elif role == "assistant":
-            msg = {"role": "assistant", "content": m.get("text") or ""}
-            if m.get("tool_calls"):
+            calls = m.get("tool_calls") or []
+            text = m.get("text") or ""
+            if not calls and not text.strip():
+                continue   # an empty answer (e.g. stopped at once) is not sent: some APIs reject empty messages
+            msg = {"role": "assistant", "content": text if (text or local) else None}
+            if calls:
                 msg["tool_calls"] = [{"id": c["id"], "type": "function",
-                                      "function": {"name": c["name"], "arguments": c["arguments"]}} for c in m["tool_calls"]]
+                                      "function": {"name": c["name"], "arguments": c["arguments"] or "{}"}} for c in calls]
+                open_calls.extend(c["id"] for c in calls)
             out.append(msg)
         elif role == "tool":
-            out.append({"role": "tool", "tool_call_id": m["tool_call_id"], "content": m["text"]})
+            if m["tool_call_id"] in open_calls:
+                open_calls.remove(m["tool_call_id"])
+                out.append({"role": "tool", "tool_call_id": m["tool_call_id"], "content": m["text"]})
         elif role == "attachment":  # images a tool showed to the model
             parts = [p for p in (_image_part(project, r) for r in m.get("images", [])) if p] if vision else []
-            out.append({"role": "user", "content": [*parts, {"type": "text", "text": m["text"]}] if parts else m["text"]})
+            held.append({"role": "user", "content": [*parts, {"type": "text", "text": m["text"]}] if parts else m["text"]})
+    close_round()
     return out
+
+
+def estimate_tokens(messages: list) -> int:
+    """A rough count for providers that send no usage (about 3.5 characters per token; images ~800 tokens)."""
+    chars, images = 0, 0
+    for m in messages:
+        c = m.get("content")
+        if isinstance(c, str):
+            chars += len(c)
+        elif isinstance(c, list):
+            for part in c:
+                if part.get("type") == "text":
+                    chars += len(part.get("text", ""))
+                else:
+                    images += 1
+        for call in m.get("tool_calls") or []:
+            chars += len(call["function"]["arguments"]) + 30
+    return int(chars / 3.5) + 800 * images
 
 
 # ------------------------------------------------------------------ tools
@@ -272,9 +327,16 @@ _SCENE_FIELDS = {
     "title": {"type": "string", "description": "short title"},
     "text": {"type": "string", "description": "the H3 scene text, written as the prompt guide says"},
     "seconds": {"type": "number", "description": "length in seconds, 1-15 (usually 5)"},
-    "join": {"type": "string", "enum": ["continue", "cut"], "description": "how it joins the previous scene"},
+    "start": {"type": "string", "enum": ["continue", "fresh", "image"],
+              "description": "continue = carry on from the previous scene (default); fresh = a new shot from the references; image = open exactly on start_image"},
+    "start_image": {"type": "string", "description": "with start=image: the @name of an image (e.g. a start frame) the scene opens on"},
+    "sound_clips": {"type": "array", "items": {"type": "object", "properties": {
+        "clip": {"type": "string", "description": "id of an audio item (a_…) from the library, e.g. a speech line"},
+        "at": {"type": "number", "description": "seconds into the scene"}}, "required": ["clip"]},
+        "description": "audio that becomes the scene's soundtrack from that time, word for word (e.g. a spoken line)"},
     "refs": _REFS,
 }
+_KINDS = ["character", "place", "prop", "style"]
 
 TOOLS = [
     _fn("get_scene", "Read one scene in full: text, references, the exact prompt sent to H3, and its takes.",
@@ -304,13 +366,38 @@ TOOLS = [
     _fn("change_settings", "Propose generation settings changes.",
         {"steps": {"type": "integer", "description": "sampling steps (20 = proven quality, 8 = about 2.5x faster)"},
          "scene_seconds": {"type": "number", "description": "default scene length"},
-         "continuity_frames": {"type": "integer", "enum": [5, 22, 39], "description": "frames carried between scenes"}}, []),
+         "continuity_frames": {"type": "integer", "enum": [5, 22, 39], "description": "frames carried between scenes"},
+         "video_shape": {"type": "string", "enum": ["9:16", "16:9", "1:1", "4:5", "start_image"], "description": "portrait, landscape, square, 4:5, or the start image's shape"},
+         "video_model": {"type": "string", "enum": ["fl2va", "ref2va", "ref2va_fresh"], "description": "fl2va = proven default; ref2va = one model, 4 steps, about 2 min per scene"}}, []),
+    _fn("create_character", "Propose a new character (or place, prop, style) in the Studio, designed from its description. "
+        "Its name becomes its @name once it has a main look.",
+        {"kind": {"type": "string", "enum": _KINDS}, "name": {"type": "string"},
+         "description": {"type": "string", "description": "what makes it look like itself: age, build, face, hair, clothes, colours (places: layout, materials, time of day). Added to every image of it and sent to H3"},
+         "designs": {"type": "integer", "description": "how many first designs to generate (1-4, default 2); 0 with from_image"},
+         "from_image": {"type": "string", "description": "optional: an existing image (@name or a_… id) that becomes its first look instead of designing"}},
+        ["kind", "name", "description"]),
+    _fn("edit_character", "Propose changing a character's / place's description, name or voice.",
+        {"character": {"type": "string", "description": "its name or @name"}, "description": {"type": "string", "description": "the complete new description"},
+         "new_name": {"type": "string"}, "voice": {"type": "string", "description": "a voice sample (a_… id or @name) for its spoken lines"}}, ["character"]),
+    _fn("make_images", "Propose generating images of a character or place: a new outfit/look or variation, a new angle/pose, "
+        "start frames of a character in a place, or more designs. Uses its description and main look automatically — describe only the change.",
+        {"character": {"type": "string", "description": "its name or @name"},
+         "action": {"type": "string", "enum": ["look", "angle", "place", "more"]},
+         "change": {"type": "string", "description": "look: 'wearing a winter coat'; angle: 'from the side, walking'; place: what happens there"},
+         "place": {"type": "string", "description": "action place: the place's name or @name"},
+         "count": {"type": "integer", "description": "1-4 (default 2)"}}, ["character", "action"]),
+    _fn("speak_line", "Propose generating a spoken line in a voice (Qwen3-TTS). The result is an audio item you can then add to a scene as a sound clip.",
+        {"text": {"type": "string", "description": "exactly what is said"},
+         "voice": {"type": "string", "description": "a character's name (uses its voice), or a voice sample's a_… id / @name"},
+         "language": {"type": "string", "description": "Auto, English, Chinese, Japanese, Korean, French, German, Spanish, Portuguese, Russian or Italian"},
+         "count": {"type": "integer", "description": "takes to generate, 1-3 (default 2)"}}, ["text", "voice"]),
     _fn("render_scenes", "Propose rendering takes. The user confirms; rendering switches the GPU to video generation.",
         {"scenes": {"type": "array", "items": {"type": "integer"}, "description": "scene numbers to render"},
          "rest": {"type": "boolean", "description": "render every scene from the first one without a finished take, in order"}}, []),
 ]
+GENERATE_TOOLS = {"create_character", "make_images", "speak_line"}   # they queue GPU jobs when applied
 PROPOSAL_TOOLS = {"add_scenes", "edit_scene", "remove_scene", "move_scene", "edit_project", "set_reference_definition",
-                  "change_settings", "render_scenes"}
+                  "change_settings", "render_scenes", "edit_character"} | GENERATE_TOOLS
 
 
 class _Dry(Project):
@@ -448,6 +535,28 @@ def _scene_fields(project: Project, args: dict, notes: list[str] | None = None) 
         if join not in JOIN_MODES:
             raise ProjectError(f"join must be one of {JOIN_MODES}, got {args['join']!r}")
         fields["join"] = join
+    start = (str(args.get("start") or "").strip().lower()) or None
+    if start or args.get("start_image"):
+        if start in (None, "image") and args.get("start_image"):
+            name = str(args["start_image"]).lstrip("@")
+            item = project.data["library"]["items"].get(name)
+            if not item or item["kind"] != "image":
+                raise ProjectError(f"start_image must be the @name of an image; @{name} is not one")
+            fields.update(join="cut", start_image=name)
+        elif start == "image":
+            raise ProjectError("start=image needs start_image (the @name of the image to open on)")
+        elif start == "fresh":
+            fields.update(join="cut", start_image="")
+        elif start == "continue":
+            fields.update(join="continue", start_image=None)
+        else:
+            raise ProjectError("start must be continue, fresh or image")
+    if args.get("sound_clips") is not None:
+        clips = []
+        for c in args["sound_clips"] or []:
+            asset = _asset_ref(project, (c or {}).get("clip") or "", "audio")
+            clips.append({"asset": asset["id"], "at": max(0.0, float(c.get("at") or 0.5))})
+        fields["audio_clips"] = clips
     if "refs" in args:
         fields["refs"] = _clean_refs(project, args["refs"])
         missing = [n for n in _style_names(project) if fields["refs"] is not None and n not in fields["refs"]]
@@ -561,7 +670,7 @@ def plan_proposal(project: Project, tool: str, args: dict, pending: list[dict] |
     applied first, in order, so proposals that only break together are caught."""
     dry = _dry(project)
     for earlier in pending or []:
-        if earlier["tool"] != "render_scenes":
+        if earlier["tool"] != "render_scenes" and earlier["tool"] not in GENERATE_TOOLS:
             try:
                 _apply(dry, earlier)
             except (ProjectError, KeyError, ValueError, StopIteration):
@@ -712,10 +821,21 @@ def plan_proposal(project: Project, tool: str, args: dict, pending: list[dict] |
             if int(args["continuity_frames"]) not in (5, 22, 39):
                 raise ProjectError("continuity_frames must be 5, 22 or 39")
             overrides.setdefault("continuity", {})["frames"] = int(args["continuity_frames"])
+        if args.get("video_shape") is not None:
+            from .settings import ASPECTS
+            if args["video_shape"] not in ASPECTS or args["video_shape"] == "custom":
+                raise ProjectError("video_shape must be 9:16, 16:9, 1:1, 4:5 or start_image")
+            overrides.setdefault("resolution", {})["aspect"] = args["video_shape"]
+        if args.get("video_model") is not None:
+            if args["video_model"] not in ("fl2va", "ref2va", "ref2va_fresh"):
+                raise ProjectError("video_model must be fl2va, ref2va or ref2va_fresh")
+            overrides.setdefault("video_model", {})["mode"] = args["video_model"]
         if not overrides:
-            raise ProjectError("change_settings needs steps, scene_seconds or continuity_frames")
+            raise ProjectError("change_settings needs steps, scene_seconds, continuity_frames, video_shape or video_model")
         resolved = {"settings": overrides}
         summary = "Change settings: " + json.dumps(overrides)
+    elif tool in ("create_character", "edit_character", "make_images", "speak_line"):
+        resolved, summary = _plan_studio(project, tool, args)
     elif tool == "render_scenes":
         if args.get("rest"):
             resolved = {"rest": True}
@@ -732,13 +852,106 @@ def plan_proposal(project: Project, tool: str, args: dict, pending: list[dict] |
     return {"tool": tool, "args": resolved, "summary": summary, "details": details}
 
 
-def apply_proposal(project: Project, proposal: dict, *, render=None) -> str:
+def find_entity(project: Project, name: str) -> dict:
+    """A character / place by id, @name or name (case-insensitive)."""
+    key = str(name or "").strip().lstrip("@")
+    for e in project.entities.values():
+        if key in (e["id"], e.get("ref")) or key.lower() == e["name"].lower():
+            return e
+    names = ", ".join(f"{e['name']} (@{e['ref']})" for e in project.entities.values()) or "none yet"
+    raise ProjectError(f"there is no character or place called {name!r} (there are: {names})")
+
+
+def _asset_ref(project: Project, value: str, kind: str) -> dict:
+    """An asset by a_… id or by @name."""
+    v = str(value or "").strip().lstrip("@")
+    a = project.assets.get(v)
+    if a is None and v in project.data["library"]["items"]:
+        a = project.assets.get(project.data["library"]["items"][v].get("asset"))
+    if a is None or a["kind"] != kind:
+        raise ProjectError(f"{value!r} is not an {kind} in the library (use its a_… id or @name from <project>)")
+    return a
+
+
+def _plan_studio(project: Project, tool: str, args: dict) -> tuple[dict, str]:
+    if tool == "create_character":
+        kind = str(args.get("kind") or "character")
+        if kind not in _KINDS:
+            raise ProjectError(f"kind must be one of {_KINDS}")
+        name = str(args.get("name") or "").strip()
+        if not name:
+            raise ProjectError("give it a name")
+        if any(e["name"].lower() == name.lower() for e in project.entities.values()):
+            raise ProjectError(f"{name} already exists; use edit_character or make_images")
+        desc = str(args.get("description") or "").strip()
+        if len(desc) < 15:
+            raise ProjectError("the description is too short: describe what makes it look like itself")
+        image = _asset_ref(project, args["from_image"], "image")["id"] if args.get("from_image") else None
+        designs = 0 if image else max(1, min(4, int(args.get("designs") or 2)))
+        return ({"kind": kind, "name": name, "description": desc, "from_image": image, "designs": designs},
+                f"Create {kind} {name}" + (f" and design {designs} image(s)" if designs else " from an existing image"))
+    if tool == "edit_character":
+        e = find_entity(project, args.get("character"))
+        fields = {}
+        if args.get("description"):
+            fields["description"] = str(args["description"]).strip()
+        if args.get("new_name"):
+            fields["name"] = str(args["new_name"]).strip()
+        if args.get("voice"):
+            fields["voice"] = _asset_ref(project, args["voice"], "audio")["id"]
+        if not fields:
+            raise ProjectError("edit_character needs description, new_name or voice")
+        return ({"entity": e["id"], "fields": fields}, f"Change {e['name']}: " + ", ".join(fields))
+    if tool == "make_images":
+        e = find_entity(project, args.get("character"))
+        action = {"more": "first"}.get(str(args.get("action")), str(args.get("action")))
+        if action not in ("look", "angle", "place", "first"):
+            raise ProjectError("action must be look, angle, place or more")
+        change = str(args.get("change") or "").strip()
+        if action in ("look", "angle") and not change:
+            raise ProjectError("describe the change (e.g. 'wearing a winter coat')")
+        if action != "first" and not e.get("main"):
+            raise ProjectError(f"{e['name']} has no main look yet; propose make_images action=more first")
+        place = None
+        if action == "place":
+            if e["kind"] != "character":
+                raise ProjectError("only a character can be put in a place")
+            p = find_entity(project, args.get("place"))
+            if p["kind"] != "place" or not p.get("main"):
+                raise ProjectError(f"{p['name']} is not a place with a main image")
+            place = p["id"]
+        count = max(1, min(4, int(args.get("count") or 2)))
+        label = {"look": f"new look of {e['name']}: {change}", "angle": f"{e['name']} {change}",
+                 "place": f"{e['name']} in {project.entities[place]['name'] if place else ''}: {change}", "first": f"more designs of {e['name']}"}[action]
+        return ({"entity": e["id"], "action": action, "text": change, "place": place, "count": count}, f"Make {count} image(s) — {label}")
+    # speak_line
+    text = str(args.get("text") or "").strip()
+    if not text:
+        raise ProjectError("give the words to speak")
+    voice_arg = str(args.get("voice") or "")
+    try:
+        e = find_entity(project, voice_arg)
+        if not e.get("voice"):
+            raise ProjectError(f"{e['name']} has no voice yet; give a voice sample id, or propose edit_character with a voice")
+        voice, who = e["voice"], e["name"]
+    except ProjectError as exc:
+        if "has no voice" in str(exc):
+            raise
+        a = _asset_ref(project, voice_arg, "audio")
+        voice, who = a["id"], a["title"]
+    language = str(args.get("language") or "Auto")
+    count = max(1, min(3, int(args.get("count") or 2)))
+    return ({"text": text, "voice": voice, "language": language, "count": count},
+            f"Speak {count} take(s) in {who}'s voice: “{text[:60]}”")
+
+
+def apply_proposal(project: Project, proposal: dict, *, render=None, client=None) -> str:
     """Carry out an applied proposal on the real project. render(project, scene_ids | None) queues takes.
 
     The project may have changed since the proposal was checked (other proposals applied or rejected, the
     user's own edits), so it is tried on a dry copy first: it is refused if a scene it adds or rewrites, or
     one that rendered before, would no longer compile."""
-    if proposal["tool"] not in ("render_scenes", "change_settings"):
+    if proposal["tool"] not in ("render_scenes", "change_settings", "edit_character") and proposal["tool"] not in GENERATE_TOOLS:
         dry = _dry(project)
         ok_before = {s["id"] for s in dry.scenes if _compiles(dry, s)}
         ids_before = {s["id"] for s in dry.scenes}
@@ -751,7 +964,7 @@ def apply_proposal(project: Project, proposal: dict, *, render=None) -> str:
         except ProjectError as exc:
             raise ProjectError(f"not applied, because afterwards {exc}. Apply the proposals this one depends on first "
                                "(for example the style text or a reference's definition), or ask for a corrected version") from None
-    return _apply(project, proposal, render=render)
+    return _apply(project, proposal, render=render, client=client)
 
 
 def _compiles(project: Project, scene: dict) -> bool:
@@ -762,15 +975,23 @@ def _compiles(project: Project, scene: dict) -> bool:
         return False
 
 
-def _apply(project: Project, proposal: dict, *, render=None) -> str:
+def _apply(project: Project, proposal: dict, *, render=None, client=None) -> str:
     tool, a = proposal["tool"], proposal["args"]
+    needs_gpu = tool in GENERATE_TOOLS and not (tool == "create_character" and not a.get("designs"))
+    if needs_gpu and client is None:
+        if isinstance(project, _Dry):   # checking only: create the entity, generate nothing
+            if tool == "create_character":
+                project.create_entity(a["kind"], a["name"], description=a["description"], from_asset=a.get("from_image"))
+            return "checked"
+        raise ProjectError("generating is not available here")
     if tool == "add_scenes":
         prev = a.get("after")
         if prev and not any(s["id"] == prev for s in project.scenes):
             raise ProjectError("the scene these were to follow no longer exists")
         for fields in a["scenes"]:
             prev = project.add_scene(after=prev, text=fields.get("text", ""), seconds=fields.get("seconds"),
-                                     join=fields.get("join", "continue"), refs=fields.get("refs"), title=fields.get("title", ""))["id"]
+                                     join=fields.get("join", "continue"), refs=fields.get("refs"), title=fields.get("title", ""),
+                                     start_image=fields.get("start_image"), audio_clips=fields.get("audio_clips"))["id"]
     elif tool == "edit_scene":
         project.update_scene(a["scene"], **a["fields"])
     elif tool == "remove_scene":
@@ -795,6 +1016,28 @@ def _apply(project: Project, proposal: dict, *, render=None) -> str:
         if render is None:
             raise ProjectError("rendering is not available here")
         return render(project, None if a.get("rest") else a["scenes"])
+    elif tool == "edit_character":
+        project.update_entity(a["entity"], **a["fields"])
+    elif tool == "create_character":
+        from . import tools as studio_tools
+
+        e = project.create_entity(a["kind"], a["name"], description=a["description"], from_asset=a.get("from_image"))
+        if a.get("designs"):
+            studio_tools.queue_entity(project, client, e["id"], "first", "", count=a["designs"])
+            return f"created {e['name']}; {a['designs']} design(s) queued"
+        return f"created {e['name']} (@{e['ref']})"
+    elif tool == "make_images":
+        from . import tools as studio_tools
+
+        jobs = studio_tools.queue_entity(project, client, a["entity"], a["action"], a.get("text", ""), place_id=a.get("place"), count=a["count"])
+        return f"{len(jobs)} image(s) queued"
+    elif tool == "speak_line":
+        from . import tools as studio_tools
+
+        voice = project.assets.get(a["voice"]) or {}
+        jobs = studio_tools.queue_tool(project, client, "speech", {"text": a["text"], "voice": a["voice"], "voice_text": voice.get("transcript", ""),
+                                                                   "language": a["language"]}, count=a["count"], role="speech", title=a["text"][:40])
+        return f"{len(jobs)} take(s) of the line queued"
     return "applied"
 
 
@@ -896,6 +1139,17 @@ class Assistant:
     def _complete(self, project: Project, chat: dict, state: dict, *, thinking=False, tools=TOOLS) -> dict:
         self.before_request()
         messages = build_messages(project, chat, self.provider)
+        try:
+            return self._send(chat, state, messages, thinking, tools)
+        except HTTPError as err:
+            # too long for the model: summarise older messages and try once more
+            if not CONTEXT_ERROR.search(err.detail or "") or not self.compact(project, chat):
+                raise
+            state["phase"] = "compacting"
+            self.update(state)
+            return self._send(chat, state, build_messages(project, chat, self.provider), thinking, tools)
+
+    def _send(self, chat: dict, state: dict, messages: list, thinking, tools) -> dict:
         state.update(phase="thinking", text="", reasoning=0)
         self.update(state)
 
@@ -911,7 +1165,11 @@ class Assistant:
                                   on_delta=on_delta, should_stop=self.stopped)
         usage = result.get("usage") or {}
         if usage.get("prompt_tokens"):
-            chat["context_tokens"] = int(usage["prompt_tokens"]) + int(usage.get("completion_tokens") or 0)
+            # the reply is resent next time, its hidden reasoning is not
+            reasoning = int((usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0)
+            chat["context_tokens"] = int(usage["prompt_tokens"]) + max(0, int(usage.get("completion_tokens") or 0) - reasoning)
+        else:   # no usage from this provider: estimate, so compaction still happens in time
+            chat["context_tokens"] = estimate_tokens(messages) + len(result.get("content") or "") // 3
         timings = result.get("timings") or {}
         if timings:  # llama.cpp: how much of the prompt came from its cache
             chat["last_request"] = {k: timings.get(k) for k in ("prompt_n", "cache_n", "prompt_ms", "predicted_n", "predicted_per_second")}

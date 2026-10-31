@@ -28,7 +28,7 @@ JOIN_MODES = ("continue", "cut", "bridge")
 ASSET_KINDS = ("image", "audio", "video")
 ENTITY_KINDS = ("character", "place", "prop", "style")
 ASSET_ROLES = ("character", "place", "prop", "style", "start", "frame", "voice", "speech", "sound", "music",
-               "clip", "other")
+               "clip", "overlay", "other")
 _EXT_KIND = {**{e: "image" for e in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")},
              **{e: "audio" for e in (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".flac")},
              **{e: "video" for e in (".mp4", ".mov", ".webm", ".mkv", ".m4v")}}

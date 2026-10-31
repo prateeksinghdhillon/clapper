@@ -36,6 +36,16 @@ def _provider(settings: dict | None = None) -> dict:
 # ------------------------------------------------------------------ conversation cache across ejects
 
 def _save_cache(runner: llm.LocalRunner) -> None:
+    """Before an eject: keep the conversation cache so the next message does not re-read it.
+    This runs inside ComfyUI's /prompt handler, so it must be quick: while an answer is still being written the
+    model cannot prime its cache, so the turn is stopped and the cache is not saved (it is only a speed-up)."""
+    running = [r for r in RUNS.values() if r.get("running")]
+    if running:
+        for r in running:
+            r["stop"] = True
+        _cache["saved"] = None
+        log.info("Clapper: a render was queued while the assistant was answering — answer stopped, cache not saved")
+        return
     active = _cache["active"]
     if not active:
         return
@@ -113,7 +123,32 @@ async def assistant_settings(request):
 async def assistant_settings_update(request):
     try:
         return _ok(llm.public_settings(llm.update_settings(await _body(request))))
-    except llm.LLMError as exc:
+    except (llm.LLMError, ValueError, TypeError) as exc:
+        return _err(exc)
+
+
+@routes.post("/clapper/api/assistant/test")
+async def assistant_test(request):
+    """id, provider (the form's values; an empty api_key uses the saved one): one tiny request, no tools."""
+    body = await _body(request)
+    try:
+        saved = llm.load_settings()["providers"].get(body.get("id"), {})
+        prov = {**saved, **{k: v for k, v in (body.get("provider") or {}).items() if v not in (None, "") or k == "vision"}}
+        if not body.get("provider", {}).get("api_key"):
+            prov["api_key"] = saved.get("api_key", "") if llm._host(saved.get("base_url", "")) == llm._host(prov.get("base_url", "")) else ""
+        if not prov.get("base_url") or not prov.get("model"):
+            raise llm.LLMError("fill in the base URL and the model first")
+        loop = asyncio.get_running_loop()
+
+        def run():
+            if prov.get("kind") == "local":
+                G.ensure_llm()
+            started = time.time()
+            r = llm.Client(prov).chat([{"role": "user", "content": "Reply with exactly: OK"}], max_tokens=200, timeout=120)
+            return {"seconds": round(time.time() - started, 1), "reply": (r["content"] or "").strip()[:80],
+                    "usage": bool(r.get("usage")), "reasoning": bool(r.get("reasoning")), "finish_reason": r.get("finish_reason")}
+        return _ok(await loop.run_in_executor(None, run))
+    except ERRORS as exc:
         return _err(exc)
 
 
@@ -329,6 +364,8 @@ async def proposal_action(request):
                 try:
                     if prop["tool"] == "render_scenes":
                         prop["result"] = await loop.run_in_executor(None, lambda: assistant.apply_proposal(project, prop, render=_render))
+                    elif prop["tool"] in assistant.GENERATE_TOOLS:   # queues image / speech jobs in ComfyUI
+                        prop["result"] = await loop.run_in_executor(None, lambda: assistant.apply_proposal(project, prop, client=_client()))
                     else:
                         prop["result"] = assistant.apply_proposal(project, prop)
                 except (ProjectError, RuntimeError) as exc:

@@ -304,8 +304,24 @@ def cmd_upscale(args) -> int:
     return 0
 
 
+def cmd_finish(args) -> int:
+    from comfyui_clapper.engine import finish
+
+    p = _open(args)
+    if args.action == "show":
+        print(json.dumps(finish.finish_of(p), indent=2))
+    elif args.action == "set":
+        f = finish.set_finish(p, json.loads(Path(args.value).read_text(encoding="utf-8")))
+        print(f"{len(f['tracks'])} track(s), {len(f['overlays'])} overlay(s)")
+    elif args.action == "title":
+        a = finish.title_card(p, args.value.replace("\\n", "\n"), style=args.style)
+        print(f"{a['id']}  {a['width']}x{a['height']}  title card")
+    return 0
+
+
 def cmd_export(args) -> int:
-    out = export_video(_open(args), partial=args.partial, size=args.size, use_upscaled=not args.no_upscaled)
+    out = export_video(_open(args), partial=args.partial, size=args.size, use_upscaled=not args.no_upscaled,
+                       use_finish=not args.no_finish)
     print(f"exported {out}")
     return 0
 
@@ -498,6 +514,11 @@ def main() -> int:
     s.add_argument("--size", choices=["auto", "original", "720p", "1080p"], default="auto",
                    help="auto = the largest scene (upscaled takes set it); others are resized to match")
     s.add_argument("--no-upscaled", action="store_true", help="use the original takes even where an upscale exists")
+    s.add_argument("--no-finish", action="store_true", help="leave out the music, sound and overlays")
+    s = proj("finish", help="music, sound tracks and overlays applied at export; title cards")
+    s.add_argument("action", choices=["show", "set", "title"])
+    s.add_argument("value", nargs="?", help="set: a JSON file like `finish show` prints; title: the text (\\n = new line)")
+    s.add_argument("--style", choices=["bold", "regular", "serif"], default="bold")
     s = proj("upscale", help="upscale the selected takes of the given scenes (all scenes if none given)")
     s.add_argument("scenes", nargs="*")
     s.add_argument("--method", choices=["sharpen", "redetail"], default="sharpen")
@@ -528,7 +549,7 @@ def main() -> int:
     return {"profile": cmd_profile, "import-timeline": cmd_import_timeline, "adopt": cmd_adopt, "export": cmd_export, "take": cmd_take, "new": cmd_new, "ref": cmd_ref, "scene": cmd_scene, "render": cmd_render,
             "refresh": cmd_refresh, "usage": cmd_usage, "delete": cmd_delete, "render-rest": cmd_render_rest, "status": cmd_status, "select": cmd_select,
             "asset": cmd_asset, "frame": cmd_frame, "video-model": cmd_video_model, "upscale": cmd_upscale,
-            "entity": cmd_entity}[args.cmd](args)
+            "entity": cmd_entity, "finish": cmd_finish}[args.cmd](args)
 
 
 if __name__ == "__main__":

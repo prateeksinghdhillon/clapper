@@ -48,6 +48,7 @@ ComfyUI server ── comfyui_clapper ──────────────
       media.py     ffprobe / ffmpeg helpers for library files (durations, sizes, frames of takes)
       tools.py     Create tools (FLUX.2 image, Qwen3-TTS speech, user workflows) and their jobs
       upscale.py   Sharpen / Re-detail upscales of takes (jobs), versions on the take
+      finish.py    music / sound tracks, overlays and title cards applied at export (ffmpeg)
       estimates.py render-time model for Settings (measured defaults, learns from the project's takes)
       director.py  plan / queue / chain / refresh / requeue
       graph.py     ComfyUI API graph for one take
@@ -114,6 +115,7 @@ Key decisions:
 | Speech tool: Qwen3-TTS 1.7B Base clone, English line, 7 s voice sample | 4.6 s line in 8–10 s |
 | End to end, original anime short: character and location made with the image tool, line with the speech tool, 7 s scene from the start frame with the line as a sound clip, then a continued scene, Ref2VA for both | line placed exactly (envelope 0.97 at zero lag); scene 1 179 s, scene 2 123 s; join clean (5.2 vs ≈3 in-take); story beats followed (headlights, she stands, umbrella snaps open, bus arrives) |
 | Upscale a 7 s take (172 frames, 416×736) — Sharpen | 720p (Real-ESRGAN ×2 + lanczos) 69 s; 1080p with 4x-UltraSharp 305 s, with ×2 + lanczos 82 s, no visible difference between the two → ×2 for both. Lines crisper; the take's own blur in faces stays |
+| Finish: title card + image overlay + looping ducked music + an effect at 4 s, real export | overlays on the right frames at the right times; effect exactly at 4.0 s; with ducking the music is ≈40% quieter while the scenes' sound is loud (it also dips under loud rain, not only voices); title cards render Latin, Devanagari, Japanese, Chinese, Korean and Arabic with a matching font per run |
 | Upscale — Re-detail light (latent upscaler 3D + MMH3 Split Upscale, 512 px tiles, Ref2VA + Turbo LoRA, sigmas 0.63/0.32) | 720p (704×1248) 448 s, peak VRAM 14.0 GB on 16 GB; 1080p (1056×1888) 1162 s; faces, eyes and hair redrawn cleanly, composition and motion kept, small details change |
 | Ref2VA: Ref2V Turbo LoRA at 4 vs 20 steps (same seed, start image) | 114 s vs 396 s; frames nearly identical, no visible gain at 20 — 4 steps is the Ref2VA default |
 
@@ -135,7 +137,9 @@ The next version's plan (library, image and speech tools, start modes, finishing
 | Assistant: thinking per task (auto: only for planning), thinking budget and sampling per provider, measured with `tools/assistant_eval.py` | done |
 | Assistant: stronger reviews (an online model for reviews only) | planned |
 | Assistant: per-task model choice (e.g. local for small edits, a stronger model for planning); compare local candidates with `tools/assistant_eval.py` | planned |
-| Assistant: native Anthropic / Gemini adapters | planned |
+| Assistant: Anthropic / Gemini through their OpenAI-compatible endpoints (presets); native adapters if needed | presets done |
+| Assistant: Studio tools (characters, looks, start frames, spoken lines, scene starts, sound clips) | done |
+| Online provider robustness (retries, field adaptation, error hints, strict message order, Test connection) | done |
 | Assistant: show a proposed scene's compiled H3 prompt on its card | planned |
 | Keyframe continuation method | untested |
 | Bridge join (insert/replace keeping later scenes) | untested |
@@ -147,7 +151,7 @@ The next version's plan (library, image and speech tools, start modes, finishing
 | Create tools: image (FLUX.2 Klein: new, vary, combine), speech (Qwen3-TTS clone), batches, job list, run again; your own tools from a workflow + `tool.json` | done |
 | Character / place sheets (many angles from one image) | planned |
 | Video references | planned |
-| Overlays in export (exact logos, product photos, text cards with position, timing, simple animation) | planned |
+| Overlays in export (exact logos, product photos, title cards with position, timing, fade) and music / sound tracks with ducking | done |
 | Seam correction at joins (port Continuum's audio/video seam logic) | planned if joins show flicker |
 | Speed comparison: 8 vs 20 steps (FL2VA); SageAttention via ComfyUI's `--use-sage-attention` (needs `sageattention` 1.0.6) | planned |
 | Upscaling selected takes: Sharpen and Re-detail, versions per take, export size | done |
