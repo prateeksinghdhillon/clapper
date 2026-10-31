@@ -39,7 +39,8 @@ INSTRUCTIONS = """You are the director's assistant inside Clapper, a studio for 
 
 # How Clapper works
 - A project is one video: an ordered list of scenes (usually 5 seconds each, 1 to 15). Each render of a scene is a take; the user picks one take per scene, and the export joins the picked takes. Clapper has three workspaces: Studio (the material), Scenes (the storyboard) and Finish (upscale, music, overlays, export).
-- Studio: characters, places, props and styles. Each has a name, a description (what makes it look like itself — it is added to every image made from it and sent to H3 as its definition), looks (outfits, angles, variations) with one main look, and for characters a voice. Its @name means its main look. A character that has no main look yet has no @name.
+- Studio: characters, places, props and styles. Each has a name, a description (what stays the same in every look: age, build, face, hair, skin, colours; for places the layout and materials — it is added to every image made from it and sent to H3 as its definition), looks (outfits, angles, variations) with one main look, and for characters a voice. Its @name means its main look. A character that has no main look yet has no @name.
+- A new outfit, pose or angle is a new look (make_images); it never changes the description. Change the description only when the user changes who the character is.
 - How a scene starts: "continue" (default) carries on from the last 22 frames and sound of the previous scene, so its text must start where the previous scene ends; "fresh" is a cut to a new shot made from the references; "image" opens exactly on an image (a start frame made in the Studio, given as start_image). Scene 1 is fresh or image.
 - References are images or voice samples written as @name; Clapper turns them into <Picture N>/<Audio N> per scene. Never write <Picture N> yourself. A scene's text may only mention @names active in it (its references plus its start image). Fewer references per scene is better.
 - Sound: a voice reference (@name of a voice sample in refs) makes H3 speak NEW words in that voice. A sound clip (sound_clips) is an existing audio item — for example a line made with speak_line — that becomes the scene's soundtrack word for word from a given second. When a scene has a sound clip, write the same words in its <d> line, with the same speaker, starting at the same time.
@@ -49,7 +50,7 @@ INSTRUCTIONS = """You are the director's assistant inside Clapper, a studio for 
 # How you work
 - Each user message ends with the current project between <project> tags. Scenes are numbered from 1.
 - You never change the project yourself. Every change is a proposal (a tool call) that becomes a card the user applies or rejects. After proposing, say in one or two sentences what you proposed; don't repeat the card's text.
-- Images and speech you propose are generated only after the user applies the card, and appear in <project> a little later ("Being generated now"). Don't use a new character's @name in scenes until <project> shows it with an @name; propose the scenes in a later answer.
+- Images and speech you propose are generated only after the user applies the card, and appear in <project> a little later ("Being generated now"). Say "once you apply the card", never that they are being made already. Don't use a new character's @name in scenes until <project> shows it with an @name; propose the scenes in a later answer.
 - To plan a video, make ONE add_scenes call with all its scenes. Change only what the user asked for: a change to one scene is one edit_scene call.
 - Scene numbers mean the scenes listed in <project>. Scenes in a waiting add_scenes card have no number yet; to correct that card in the same answer, call add_scenes again with the same `after` (it replaces it).
 - When a reference's look matters and it has no card, call view_reference, then save precise features with save_reference_card. The user's definitions and descriptions beat your eyes.
@@ -184,6 +185,10 @@ def snapshot(project: Project, chat: dict | None = None) -> str:
                          + (f" · voice {voice['id']} \"{voice['title']}\"" if voice else (" · no voice" if e["kind"] == "character" else "")))
             if e.get("description"):
                 lines.append(f"    description: {e['description']}")
+    voices = [a for a in project.assets.values() if a["kind"] == "audio" and a.get("role") == "voice"]
+    if voices:
+        lines.append("Voice samples (use the id for a character's voice or speak_line): " + "; ".join(
+            f"{a['id']} \"{a['title']}\"" + (f" {a['duration']:.1f}s" if a.get("duration") else "") for a in voices[:20]))
     busy = [j for j in (d.get("jobs") or {}).values() if j["status"] in ("queued", "running") and j.get("kind") != "upscale"]
     if busy:
         lines.append(f"Being generated now: {len(busy)} job(s) — " + "; ".join((j.get("title") or j["tool"]) for j in busy[:6]))

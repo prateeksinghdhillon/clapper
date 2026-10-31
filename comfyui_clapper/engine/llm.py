@@ -31,6 +31,7 @@ DEFAULT_SETTINGS = {
             "base_url": "http://127.0.0.1:8080/v1", "swap_url": "http://127.0.0.1:8080",
             "model": "clapper-128k", "api_key": "", "context": 131072, "vision": True,
             "slot_file": "clapper-assistant.bin",
+            "start_command": "",   # run when llama-swap is not answering, e.g. "systemctl --user start llama-swap"
             "thinking": "auto", "thinking_budget": 2048, "sampling": {}, "sampling_thinking": {},
         },
     },
@@ -130,7 +131,7 @@ def update_settings(changes: dict, path: Path = SETTINGS) -> dict:
             continue
         cur = data["providers"].get(pid, {"kind": "openai", "api_key": "", "vision": False})
         old_host = _host(cur.get("base_url", "")) if cur.get("base_url") else None
-        for key in ("name", "base_url", "swap_url", "model", "vision", "slot_file", "max_tokens_field"):
+        for key in ("name", "base_url", "swap_url", "model", "vision", "slot_file", "max_tokens_field", "start_command"):
             if key in prov:
                 cur[key] = prov[key]
         if "kind" in prov and pid != "local":   # the local provider stays local
@@ -391,6 +392,32 @@ class LocalRunner:
 
     def loaded(self) -> bool:
         return self.model in self.running()
+
+    def start_server(self, wait: float = 45) -> bool:
+        """Run the provider's start_command when llama-swap is not answering, then wait for it. True when up.
+        Works from a system service too: `systemctl --user` gets the user's session bus."""
+        import shlex
+        import subprocess
+
+        cmd = (self.p.get("start_command") or "").strip()
+        if not cmd:
+            return False
+        env = dict(os.environ)
+        runtime = env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+        env.setdefault("XDG_RUNTIME_DIR", runtime)
+        env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime}/bus")
+        try:
+            proc = subprocess.run(shlex.split(cmd), env=env, capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise LLMError(f"could not run the start command ({cmd}): {exc}") from None
+        if proc.returncode != 0:
+            raise LLMError(f"the start command failed ({cmd}): {(proc.stderr or proc.stdout).strip()[:300]}")
+        deadline = time.time() + wait
+        while time.time() < deadline:
+            if self.reachable():
+                return True
+            time.sleep(0.5)
+        raise LLMError(f"started with “{cmd}”, but llama-swap did not answer at {self.swap} within {int(wait)} s")
 
     def load(self, timeout: float = 600) -> float:
         """Start the model (llama-swap starts it on the first upstream request). Returns seconds taken."""

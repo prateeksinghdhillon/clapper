@@ -206,6 +206,7 @@ The list of known projects is `~/.clapper/projects.json`; the default location a
 | `swap_url` | llama-swap's address (`local` kind), default `http://127.0.0.1:8080` |
 | `context`, `vision` | Context window in tokens (drives compaction and the meter); whether the model accepts images |
 | `slot_file` | File name the local model's conversation cache is saved to before an eject |
+| `start_command` | Local kind: run when llama-swap is not answering and the assistant needs the model, e.g. `systemctl --user start llama-swap`; Clapper then waits for llama-swap (up to 45 s) and loads the model as usual. It works from a ComfyUI system service too (the user's session bus is set for `systemctl --user`). Empty = start llama-swap yourself |
 | `thinking` | `"auto"` (default, measured best — see DESIGN.md): think only when planning (the project has no scenes yet, or the message asks for a plan, a storyboard, all scenes, a rewrite or *N scenes*); `false`: answer directly; a number: always think. Local providers only; set in Assistant settings |
 | `thinking_budget` | Reasoning tokens per request when thinking (default 2048), sent as `thinking_budget_tokens` (llama-server honours it per request). **think harder** in the chat uses this budget for one message |
 | `sampling`, `sampling_thinking` | Optional sampling parameters (`temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty`, `repeat_penalty`); `sampling_thinking` is added on top when thinking. Online providers get only `temperature`, `top_p`, `presence_penalty` (the others are llama.cpp's). Empty = the server's defaults. Edit `llm.json` to change them |
@@ -234,6 +235,8 @@ models:
 - `-np 1` gives the whole context to one conversation; `-ctk/-ctv q8_0` halves the KV cache.
 - `--slot-save-path` lets Clapper save the conversation cache before an eject and restore it after the next load.
 - Measured with a 27B ternary model (7.2 GB) + Q8 projector at 128k context on an RTX 5060 Ti 16 GB: 12.7 GB VRAM, load 3–6 s, eject 1 s, about 45 tokens/s written and 930 tokens/s read.
+
+To have the model ready without starting anything by hand, run llama-swap as a user service that starts at boot (`systemctl --user enable --now llama-swap`, with `loginctl enable-linger` on a machine without a desktop login); idle, it holds no GPU memory — the model is loaded on the assistant's first message and ejected when a render is queued. As a fallback, set the local provider's **start command** (Assistant settings) so Clapper starts llama-swap itself when it is not running.
 
 ### How the GPU is shared
 

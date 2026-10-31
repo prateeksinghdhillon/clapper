@@ -406,6 +406,7 @@ function renderAiSettings() {
         f("Name", "name"), f("Model", "model", { placeholder: p.kind === "local" ? "llama-swap model name" : "e.g. gpt-4.1" }),
         f("Base URL (…/v1)", "base_url"),
         p.kind === "local" ? f("llama-swap URL", "swap_url") : f(`API key${p.api_key_hint ? ` (saved: ${p.api_key_hint})` : ""}`, "api_key", { type: "password", placeholder: p.api_key_set ? "leave empty to keep" : "" }),
+        p.kind === "local" ? f("Start command (run when llama-swap is not running)", "start_command", { placeholder: "systemctl --user start llama-swap" }) : null,
         f("Context (tokens)", "context", { type: "number" }),
         p.kind === "local" ? h("label", {}, "Thinking", think) : null,
         p.kind === "local" ? f("Thinking budget (tokens; also used by “think harder”)", "thinking_budget", { type: "number" }) : null,

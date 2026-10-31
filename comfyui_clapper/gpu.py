@@ -86,7 +86,14 @@ class GPU:
         with self.lock:
             runner = self.runner()
             if not runner.reachable():
-                raise GPUError(f"the local model server is not running at {runner.swap} (start llama-swap)")
+                try:
+                    started = runner.start_server()
+                except llm.LLMError as exc:
+                    raise GPUError(str(exc)) from None
+                if not started:
+                    raise GPUError(f"the local model server is not running at {runner.swap} — start llama-swap, or set a "
+                                   "start command in Assistant settings so Clapper can start it")
+                log.info("Clapper: started the local model server with its start command")
             if runner.loaded():
                 return {"already": True}
             try:

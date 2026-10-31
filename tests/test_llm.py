@@ -172,3 +172,14 @@ def test_unanswered_tool_calls_get_a_reply_and_empty_answers_are_skipped(project
 
 def test_estimate_tokens():
     assert assistant.estimate_tokens([{"role": "user", "content": "x" * 350}]) == 100
+
+
+def test_start_command_brings_the_server_up(tmp_path, monkeypatch):
+    marker = tmp_path / "started"
+    runner = llm.LocalRunner({"swap_url": "http://127.0.0.1:9", "model": "m", "start_command": f"touch {marker}"})
+    monkeypatch.setattr(runner, "reachable", lambda: marker.exists())
+    assert runner.start_server(wait=5) is True and marker.exists()
+    assert llm.LocalRunner({"swap_url": "http://x", "model": "m"}).start_server() is False   # no command: nothing to do
+    bad = llm.LocalRunner({"swap_url": "http://127.0.0.1:9", "model": "m", "start_command": "false"})
+    with pytest.raises(llm.LLMError, match="start command failed"):
+        bad.start_server(wait=1)
