@@ -630,7 +630,11 @@ function takeCard(scene, take) {
   if (made) info.append(made);
   const up = take.status === "done" ? upscaleRow(take) : null;
   if (up) info.append(up);
-  return h("div", { class: "take" + (selected ? " selected" : "") }, thumbFor(take), info);
+  const card = h("div", { class: "take" + (selected ? " selected" : "") }, thumbFor(take), info);
+  // finished takes open in the gallery viewer (⛶): next / previous through this scene's takes, or side by side
+  return take.status === "done" && typeof viewable === "function"
+    ? viewable(card, { file: `${take.dir}/take.mp4`, kind: "video", title: `Scene ${scenes().indexOf(scene) + 1} · ${takeLabel(take)}`, sub: `seed ${take.seed}`, take: take.id })
+    : card;
 }
 
 // What a take was made from: its own text and setup, and how that differs from the scene now.

@@ -180,6 +180,16 @@ Click anything to open it in the **detail panel** (on the right on a laptop, sli
 - **In scenes** — its @name (or **Give it an @name**), the definition sent to H3, the assistant's card, ★ default / ▶ start image, and which scenes use it;
 - **⤓ Download** and **Remove** (to the project's `trash/` folder; refused while an @name or a scene's sound clip uses it).
 
+### Viewing and comparing images
+
+Every picture in the Studio — a character's looks and sheets, *Files*, *Start images & frames*, versions, scene takes — opens large in the **viewer**: **⛶** on the picture, a second click on the picture that is already selected, or a click on the big picture in its panel. The viewer walks through the collection it was opened from:
+
+- **‹ ›**, the arrow keys, or a swipe on a phone — next and previous; the strip at the bottom jumps to any of them;
+- **zoom** with the mouse wheel or a pinch (towards the pointer), **+ / −**, a double click toggles 2.5×; drag to move around; **Fit** (or 0) shows it whole;
+- **▢▢ / ▢▢▢** (keys 2, 3) — two or three side by side (two on a phone, one above the other). Each has its own ‹ ›; the one with the blue outline follows the arrow keys and the strip (Tab moves to the next). **Zoom together** zooms and moves them as one, to compare the same spot — a face, a hand, a pattern;
+- takes play as videos; side by side, **▶ ❚❚** starts them together from the beginning;
+- **Details** opens the picture's panel, **⤓** downloads it, **Esc** closes.
+
 ### Characters, places, props and styles
 
 A character (likewise a place, prop or style) has its own page:

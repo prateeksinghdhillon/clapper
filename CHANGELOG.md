@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Gallery viewer** in the Studio and the scene editor:
+  - Open any picture or take large (⛶, a second click on the selected picture, or the panel's picture), then browse with next / previous (arrows, swipe, thumbnail strip).
+  - Zoom with the wheel or a pinch toward the pointer, drag to move, Fit.
+  - Compare 2–3 side by side, each with its own next / previous, zooming and moving together if wanted. Takes play side by side.
 - **Making characters, places and props**:
   - **＋ Reference image** in every action (new look, angle, put in a place, character sheet, designs): take its outfit, pose, hairstyle, accessories, colours, lighting, background, materials or style, or your own words. Any image works, also another character's look.
   - **Start from** any of its outfits for new angles and sheets.

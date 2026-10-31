@@ -144,12 +144,19 @@ function renderCollection() {
 function assetTile(a) {
   const names = assetNames(a.id);
   const e = entities()[a.entity];
-  return h("button", { class: "tile" + (studio.sel?.id === a.id ? " on" : ""), onclick: () => select("asset", a.id), title: a.title },
+  return viewIf(a, h("button", { class: "tile" + (studio.sel?.id === a.id ? " on" : ""), onclick: () => select("asset", a.id), title: a.title },
     tileThumb(a),
     h("span", { class: "tile-t" }, a.title),
     h("span", { class: "tile-m" }, names.length ? h("span", { class: "at" }, "@" + names[0]) : null,
       e ? h("span", {}, `${entityKind(e.kind)[3]} ${e.name}`) : h("span", {}, ROLE_LABEL[a.role] || a.role),
-      a.duration ? h("span", {}, fmtDur(a.duration)) : null));
+      a.duration ? h("span", {}, fmtDur(a.duration)) : null)));
+}
+// Images and video clips open in the gallery viewer (⛶, or a double click).
+function viewIf(a, tile) {
+  if (!a || (a.kind !== "image" && a.kind !== "video")) return tile;
+  const e = entities()[a.entity];
+  return viewable(tile, { file: a.file, kind: a.kind, title: a.look && e ? `${e.name} · ${a.look}` : a.title, asset: a.id,
+    sub: [e ? e.name : ROLE_LABEL[a.role] || a.role, a.width ? `${a.width}×${a.height}` : ""].filter(Boolean).join(" · ") });
 }
 
 function tileThumb(a) {
@@ -247,10 +254,10 @@ function sheetRow(e) {
       h("button", { title: "Front, three-quarter, side and back in one picture — of the main look or any look, with references if you like",
         onclick: () => { entityAct.action = "sheet"; entityAct.prompt = null; renderStudio(); document.querySelector("#studioMain .actions-card")?.scrollIntoView({ behavior: "smooth", block: "center" }); } },
         sheets.length ? "▦ Another character sheet…" : "▦ Make a character sheet…")),
-    sheets.length ? h("div", { class: "sheet-list" }, ...sheets.map((x) => h("button", { class: "sheet-thumb" + (x.id === e.sheet ? " on" : ""),
+    sheets.length ? h("div", { class: "sheet-list" }, ...sheets.map((x) => viewIf(x, h("button", { class: "sheet-thumb" + (x.id === e.sheet ? " on" : ""),
       title: (x.id === e.sheet ? "The sheet in use. " : "Click to use this sheet. ") + (x.look || x.title),
       onclick: () => x.id === e.sheet ? select("asset", x.id) : guard(async () => { setProject(await call("/entity", { path: state.path, action: "sheet", id: e.id, asset: x.id })); toast(`${x.look || "This sheet"} is now ${e.name}'s character sheet`); }) },
-      tileThumb(x), h("span", { class: "sheet-cap" }, (x.id === e.sheet ? "✓ " : "") + (x.look || "sheet").replace(/^sheet · /, ""))))) : null);
+      tileThumb(x), h("span", { class: "sheet-cap" }, (x.id === e.sheet ? "✓ " : "") + (x.look || "sheet").replace(/^sheet · /, "")))))) : null);
 }
 
 function renderEntityPage(e) {
@@ -297,9 +304,9 @@ function renderEntityPage(e) {
       ? `★ = the main look (new images start from it) · ▦ = the character sheet, used in scenes as @${e.ref}`
       : `★ = the main look, used in scenes as @${e.ref}` + (e.sheet ? " · ▦ = the character sheet" : ""))),
     jobTiles("entity", e.id),
-    h("div", { class: "grid" }, ...looks.map((a) => h("button", { class: "tile" + (studio.sel?.id === a.id ? " on" : ""), onclick: () => select("asset", a.id) }, tileThumb(a),
+    h("div", { class: "grid" }, ...looks.map((a) => viewIf(a, h("button", { class: "tile" + (studio.sel?.id === a.id ? " on" : ""), onclick: () => select("asset", a.id) }, tileThumb(a),
       h("span", { class: "tile-t" }, (a.id === e.main ? "★ " : "") + (a.id === e.sheet ? "▦ " : "") + (a.look || a.title)),
-      h("span", { class: "tile-m" }, a.id === e.main ? h("span", { class: "at" }, "main") : a.sheet ? h("span", { class: "at" }, a.id === e.sheet ? "sheet" : "a sheet") : h("span", { class: "link", onclick: (ev) => { ev.stopPropagation(); guard(async () => setProject(await call("/entity", { path: state.path, action: "main", id: e.id, asset: a.id }))); } }, "Make main")))),
+      h("span", { class: "tile-m" }, a.id === e.main ? h("span", { class: "at" }, "main") : a.sheet ? h("span", { class: "at" }, a.id === e.sheet ? "sheet" : "a sheet") : h("span", { class: "link", onclick: (ev) => { ev.stopPropagation(); guard(async () => setProject(await call("/entity", { path: state.path, action: "main", id: e.id, asset: a.id }))); } }, "Make main"))))),
       h("button", { class: "tile add", onclick: () => pickAssets({ kind: "image", title: `Add images to ${e.name}`, exclude: looks.map((x) => x.id) }, (ids) => guard(async () => {
         for (const id of ids) setProject(await call("/entity", { path: state.path, action: "add", id: e.id, asset: id, look: "look" }));
       })) }, h("span", { class: "thumb-box" }, h("span", { class: "big-ico" }, "＋")), h("span", { class: "tile-t" }, "Add from library"), h("span", { class: "tile-m" }, "images you already have"))));
@@ -395,7 +402,11 @@ function renderPanel() {
 
 function bigPreview(kind, file) {
   const src = media(file);
-  if (kind === "image") return h("a", { class: "big-prev", href: src, target: "_blank", title: "Open full size" }, h("img", { src, alt: "" }));
+  if (kind === "image") return h("button", { class: "big-prev", title: "View large — zoom, next / previous, compare", onclick: () => {
+    // the images of the grid this one was opened from (so next / previous walk through them), else just this one
+    const tile = [...document.querySelectorAll("#studioMain [data-vfile]")].find((t) => t.dataset.vfile === file);
+    if (tile) openFromTile(tile); else openViewer([{ file, kind: "image", title: "" }], 0);
+  } }, h("img", { src, alt: "" }), h("span", { class: "tile-view" }, "⛶"));
   if (kind === "audio") return h("div", { class: "big-prev audio" }, h("span", { class: "big-ico" }, "🗣"), h("audio", { src, controls: true, preload: "metadata" }));
   return h("div", { class: "big-prev" }, h("video", { src, controls: true, preload: "metadata", playsinline: true }));
 }
@@ -452,7 +463,7 @@ function assetDetail(a) {
   // versions
   const fam = familyOf(a);
   if (fam.length > 1) out.push(h("section", { class: "psec" }, h("h4", {}, `Versions (${fam.length})`),
-    h("div", { class: "strip" }, fam.map((x) => h("button", { class: "strip-item" + (x.id === a.id ? " on" : ""), title: x.title, onclick: () => select("asset", x.id) }, tileThumb(x))))));
+    h("div", { class: "strip" }, fam.map((x) => viewIf(x, h("button", { class: "strip-item" + (x.id === a.id ? " on" : ""), title: x.title, onclick: () => select("asset", x.id) }, tileThumb(x)))))));
   // make more from it
   out.push(...makeMore(a, e));
   // reference
@@ -524,10 +535,11 @@ function takesCollection() {
   return h("div", {},
     h("div", { class: "coll-head" }, h("h3", {}, "Scene takes"), h("span", { class: "hint" }, "Every finished take, by scene. Save a frame from one to start another scene from it.")),
     ...(rows.length ? rows.map((r) => h("div", { class: "scene-group" }, h("h4", {}, `Scene ${r.n}${r.s.title ? " · " + r.s.title : ""}`),
-      h("div", { class: "grid" }, r.list.map((t) => h("button", { class: "tile" + (studio.sel?.id === t.id ? " on" : ""), onclick: () => select("take", t.id) },
+      h("div", { class: "grid" }, r.list.map((t) => viewable(h("button", { class: "tile" + (studio.sel?.id === t.id ? " on" : ""), onclick: () => select("take", t.id) },
         h("span", { class: "thumb-box" }, posterImg(`${t.dir}/take.mp4`, 0.1)),
         h("span", { class: "tile-t" }, takeLabel(t) + (r.s.selected_take === t.id ? " · selected" : "")),
-        h("span", { class: "tile-m" }, h("span", {}, `${((t.frames || 124) / 24).toFixed(1)} s`), Object.keys(t.upscales || {}).length ? h("span", { class: "at" }, `⤢ ${Object.keys(t.upscales).length}`) : null))))))
+        h("span", { class: "tile-m" }, h("span", {}, `${((t.frames || 124) / 24).toFixed(1)} s`), Object.keys(t.upscales || {}).length ? h("span", { class: "at" }, `⤢ ${Object.keys(t.upscales).length}`) : null)),
+        { file: `${t.dir}/take.mp4`, kind: "video", title: `Scene ${scenes().findIndex((x) => x.id === t.scene) + 1} · ${takeLabel(t)}`, sub: `${t.width}×${t.height} · seed ${t.seed}`, take: t.id })))))
       : [h("div", { class: "empty-state" }, h("p", {}, "No finished takes yet — render scenes in Scenes."))]));
 }
 
