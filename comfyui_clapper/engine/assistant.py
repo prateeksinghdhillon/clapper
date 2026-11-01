@@ -2086,8 +2086,9 @@ def describe_image(provider: dict, project: Project, asset_id: str, kind: str | 
     return out
 
 
-# How to write prompts for the image model (FLUX.2 Klein with reference images), from what was tested in Clapper.
-IMAGE_PROMPT_RULES = """Rules for the image model's prompt (FLUX.2 Klein, which edits and combines reference images):
+# How to write prompts for the image models (FLUX.2 Klein / Qwen-Image-2.1 with reference images), from what was tested in Clapper.
+# The Qwen-Image-2.1 graph turns "image 1" into its own <image1> tags, so one set of rules serves every model.
+IMAGE_PROMPT_RULES = """Rules for the image model's prompt (it edits and combines reference images):
 - The images are numbered in the order given: image 1 is the character / place / object itself; references follow. Refer to them as "image 1", "image 2" ….
 - Say what changes and what stays: "The same character as image 1, now wearing …. Keep the face, hair and body."
 - When the look changes, do NOT repeat the old description (old clothes, weather, time of day): the model then keeps the old look (a new outfit came out with the old raincoat on top; a "sunny morning" stayed rainy). Name the character, then describe only the new state.

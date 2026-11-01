@@ -123,3 +123,15 @@ def test_name_is_not_repeated_in_the_definition(project):
     project.update_entity(e["id"], description="Ren: a tall boy")
     assert e["description"] == "a tall boy"
     assert project.create_entity("character", "Rena", description="Renaissance-style painter")["description"] == "Renaissance-style painter"
+
+
+def test_entity_action_with_another_image_model_and_negative(project):
+    e = project.create_entity("character", "Aoi", description="indigo bob, amber eyes", from_asset=project.aoi_img["id"])
+    c = FakeComfy()
+    job = tools.queue_entity(project, c, e["id"], "look", "wearing a winter coat", count=1, seed=4,
+                             model="qwen_image_21_anime", negative="text, watermark")[0]
+    enc = nodes_of(c.graphs[0], "TextEncodeQwenImage21")[0]["inputs"]
+    assert "<image1>" in enc["prompt"] and enc["negative_prompt"] == "text, watermark" and "images.image_1" in enc
+    assert job["inputs"]["model"] == "qwen_image_21_anime" and job["entity"] == e["id"]
+    with pytest.raises(ProjectError, match="unknown image model"):
+        tools.queue_entity(project, c, e["id"], "look", "x", model="nope")

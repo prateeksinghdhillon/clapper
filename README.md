@@ -22,7 +22,7 @@ Storyboard ──► Scene editor ──► Render take ──► Takes (numbere
 
 **Making what a video needs**
 - **A studio for the material**: characters, places, props and styles with their description, looks (outfits, angles, variations), main look and voice — type only what changes ("in a winter coat", "at night", "in the bus stop") and Clapper builds the prompt from the description and references. Every image, sound and clip keeps its recipe and versions.
-- **✨ Create** images with FLUX.2 Klein (new, or the same character in a new pose or place, several references combined) and speech with Qwen3-TTS voice cloning. Add your own ComfyUI workflows as tools with a small `tool.json`.
+- **✨ Create** images with a choice of image models — FLUX.2 Klein 9B (fast) or Qwen-Image-2.1 (Noct Q V4 photoreal, Noct Q Anime V1), with a negative prompt for the models that take one — new, or the same character in a new pose or place, several references combined; and speech with Qwen3-TTS voice cloning. Add your own ComfyUI workflows as tools with a small `tool.json`.
 - **Sound clips**: a recorded or generated line placed in a scene becomes its soundtrack, word for word, and the picture is made around it.
 - **Start any scene** by continuing the previous one, from a library image, or fresh from the references; render with MiniMax H3 FL2VA or Ref2VA.
 - **Upscale** the chosen takes to 720p or 1080p: fast *Sharpen*, or *Re-detail* where H3 redraws fine detail (fits in 16 GB). Export picks the upscaled versions.
@@ -56,7 +56,11 @@ Storyboard ──► Scene editor ──► Render take ──► Takes (numbere
 - **ffmpeg** on the PATH of the ComfyUI process (`~/.local/bin` is also searched).
 - **A GPU that runs H3 at your chosen size.** Tested on an RTX 5060 Ti 16 GB with 31 GB RAM on Linux: a 5-second scene at 416×736 takes about 5–6 minutes with the default settings. Other GPUs are untested. If you run out of memory, lower the megapixels, use fewer references and keep the memory patch on.
 - **Optional, for the Create tools** (each tool says what it is missing):
-  - images: FLUX.2 Klein 9B (`diffusion_models/flux-2-klein-9b-fp8.safetensors`, `text_encoders/qwen_3_8b_fp8mixed.safetensors`, `vae/flux2-vae.safetensors`; for changing images also `loras/Flux2-Klein-9B-consistency-V2.safetensors`);
+  - images — any of these image models (choose in Settings › Image model, or per run in the Image tool):
+    - FLUX.2 Klein 9B, the default: `diffusion_models/flux-2-klein-9b-fp8.safetensors`, `text_encoders/qwen_3_8b_fp8mixed.safetensors`, `vae/flux2-vae.safetensors`; for changing images also `loras/Flux2-Klein-9B-consistency-V2.safetensors`;
+    - Qwen-Image-2.1 Noct Q V4 (photoreal fine-tune by Noctaluna): `diffusion_models/NoctQ_V4_int8_convrot.safetensors`;
+    - Qwen-Image-2.1 Noct Q Anime V1 (anime fine-tune by Noctaluna): `diffusion_models/NoctQA_V1_int8_convrot.safetensors`;
+    - both Qwen-Image-2.1 models also need `text_encoders/qwen3vl_8b_int8_convrot.safetensors` and `vae/qwen_image_2.1_vae_bf16.safetensors` from [Comfy-Org/Qwen-Image-2.1](https://huggingface.co/Comfy-Org/Qwen-Image-2.1), and **ComfyUI 0.37 or newer** (tested on 0.43). They are non-commercial (Qwen Research License), like FLUX.2 Klein 9B;
   - speech: the [qwen3-tts-comfyui](https://github.com/flybirdxx/ComfyUI-Qwen-TTS) node pack with its 1.7B Base model.
 - **Optional, for upscaling:** `upscale_models/RealESRGAN_x2plus.pth` (Sharpen); the [Minimax H3 latent upscaler](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler) node pack with `latent_upscale_models/minimax_h3_latent_upscaler_3d_fp16.safetensors` and the Ref2VA model (Re-detail).
 - **Optional, for the Ref2VA video model:** `diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors` and `loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors`.

@@ -228,19 +228,21 @@ When the picture changes (a new look, another look as the start, clothes from a 
 
 **▦ Character sheet** (a tab of the action box, for characters and props) works with **Start from** and references too, so each outfit can have its own sheet. All sheets are listed on the page with the one in use marked ✓; click another to use it. With *@name in scenes is: its character sheet*, choosing another main look also switches to the sheet made of that look, when there is one.
 
-**See / edit the prompt** shows the exact prompt that will be used; edit it to take full control. Each image takes about 4–10 s on a 16 GB card; running jobs show as tiles you can cancel.
+**Image model** (next to *Generate*) makes this run with another model than the project's; with a Qwen-Image-2.1 model a **Negative prompt** field appears (empty = the project's from Settings, else the model's own).
+
+**See / edit the prompt** shows the exact prompt that will be used; edit it to take full control. Each image takes about 4–10 s with FLUX.2 Klein on a 16 GB card (see [Image models](#image-models) for the others); running jobs show as tiles you can cancel.
 
 ### New
 
 **＋ New** offers:
 
 - **Character / Place / Prop / Style** — a name, a description, and either **Design it now** (1–4 first designs; pick the main look afterwards) or **Start from an image I have**. When you choose the image and the description is still empty, the assistant looks at it right away and fills in a name and the description; **✨ Describe it** asks again;
-- the tools: **Image (FLUX.2 Klein)**, **Speech (Qwen3-TTS voice clone)** and your own tools (below). Results appear under **Made here**; open one to name it, file it under a character or make versions;
+- the tools: **Image**, **Speech (Qwen3-TTS voice clone)** and your own tools (below). Results appear under **Made here**; open one to name it, file it under a character or make versions;
 - **Upload files**. New images are described by the assistant in the background (a title and *What it shows*, used by search and by the assistant) when its model can see images and — for the local model — ComfyUI is not rendering; otherwise **✨ Describe** in the image's panel does it later.
 
 | Tool | Makes | Needs |
 |---|---|---|
-| **Image (FLUX.2 Klein)** | A new image from a description, or up to 4 library images changed or combined ("the girl from image 1 sits in the shelter from image 2"). **Who and where** picks characters, places and props: each adds its main look as a reference and its name and description to the prompt, so you write "Aoi in a winter coat at the Bus stop". **Save results under** files the results straight into a character or place as a look (with the look's name). About 4 s per image at the default 4 steps. The shape starts at the video's shape | FLUX.2 Klein 9B (`flux-2-klein-9b-fp8`), its text encoder `qwen_3_8b_fp8mixed` and `flux2-vae`; with images also the Klein consistency LoRA (strength under *More options*) |
+| **Image** | **Image model** chooses the model for this run (default: the project's, see [Image models](#image-models)). A new image from a description, or up to 4 library images changed or combined ("the girl from image 1 sits in the shelter from image 2"). **Who and where** picks characters, places and props: each adds its main look as a reference and its name and description to the prompt, so you write "Aoi in a winter coat at the Bus stop". **Save results under** files the results straight into a character or place as a look (with the look's name). With a Qwen-Image-2.1 model, **Negative prompt** says what to avoid (empty = the model's recommended one); *More options* has steps and cfg (0 = the model's own). The shape starts at the video's shape | The chosen model's files (see [Image models](#image-models)); models that are not installed are marked *(not installed)* |
 | **Speech (Qwen3-TTS voice clone)** | A spoken line in the voice of a library sample, in 10 languages. Use it as a scene's sound clip. A few seconds per line | The `qwen3-tts-comfyui` node pack and its 1.7B Base model; a clean voice sample of a few seconds |
 | **Your own tools** | Anything a ComfyUI workflow makes — see the [Reference](REFERENCE.md#adding-your-own-tool) | — |
 
@@ -249,6 +251,21 @@ Tools that cannot run on this ComfyUI say what is missing. Tool jobs share Comfy
 A **voice sample** with an `@name` used in a scene is a *voice reference*: the scene's speaker gets that voice and says new words written in the text. A **sound clip** (scene editor) is played as-is. Use a voice reference for new lines in a known voice, a sound clip for lines you already have as audio.
 
 Limits per scene: up to 9 images and 3 audio references. Video references are not supported yet.
+
+### Image models
+
+Every image Clapper makes — designs, looks, angles, character sheets, start frames, the Image tool, the assistant's images — uses one of these. **Settings › Image model** sets the project's model (and a negative prompt for the models that take one); the Image tool and each action box can pick another one for a single run. All three make new pictures and change or combine up to 4 images, and each result's recipe records which model made it.
+
+| Model | Best for | Speed on a 16 GB card | Negative prompt | Files |
+|---|---|---|---|---|
+| **FLUX.2 Klein 9B** (default) | quick rounds, edits that keep a character | ≈4 s; 9–15 s with reference images | no | `flux-2-klein-9b-fp8`, `qwen_3_8b_fp8mixed`, `flux2-vae`, with images the Klein consistency LoRA |
+| **Qwen-Image-2.1 · Noct Q V4** | photoreal people and places, readable text on signs | ≈35–45 s at cfg 3, ≈17 s at cfg 1; ≈45–60 s with reference images | yes | `NoctQ_V4_int8_convrot`, `qwen3vl_8b_int8_convrot`, `qwen_image_2.1_vae_bf16` |
+| **Qwen-Image-2.1 · Noct Q Anime V1** | anime and painted illustration | as Noct Q V4 | yes | `NoctQA_V1_int8_convrot`, `qwen3vl_8b_int8_convrot`, `qwen_image_2.1_vae_bf16` |
+
+- The Qwen-Image-2.1 models read **full sentences** ("A photo of a woman in her thirties in a yellow raincoat, standing on a wet street at dusk"), not tag lists. They run 25 steps at cfg 3, which uses the negative prompt; cfg 1 (*More options*) is about twice as fast and ignores it.
+- The anime model draws a photo unless the prompt says *anime*; Clapper adds "An anime illustration of …" when it does not. The photoreal model drew "character design" prompts as cartoons, so Clapper adds "A realistic photograph of …" when the prompt names no style (write "illustration" or "painting" to get one).
+- Switching models costs a model load (about 20–40 s more for the first image); keep one model for a batch.
+- They need ComfyUI 0.37 or newer. The Qwen-Image-2.1 models and FLUX.2 Klein 9B are for non-commercial use.
 
 ### Settings dialog
 
@@ -264,6 +281,7 @@ Two views; Clapper remembers which one you use.
 | Picture size while rendering | 416×736 (tested on 16 GB) and two larger sizes | time and memory; larger sizes are untested on 16 GB cards and may run out — upscale the finished takes instead |
 | Default scene length | 3 · 5 · 7 · 10 s | time per scene (each scene can still set its own) |
 | Joins between scenes | Quick (5 frames) · Smooth (22, default) · Strong (39); carry sound across joins | how much of the previous scene each continued scene starts from |
+| Image model (Studio) | FLUX.2 Klein 9B · Qwen-Image-2.1 Noct Q V4 · Qwen-Image-2.1 Noct Q Anime V1, and a negative prompt for the models that take one | which model makes the Studio's images; see [Image models](#image-models) (also in Advanced) |
 
 Each time is marked **measured** (on the reference card, an RTX 5060 Ti 16 GB, or from this project's own finished takes) or **estimate** (scaled from measurements). Once you have rendered takes, their real timings replace the defaults. A line at the bottom gives the time for one scene and for the whole video.
 

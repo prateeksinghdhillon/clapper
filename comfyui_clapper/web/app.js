@@ -1034,13 +1034,13 @@ function nameForm(a) {
 
 // ------------------------------------------------------------------ tools (Create)
 
-const toolState = { list: null, problems: [], current: null, values: {} };
+const toolState = { list: null, problems: [], current: null, values: {}, imageModels: [] };
 const jobs = () => Object.values(state.project?.jobs || {}).sort((a, b) => (b.created || "").localeCompare(a.created || ""));
 
 async function loadTools(force) {
   if (toolState.list && !force) return toolState.list;
   const d = await call("/tools");
-  toolState.list = d.tools; toolState.problems = d.problems || [];
+  toolState.list = d.tools; toolState.problems = d.problems || []; toolState.imageModels = d.image_models || [];
   return toolState.list;
 }
 
@@ -1051,8 +1051,13 @@ function toolField(f, values) {
   if (f.type === "longtext") { input = h("textarea", { rows: 4, placeholder: f.placeholder || "" }); input.value = v; input.oninput = () => set(input.value); }
   else if (f.type === "text") { input = h("input", { placeholder: f.placeholder || "", value: v }); input.oninput = () => set(input.value); }
   else if (f.type === "select") {
-    input = h("select", {}, f.options.map((o) => h("option", { value: o, selected: String(o) === String(v) }, o)));
-    input.onchange = () => set(f.options.find((o) => String(o) === input.value));
+    const status = f.key === "model" ? Object.fromEntries((toolState.imageModels || []).map((m) => [m.id, m])) : {};
+    const label = (o) => {
+      if (o === "" && f.key === "model") { const cur = status[projectImageModel()]; return `${f.labels[""]} — ${cur ? cur.title : projectImageModel()}`; }
+      return ((f.labels || {})[o] ?? o) + (status[o] && !status[o].ok ? " (not installed)" : "");
+    };
+    input = h("select", {}, f.options.map((o) => h("option", { value: o, selected: String(o) === String(v) }, label(o))));
+    input.onchange = () => { set(f.options.find((o) => String(o) === input.value)); if (f.key === "model") showModelFields(input.closest(".card, .psec, section"), values); };
   } else if (f.type === "int" || f.type === "float") {
     input = h("input", { type: "number", value: v, min: f.min, max: f.max, step: f.step || (f.type === "int" ? 1 : 0.05) });
     input.onchange = () => set(input.value === "" ? null : Number(input.value));
@@ -1100,7 +1105,17 @@ function toolField(f, values) {
       if (dep && a && a.transcript && !values[dep.key]) { values[dep.key] = a.transcript; renderStudio(); }
     };
   }
-  return h("label", { class: "tool-field" + (f.type === "images" || f.type === "entities" ? " wide" : "") }, f.label + (f.required ? " *" : ""), input, f.hint ? h("span", { class: "hint" }, f.hint) : null);
+  const el = h("label", { class: "tool-field" + (f.type === "images" || f.type === "entities" || f.type === "longtext" && f.key === "negative" ? " wide" : "") }, f.label + (f.required ? " *" : ""), input, f.hint ? h("span", { class: "hint" }, f.hint) : null);
+  if (f.models) { el.dataset.models = f.models.join(" "); el.hidden = !f.models.includes(values.model || projectImageModel()); }   // only for the models that use it
+  return el;
+}
+
+// The project's image model (Settings › Image model): used when a form leaves "Image model" on the project's choice.
+function projectImageModel() { return (effective()?.image || {}).model || "flux2_klein_9b"; }
+function showModelFields(root, values) {
+  if (!root) return;
+  const model = values.model || projectImageModel();
+  root.querySelectorAll("[data-models]").forEach((el) => { el.hidden = !el.dataset.models.split(" ").includes(model); });
 }
 
 const JOB_CLS = { queued: "info", running: "info", done: "ok", failed: "bad", interrupted: "warn", cancelled: "muted" };
@@ -1207,7 +1222,23 @@ function applyPreset(s, p) {
 }
 
 function choiceCard(on, title, lines, onclick, extra) {
-  return h("button", { class: "choice" + (on ? " on" : ""), type: "button", onclick }, h("b", {}, title), ...lines.map((l) => h("span", {}, l)), extra || null);
+  return h("button", { class: "choice" + (on ? " on" : ""), type: "button", onclick }, h("b", {}, title), ...lines.filter(Boolean).map((l) => h("span", {}, l)), extra || null);
+}
+
+function imageModelSection(s, body) {
+  // the image model for the Studio (looks, sheets, places, start frames)
+  s.image = s.image || structuredClone(state.defaults.image || { model: "flux2_klein_9b", negative: "" });
+  const ims = toolState.imageModels || [];
+  if (!ims.length) loadTools(true).then(() => { if ($("settingsDlg").open) renderSettings(); }).catch(() => {});
+  const curIm = ims.find((m) => m.id === s.image.model);
+  const neg = h("textarea", { rows: 3, placeholder: curIm && curIm.negative ? "empty = the model's own: " + curIm.negative : "" });
+  neg.value = s.image.negative || ""; neg.oninput = () => { s.image.negative = neg.value; };
+  body.append(h("section", { class: "settings-section" }, h("h3", {}, "Image model (Studio)"),
+    h("div", { class: "choices" }, (ims.length ? ims : [{ id: s.image.model, title: s.image.model, note: "Loading…", ok: true }]).map((m) =>
+      choiceCard(s.image.model === m.id, m.title, [m.note, m.ok ? "" : "Not installed: missing " + (m.missing || []).join(", ")], () => { s.image.model = m.id; renderSettings(); }))),
+    curIm && curIm.takes_negative ? h("label", {}, "Negative prompt — what to avoid in every Studio image (empty = the model's recommended one)", neg)
+      : h("p", { class: "hint" }, "This model takes no negative prompt."),
+    h("p", { class: "hint" }, "Looks, character sheets, places and start frames use this model. The Image tool (Studio › New) can choose another one for a single run.")));
 }
 
 function renderSimpleSettings(body) {
@@ -1234,6 +1265,8 @@ function renderSimpleSettings(body) {
         h("span", { class: "shape", style: `aspect-ratio:${w}/${hh}` }));
     })),
     h("p", { class: "hint" }, "For new scenes that start fresh or from an image; a scene that continues keeps the size of the scene before it. A start image of another shape is cropped to fit. Places and start frames made in the Studio use this shape too.")));
+
+  imageModelSection(s, body);
 
   // steps for the model(s) in use
   const models = [...new Set([usedModel(s, true), usedModel(s, false)])];
@@ -1294,6 +1327,7 @@ function renderAdvancedSettings(body) {
   const vmSel = h("select", {}, Object.entries(VM).map(([v, label]) => h("option", { value: v, selected: s.video_model.mode === v }, label)));
   vmSel.onchange = () => { s.video_model.mode = vmSel.value; renderSettings(); };
   const r = s.video_model.ref2va;
+  imageModelSection(s, body);
   body.append(h("section", { class: "settings-section" }, h("h3", {}, "Video model"),
     h("label", {}, "Which H3 model renders the scenes", vmSel),
     h("p", { class: "hint" }, "Ref2VA makes a scene from references alone, from a start image, or continuing the previous scene, so one model can make the whole video. With its Turbo LoRA at 4 steps a 5-second scene takes about 2 minutes on a 16 GB card. The model, LoRA and steps below are used only when Ref2VA renders; the Sampling, LoRA and model sections further down are for FL2VA."),

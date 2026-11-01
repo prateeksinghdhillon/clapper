@@ -43,6 +43,10 @@ DEFAULT_SETTINGS: dict = {
             "steps": 4,
         },
     },
+    # Images made in the Studio (looks, sheets, places, start frames): which image model (engine/tools.py
+    # IMAGE_MODELS) and a negative prompt for the models that take one (empty = the model's recommended one).
+    # The Image tool's form can choose another model for one run.
+    "image": {"model": "flux2_klein_9b", "negative": ""},
 }
 
 VIDEO_MODEL_MODES = ("fl2va", "ref2va", "ref2va_fresh")

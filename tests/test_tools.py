@@ -150,7 +150,9 @@ def test_availability():
             "VAELoader": {"input": {"required": {"vae_name": [["flux2-vae.safetensors"]]}}}}
     have = set(info) | {"EmptyFlux2LatentImage", "Flux2Scheduler", "ReferenceLatent", "ClapperLoadImage", "ClapperSaveImages"}
     a = tools.availability([tools.IMAGE_TOOL, tools.SPEECH_TOOL], lambda n: info.get(n) or ({"input": {}} if n in have else {}))
-    assert a["image"] == {"ok": False, "missing": ["model qwen_3_8b_fp8mixed.safetensors"]}
+    assert a["image"]["ok"] is False and a["image"]["missing"] == ["model qwen_3_8b_fp8mixed.safetensors"]
+    assert a["image"]["options"]["model"]["flux2_klein_9b"] == ["model qwen_3_8b_fp8mixed.safetensors"]
+    assert "node TextEncodeQwenImage21" in a["image"]["options"]["model"]["qwen_image_21_realism"]
     assert not a["speech"]["ok"] and "node FB_Qwen3TTSVoiceClone" in a["speech"]["missing"]
 
 
@@ -184,3 +186,58 @@ def test_new_version_joins_the_family(project):
     assert made["parent"] == project.girl["id"]
     with pytest.raises(ProjectError):
         tools.queue_tool(project, c, "image", {"prompt": "x"}, version_of="a_missing")
+
+
+def test_image_tool_runs_if_one_model_is_installed():
+    files = ["NoctQ_V4_int8_convrot.safetensors"]
+    info = {"UNETLoader": {"input": {"required": {"unet_name": [files]}}},
+            "CLIPLoader": {"input": {"required": {"clip_name": [["qwen3vl_8b_int8_convrot.safetensors"]]}}},
+            "VAELoader": {"input": {"required": {"vae_name": [["qwen_image_2.1_vae_bf16.safetensors"]]}}}}
+    have = set(info) | {"TextEncodeQwenImage21", "EmptyLatentImage", "KSampler", "ClapperLoadImage", "ClapperSaveImages"}
+    a = tools.availability([tools.IMAGE_TOOL], lambda n: info.get(n) or ({"input": {}} if n in have else {}))["image"]
+    opts = a["options"]["model"]
+    assert a["ok"] and opts["qwen_image_21_realism"] == [] and opts["qwen_image_21_anime"] and opts["flux2_klein_9b"]
+
+
+def test_qwen_model_graph_negative_and_references(project):
+    c = FakeComfy()
+    job = tools.queue_tool(project, c, "image", {"prompt": "The same girl as image 1, sitting", "images": [project.girl["id"]],
+                                                 "model": "qwen_image_21_realism", "negative": "blurry"}, seed=3)[0]
+    g = c.graphs[0]
+    enc = nodes_of(g, "TextEncodeQwenImage21")[0]["inputs"]
+    assert enc["prompt"].endswith("The same girl as <image1>, sitting") and enc["negative_prompt"] == "blurry"
+    assert "images.image_1" in enc and "vae" in enc
+    ks = nodes_of(g, "KSampler")[0]["inputs"]
+    assert ks["steps"] == 25 and ks["cfg"] == 3.0 and ks["seed"] == 3
+    assert nodes_of(g, "UNETLoader")[0]["inputs"]["unet_name"] == "NoctQ_V4_int8_convrot.safetensors"
+    assert nodes_of(g, "CLIPLoader")[0]["inputs"]["type"] == "qwen_image"
+    assert not nodes_of(g, "Flux2Scheduler") and job["inputs"]["model"] == "qwen_image_21_realism"
+
+
+def test_qwen_anime_prefix_and_default_negative(project):
+    c = FakeComfy()
+    tools.queue_tool(project, c, "image", {"prompt": "a girl with a red scarf", "model": "qwen_image_21_anime", "cfg": 1}, seed=1)
+    enc = nodes_of(c.graphs[0], "TextEncodeQwenImage21")[0]["inputs"]
+    assert enc["prompt"].startswith("An anime illustration") and "photorealistic" in enc["negative_prompt"]
+    assert "images.image_1" not in enc and nodes_of(c.graphs[0], "KSampler")[0]["inputs"]["cfg"] == 1.0
+    tools.queue_tool(project, c, "image", {"prompt": "an anime girl", "model": "qwen_image_21_anime"}, seed=1)
+    assert nodes_of(c.graphs[1], "TextEncodeQwenImage21")[0]["inputs"]["prompt"] == "an anime girl"
+
+
+def test_project_image_model_and_negative_from_settings(project):
+    project.data["settings"] = {"image": {"model": "qwen_image_21_anime", "negative": "text, watermark"}}
+    c = FakeComfy()
+    job = tools.queue_tool(project, c, "image", {"prompt": "anime girl"}, seed=1)[0]
+    assert job["inputs"]["model"] == "qwen_image_21_anime" and job["inputs"]["negative"] == "text, watermark"
+    assert nodes_of(c.graphs[0], "TextEncodeQwenImage21")[0]["inputs"]["negative_prompt"] == "text, watermark"
+    job = tools.queue_tool(project, c, "image", {"prompt": "x", "model": "flux2_klein_9b"}, seed=1)[0]   # the form wins
+    assert nodes_of(c.graphs[1], "Flux2Scheduler")[0]["inputs"]["steps"] == 4
+    with pytest.raises(ProjectError, match="choose one of"):
+        tools.queue_tool(project, c, "image", {"prompt": "x", "model": "nope"})
+
+
+def test_qwen_photoreal_prefix_unless_a_style_is_named(project):
+    m = tools.IMAGE_MODELS["qwen_image_21_realism"]
+    assert tools.qwen_prompt(m, "Original character design, a woman").startswith("A realistic photograph of")
+    assert tools.qwen_prompt(m, "A photo of a woman") == "A photo of a woman"
+    assert tools.qwen_prompt(m, "An anime illustration of a girl") == "An anime illustration of a girl"

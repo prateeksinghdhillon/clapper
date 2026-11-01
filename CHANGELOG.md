@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **A choice of image models**:
+  - Besides **FLUX.2 Klein 9B** (still the default, the fastest), the Image tool and the Studio can use **Qwen-Image-2.1 · Noct Q V4** (photoreal) and **Qwen-Image-2.1 · Noct Q Anime V1** (anime), int8 fine-tunes of Qwen-Image-2.1 that fit a 16 GB card. Both make new pictures and edit or combine up to 4 library images.
+  - **Settings › Image model** sets the project's model for looks, sheets, places, start frames and the assistant's images; the Image tool's form and every character / place action box can choose another one for one run. Models that are not installed are marked and say which files are missing; the recipe records the model used.
+  - **Negative prompt** for the models that take one (the Qwen-Image-2.1 models): per run in the form and the action box, and a project-wide one in Settings. Empty uses the model's recommended negative prompt. Fields a model does not use (negative prompt, cfg, Klein's consistency LoRA) are hidden for it.
+  - Steps and cfg of 0 mean the model's own (Klein 4; Qwen-Image-2.1 25 steps at cfg 3). "image 1" in prompts becomes Qwen-Image-2.1's `<image1>`; the anime model gets "An anime illustration of …" when the prompt does not say anime, and the photoreal model "A realistic photograph of …" when the prompt names no style (without it, character designs came out as cartoons).
+  - The Qwen-Image-2.1 models need ComfyUI 0.37 or newer.
 - **The assistant in the Studio**:
   - **✨ Ask the assistant** in every action box: plain words in; the assistant looks at the images that will be sent and writes the change, the look's name and the prompt (with rules learned in testing).
   - **✨ Tell the assistant about it** writes a new character's (place's …) name and description from your words, also on its page.

@@ -14,6 +14,7 @@ import copy
 import json
 import os
 import random
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +45,8 @@ class Tool:
     default_role: str = "other"
     needs: list[tuple[str, str, str]] = field(default_factory=list)   # (node class, input name, file) that must exist
     nodes: list[str] = field(default_factory=list)                    # node classes that must be installed
+    # A select field whose options each need their own files / nodes: {field key: {option: (needs, nodes)}}
+    option_needs: dict[str, dict[str, tuple[list, list]]] = field(default_factory=dict)
     source: str = "built-in"
 
     def describe(self) -> dict:
@@ -63,21 +66,83 @@ class _Graph:
         return key
 
 
-# ------------------------------------------------------------------ built-in: FLUX.2 Klein image
+# ------------------------------------------------------------------ built-in: image (a choice of image models)
 
-KLEIN = {"unet": "flux-2-klein-9b-fp8.safetensors", "clip": "qwen_3_8b_fp8mixed.safetensors",
-         "vae": "flux2-vae.safetensors", "lora": "Flux2-Klein-9B-consistency-V2.safetensors"}
+# The image models the Image tool can use. Every one makes a new picture from a description and edits / combines
+# library images (image 1 … image 4). "family" picks the graph; "files" are what must be in ComfyUI's model folders.
+# Steps / cfg / negative are each model's tested or recommended defaults (0 or empty in the form = these).
+IMAGE_MODELS: dict[str, dict] = {
+    "flux2_klein_9b": {
+        "title": "FLUX.2 Klein 9B (fast)", "family": "flux2",
+        "files": {"unet": "flux-2-klein-9b-fp8.safetensors", "clip": "qwen_3_8b_fp8mixed.safetensors",
+                  "vae": "flux2-vae.safetensors", "lora": "Flux2-Klein-9B-consistency-V2.safetensors"},
+        "steps": 4, "cfg": 1.0, "negative": None,   # None: the model takes no negative prompt
+        "note": "Distilled for 4 steps, about 4 s per image on a 16 GB card. No negative prompt.",
+    },
+    "qwen_image_21_realism": {
+        "title": "Qwen-Image-2.1 · Noct Q V4 (photoreal)", "family": "qwen21",
+        "prefix": "A realistic photograph of the following. ",
+        "style_words": ("photo", "anime", "illustration", "cartoon", "painting", "drawing", "sketch", "3d render", "art style"),
+        "files": {"unet": "NoctQ_V4_int8_convrot.safetensors", "clip": "qwen3vl_8b_int8_convrot.safetensors",
+                  "vae": "qwen_image_2.1_vae_bf16.safetensors"},
+        "steps": 25, "cfg": 3.0,
+        "negative": ("artifacts, washed-out colors, low quality, low resolution, blurry, indistinct, sloppy lines, "
+                     "rough sketch, missing fingers, badly drawn hands, wrong number of fingers"),
+        "note": "Photoreal fine-tune of Qwen-Image-2.1 (int8). 25 steps at cfg 3 with the negative prompt; cfg 1 is about "
+                "twice as fast and ignores the negative prompt. Reads full-sentence prompts, not tag lists; a prompt that names no "
+                "style starts with \"A realistic photograph of\" (without it, \"character design\" came out as a cartoon).",
+    },
+    "qwen_image_21_anime": {
+        "title": "Qwen-Image-2.1 · Noct Q Anime V1 (anime)", "family": "qwen21", "prefix": "An anime illustration of the following. ",
+        "style_words": ("anime",),
+        "files": {"unet": "NoctQA_V1_int8_convrot.safetensors", "clip": "qwen3vl_8b_int8_convrot.safetensors",
+                  "vae": "qwen_image_2.1_vae_bf16.safetensors"},
+        "steps": 25, "cfg": 3.0,
+        "negative": ("low quality, low resolution, blurry, jpeg artifacts, washed-out colors, sloppy lines, messy line art, "
+                     "extra fingers, missing fingers, badly drawn hands, deformed anatomy, 3d render, photograph, photorealistic"),
+        "note": "Anime fine-tune of Qwen-Image-2.1 (int8). Without the word anime it draws a photo, so Clapper starts "
+                "prompts that do not say it with \"An anime illustration of\". 25 steps at cfg 3 with the negative prompt.",
+    },
+}
+DEFAULT_IMAGE_MODEL = "flux2_klein_9b"
+_FAMILY_NODES = {
+    "flux2": ["EmptyFlux2LatentImage", "Flux2Scheduler", "ReferenceLatent", "ClapperLoadImage", "ClapperSaveImages"],
+    "qwen21": ["TextEncodeQwenImage21", "EmptyLatentImage", "KSampler", "ClapperLoadImage", "ClapperSaveImages"],
+}
+KLEIN = IMAGE_MODELS["flux2_klein_9b"]["files"]   # kept for code that names the Klein files
+
+
+def image_model_needs(model_id: str) -> tuple[list[tuple[str, str, str]], list[str]]:
+    """(model files, node classes) an image model needs in ComfyUI."""
+    m = IMAGE_MODELS[model_id]
+    f = m["files"]
+    needs = [("UNETLoader", "unet_name", f["unet"]), ("CLIPLoader", "clip_name", f["clip"]), ("VAELoader", "vae_name", f["vae"])]
+    return needs, list(_FAMILY_NODES[m["family"]])
+
+
+def resolve_image_model(inputs: dict, settings: dict | None = None) -> str:
+    """The image model a run uses: the form's choice, else the project's (Settings › Image model), else the default."""
+    chosen = inputs.get("model") or ((settings or {}).get("image") or {}).get("model") or DEFAULT_IMAGE_MODEL
+    if chosen not in IMAGE_MODELS:
+        raise ProjectError(f"unknown image model {chosen!r}; choose one of {', '.join(IMAGE_MODELS)}")
+    return chosen
+
+
+def _negative(model: dict, inputs: dict) -> str:
+    text = (inputs.get("negative") or "").strip()
+    return text if text else (model.get("negative") or "")
 
 
 def _build_klein(inputs: dict, ctx: dict) -> dict:
+    files = IMAGE_MODELS["flux2_klein_9b"]["files"]
     g = _Graph()
-    model = [g.add("UNETLoader", unet_name=KLEIN["unet"], weight_dtype="default"), 0]
+    model = [g.add("UNETLoader", unet_name=files["unet"], weight_dtype="default"), 0]
     refs = [ctx["paths"][a] for a in inputs.get("images") or []]
     strength = float(inputs.get("consistency", 0.0) or 0.0)
     if refs and strength > 0:
-        model = [g.add("LoraLoaderModelOnly", model=model, lora_name=KLEIN["lora"], strength_model=strength), 0]
-    clip = [g.add("CLIPLoader", clip_name=KLEIN["clip"], type="flux2", device="default"), 0]
-    vae = [g.add("VAELoader", vae_name=KLEIN["vae"]), 0]
+        model = [g.add("LoraLoaderModelOnly", model=model, lora_name=files["lora"], strength_model=strength), 0]
+    clip = [g.add("CLIPLoader", clip_name=files["clip"], type="flux2", device="default"), 0]
+    vae = [g.add("VAELoader", vae_name=files["vae"]), 0]
     cond = [g.add("CLIPTextEncode", clip=clip, text=inputs["prompt"]), 0]
     for path in refs:  # each library image becomes a reference latent (image 1, image 2, … in the prompt)
         img = [g.add("ClapperLoadImage", path=path), 0]
@@ -85,7 +150,7 @@ def _build_klein(inputs: dict, ctx: dict) -> dict:
         latent = [g.add("VAEEncode", pixels=scaled, vae=vae), 0]
         cond = [g.add("ReferenceLatent", conditioning=cond, latent=latent), 0]
     width, height = ASPECTS.get(inputs.get("aspect") or "1:1", ASPECTS["1:1"])
-    steps = int(inputs.get("steps") or 4)
+    steps = int(inputs.get("steps") or IMAGE_MODELS["flux2_klein_9b"]["steps"])
     guider = [g.add("BasicGuider", model=model, conditioning=cond), 0]
     sampler = [g.add("KSamplerSelect", sampler_name="euler"), 0]
     sigmas = [g.add("Flux2Scheduler", steps=steps, width=width, height=height), 0]
@@ -97,28 +162,87 @@ def _build_klein(inputs: dict, ctx: dict) -> dict:
     return g.g
 
 
+_IMAGE_REF = re.compile(r"\b[Ii]mage (\d{1,2})\b")
+
+
+def qwen_prompt(model: dict, prompt: str) -> str:
+    """Clapper's prompts say "image 1", "image 2" …; Qwen-Image-2.1 reads its references as <image1>, <image2> …"""
+    prompt = _IMAGE_REF.sub(lambda m: f"<image{m.group(1)}>", prompt.strip())
+    prefix = model.get("prefix")   # the model's own style, unless the prompt already names a style
+    if prefix and not any(w in prompt.lower() for w in model.get("style_words", ())):
+        prompt = prefix + prompt
+    return prompt
+
+
+def _build_qwen21(model_id: str) -> Callable[[dict, dict], dict]:
+    m = IMAGE_MODELS[model_id]
+
+    def build(inputs: dict, ctx: dict) -> dict:
+        files = m["files"]
+        g = _Graph()
+        model = [g.add("UNETLoader", unet_name=files["unet"], weight_dtype="default"), 0]
+        clip = [g.add("CLIPLoader", clip_name=files["clip"], type="qwen_image", device="default"), 0]
+        vae = [g.add("VAELoader", vae_name=files["vae"]), 0]
+        enc = {"clip": clip, "prompt": qwen_prompt(m, inputs["prompt"]), "negative_prompt": _negative(m, inputs),
+               "resolution": 1024}
+        refs = [ctx["paths"][a] for a in inputs.get("images") or []]
+        if refs:
+            enc["vae"] = vae
+            for n, path in enumerate(refs, 1):   # image_1 is the one being edited, the rest are references
+                enc[f"images.image_{n}"] = [g.add("ClapperLoadImage", path=path), 0]
+        text = g.add("TextEncodeQwenImage21", **enc)
+        width, height = ASPECTS.get(inputs.get("aspect") or "1:1", ASPECTS["1:1"])
+        empty = [g.add("EmptyLatentImage", width=width, height=height, batch_size=1), 0]
+        cfg = float(inputs.get("cfg") or m["cfg"])
+        sampled = [g.add("KSampler", model=model, positive=[text, 0], negative=[text, 1], latent_image=empty,
+                         seed=int(ctx["seed"]), steps=int(inputs.get("steps") or m["steps"]), cfg=cfg,
+                         sampler_name="euler", scheduler="simple", denoise=1.0), 0]
+        decoded = [g.add("VAEDecode", samples=sampled, vae=vae), 0]
+        g.add("ClapperSaveImages", images=decoded, out_dir=ctx["out_dir"], prefix="image")
+        return g.g
+    return build
+
+
+_IMAGE_BUILDERS: dict[str, Callable[[dict, dict], dict]] = {
+    mid: (_build_klein if m["family"] == "flux2" else _build_qwen21(mid)) for mid, m in IMAGE_MODELS.items()}
+_NEGATIVE_MODELS = [mid for mid, m in IMAGE_MODELS.items() if m.get("negative") is not None]
+
+
+def _build_image(inputs: dict, ctx: dict) -> dict:
+    return _IMAGE_BUILDERS[resolve_image_model(inputs)](inputs, ctx)
+
+
 IMAGE_TOOL = Tool(
-    id="image", kind="image", title="Image (FLUX.2 Klein)", default_role="character",
+    id="image", kind="image", title="Image", default_role="character",
     description="Make a new image from a description, or change existing library images: the same character in a new "
                 "pose, outfit or place; a place at another time of day; several references combined in one picture.",
     fields=[
+        {"key": "model", "label": "Image model", "type": "select", "options": ["", *IMAGE_MODELS],
+         "labels": {"": "The project's image model (Settings)", **{k: m["title"] for k, m in IMAGE_MODELS.items()}},
+         "default": "", "hint": "FLUX.2 Klein is the fastest; the Qwen-Image-2.1 models are slower and take a negative prompt."},
         {"key": "prompt", "label": "Describe the image", "type": "longtext", "required": True,
          "placeholder": "Full-body anime girl with short silver hair and a red scarf, standing, neutral white background"},
+        {"key": "negative", "label": "Negative prompt — what to avoid", "type": "longtext", "models": _NEGATIVE_MODELS,
+         "placeholder": "empty = the model's recommended negative prompt (Settings › Image model)",
+         "hint": "Only models that take a negative prompt use it (the Qwen-Image-2.1 models, at cfg above 1)."},
         {"key": "cast", "label": "Who and where (characters, places, props)", "type": "entities", "max": 4,
          "hint": "Each one adds its main look as a reference image, and its name and description to the prompt — "
                  "write their names in the description: \"Aoi in a winter coat at the Bus stop\"."},
         {"key": "images", "label": "Start from library images (optional, up to 4)", "type": "images", "max": 4,
          "hint": "With images, describe the change: \"the same character, sitting on a bench at night\". Refer to them as image 1, image 2 … in the order chosen."},
         {"key": "aspect", "label": "Shape", "type": "select", "options": list(ASPECTS), "default": "9:16"},
-        {"key": "steps", "label": "Steps", "type": "int", "default": 4, "min": 1, "max": 50, "advanced": True,
-         "hint": "The Klein model is distilled for 4 steps (about 4 s per image on a 16 GB card); 20 steps took 14× longer with no visible gain."},
-        {"key": "consistency", "label": "Consistency LoRA strength (with images)", "type": "float", "default": 0.35,
-         "min": 0, "max": 1.5, "step": 0.05, "advanced": True},
+        {"key": "steps", "label": "Steps (0 = the model's own)", "type": "int", "default": 0, "min": 0, "max": 60, "advanced": True,
+         "hint": "FLUX.2 Klein is distilled for 4 steps (about 4 s per image on a 16 GB card; 20 steps took 14× longer with no "
+                 "visible gain). The Qwen-Image-2.1 models use 25."},
+        {"key": "cfg", "label": "Guidance / cfg (0 = the model's own)", "type": "float", "default": 0, "min": 0, "max": 10,
+         "step": 0.5, "advanced": True, "models": _NEGATIVE_MODELS,
+         "hint": "Qwen-Image-2.1: 3 follows the prompt and the negative prompt best; 1 is about twice as fast and ignores the negative prompt."},
+        {"key": "consistency", "label": "Consistency LoRA strength (FLUX.2 Klein, with images)", "type": "float", "default": 0.35,
+         "min": 0, "max": 1.5, "step": 0.05, "advanced": True, "models": ["flux2_klein_9b"]},
     ],
-    build=_build_klein,
-    needs=[("UNETLoader", "unet_name", KLEIN["unet"]), ("CLIPLoader", "clip_name", KLEIN["clip"]),
-           ("VAELoader", "vae_name", KLEIN["vae"])],
-    nodes=["EmptyFlux2LatentImage", "Flux2Scheduler", "ReferenceLatent", "ClapperLoadImage", "ClapperSaveImages"],
+    build=_build_image,
+    nodes=["ClapperLoadImage", "ClapperSaveImages"],
+    option_needs={"model": {mid: image_model_needs(mid) for mid in IMAGE_MODELS}},
 )
 
 
@@ -236,14 +360,27 @@ def availability(tools: list[Tool], object_info: Callable[[str], dict]) -> dict[
                 cache[node] = {}
         return cache[node]
 
-    out = {}
-    for tool in tools:
-        missing = [f"node {n}" for n in tool.nodes if not info(n)]
-        for node, name, file in tool.needs:
+    def lacking(needs: list, nodes: list) -> list[str]:
+        missing = [f"node {n}" for n in nodes if not info(n)]
+        for node, name, file in needs:
             options = ((info(node).get("input") or {}).get("required") or {}).get(name, [[]])[0]
             if isinstance(options, list) and file not in options:
                 missing.append(f"model {file}")
-        out[tool.id] = {"ok": not missing, "missing": missing}
+        return missing
+
+    out = {}
+    for tool in tools:
+        missing = lacking(tool.needs, tool.nodes)
+        entry: dict = {"ok": not missing, "missing": missing}
+        if tool.option_needs:   # e.g. the image models: the tool runs if at least one of them can
+            entry["options"] = {key: {opt: lacking(*need) for opt, need in opts.items()}
+                                for key, opts in tool.option_needs.items()}
+            for opts in entry["options"].values():
+                if not any(not m for m in opts.values()):
+                    first = next(iter(opts.values()), [])
+                    entry["missing"] = missing + [m for m in first if m not in missing]
+                    entry["ok"] = False
+        out[tool.id] = entry
     return out
 
 
@@ -309,6 +446,12 @@ def queue_tool(project: Project, client: ComfyClient, tool_id: str, inputs: dict
     if role not in ASSET_ROLES:
         raise ProjectError(f"role must be one of {ASSET_ROLES}")
     inputs = {f["key"]: inputs.get(f["key"], f.get("default")) for f in tool.fields}
+    if tool.id == "image":   # the recipe records the model actually used, so "run again" makes the same kind of image
+        from .director import project_settings
+        settings = project_settings(project)
+        inputs["model"] = resolve_image_model(inputs, settings)
+        if not (inputs.get("negative") or "").strip():
+            inputs["negative"] = ((settings.get("image") or {}).get("negative") or "").strip()
     _check_inputs(project, tool, inputs)
     run_inputs = with_cast(project, inputs)   # the recipe keeps the cast; the graph gets their images and names
     paths = _check_inputs(project, tool, run_inputs)
@@ -518,12 +661,19 @@ def _entity_inputs(project: Project, entity_id: str, action: str, text: str, *, 
 def queue_entity(project: Project, client: ComfyClient, entity_id: str, action: str, text: str = "", *,
                  place_id: str | None = None, count: int = 2, seed: int | None = None, aspect: str | None = None,
                  prompt: str | None = None, source: str | None = None, refs: list[dict] | None = None,
-                 look: str = "") -> list[dict]:
+                 look: str = "", model: str | None = None, negative: str | None = None) -> list[dict]:
     """Generate from a character / place: its first design, a new look or angle, or it placed in a place.
-    `prompt` replaces the built prompt (the references stay)."""
+    `prompt` replaces the built prompt (the references stay). `model`: an image model (default: the project's);
+    `negative`: a negative prompt for models that take one (default: the project's, else the model's)."""
     inputs, extra = entity_inputs(project, entity_id, action, text, place_id=place_id, aspect=aspect, source=source, refs=refs)
     if prompt:
         inputs["prompt"] = prompt
+    if model:
+        if model not in IMAGE_MODELS:
+            raise ProjectError(f"unknown image model {model!r}")
+        inputs["model"] = model
+    if negative:
+        inputs["negative"] = negative
     if look.strip() and "look" in extra:   # the name the user (or the assistant) gave the new look
         extra["look"] = _label(("sheet · " if action == "sheet" else "") + look.strip()) if not look.strip().lower().startswith("sheet") else _label(look.strip())
     role = extra.pop("role", None) or project.entity(entity_id)["kind"]

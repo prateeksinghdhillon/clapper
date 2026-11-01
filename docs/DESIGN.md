@@ -46,7 +46,7 @@ ComfyUI server ── comfyui_clapper ──────────────
    engine/       pure Python, no torch — usable from the CLI and tests
       project.py   project store, asset library, @name compile, definitions, start images, sound clips, badges, take numbering
       media.py     ffprobe / ffmpeg helpers for library files (durations, sizes, frames of takes)
-      tools.py     Create tools (FLUX.2 image, Qwen3-TTS speech, user workflows) and their jobs
+      tools.py     Create tools (image with a choice of models: FLUX.2 Klein, Qwen-Image-2.1; Qwen3-TTS speech; user workflows) and their jobs
       upscale.py   Sharpen / Re-detail upscales of takes (jobs), versions on the take
       finish.py    music / sound tracks, overlays and title cards applied at export (ffmpeg)
       estimates.py render-time model for Settings (measured defaults, learns from the project's takes)
@@ -111,6 +111,7 @@ Key decisions:
 | Qwen3-TTS 1.7B Base, voice clone from a saved voice, English | a 4.4 s line in 12 s including model load |
 | Mixed models: FL2VA scene continuing a Ref2VA take (same seed and parent, three runs) | without a sound clip: clean join (4.1); **with a sound clip at 0.5 s: hard cut right after the carried frames (41.8)**; the same scene on Ref2VA with the clip: clean (2.9). Clip reproduced in all (envelope 0.98). One seed — a strong hint, not proof; the editor warns about this combination |
 | Image tool: FLUX.2 Klein 9B fp8, 768×1344, same seed, 4 vs 20 steps | 3.9 s vs 56 s; equal quality (the checkpoint is distilled) — 4 steps is the default. With 1–2 reference images about 9–15 s; the first job after a video render ≈ 30–50 s (model load) |
+| Image models on ComfyUI 0.43, RTX 5060 Ti 16 GB, 768×1344: Qwen-Image-2.1 Noct Q V4 / Noct Q Anime V1 int8 with the int8 Qwen3-VL 8B encoder, 25 steps | text to image ≈33–45 s at cfg 3, ≈17 s at cfg 1 (first image after a model switch ≈55–75 s); with one reference image ≈45–60 s; peak VRAM ≈9.5 GB (ComfyUI moves the text encoder off the GPU). An edit ("the same woman as <image1>, now in a navy wool coat on a park bench in midday sun") kept her face and hair and changed outfit, place and light. FLUX.2 Klein unchanged after the ComfyUI update (≈4 s warm) |
 | Image tool with references (character + location) | an original anime character and an empty location combined into a start frame: character, outfit, umbrella and the exact shelter kept |
 | Speech tool: Qwen3-TTS 1.7B Base clone, English line, 7 s voice sample | 4.6 s line in 8–10 s |
 | End to end, original anime short: character and location made with the image tool, line with the speech tool, 7 s scene from the start frame with the line as a sound clip, then a continued scene, Ref2VA for both | line placed exactly (envelope 0.97 at zero lag); scene 1 179 s, scene 2 123 s; join clean (5.2 vs ≈3 in-take); story beats followed (headlights, she stands, umbrella snaps open, bus arrives) |
@@ -151,6 +152,8 @@ The next version's plan (library, image and speech tools, start modes, finishing
 | Start mode per scene: continue · from image · fresh (references only) · bridge | done |
 | Video model per project: FL2VA · Ref2VA · Ref2VA for fresh scenes (per-take model recorded) | done |
 | Create tools: image (FLUX.2 Klein: new, vary, combine), speech (Qwen3-TTS clone), batches, job list, run again; your own tools from a workflow + `tool.json` | done |
+| Image model choice: FLUX.2 Klein 9B · Qwen-Image-2.1 Noct Q V4 (photoreal) · Noct Q Anime V1, per project (Settings) and per run; negative prompt for the models that take one; per-model availability | done |
+| Image models: a side-by-side quality test of Klein and Qwen-Image-2.1 on character consistency (same character, new outfits and angles) | planned |
 | Character / place sheets (many angles from one image) | planned |
 | Video references | planned |
 | Overlays in export (exact logos, product photos, title cards with position, timing, fade) and music / sound tracks with ducking | done |

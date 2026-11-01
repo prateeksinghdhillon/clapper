@@ -378,6 +378,16 @@ function entityActions(e) {
   placeSel.onchange = () => { entityAct.place = placeSel.value; changed(); };
   const count = h("select", {}, [1, 2, 4].map((n) => h("option", { value: n, selected: n === entityAct.count }, `${n} result${n > 1 ? "s" : ""}`)));
   count.onchange = () => { entityAct.count = Number(count.value); };
+  // which image model makes these (default: the project's, Settings › Image model) and, if it takes one, a negative prompt
+  if (!toolState.list) loadTools().then(() => renderStudio()).catch(() => {});
+  const ims = toolState.imageModels || [];
+  const curModel = ims.find((m) => m.id === (entityAct.model || projectImageModel()));
+  const modelSel = h("select", {}, h("option", { value: "" }, `Project's — ${(ims.find((m) => m.id === projectImageModel()) || {}).title || projectImageModel()}`),
+    ...ims.map((m) => h("option", { value: m.id, selected: m.id === entityAct.model, disabled: !m.ok }, m.title + (m.ok ? "" : " (not installed)"))));
+  modelSel.onchange = () => { entityAct.model = modelSel.value || null; renderStudio(); };
+  const neg = h("input", { value: entityAct.negative || "", placeholder: curModel && curModel.negative ? "empty = " + ((effective()?.image || {}).negative || "the model's own: " + curModel.negative) : "" });
+  neg.oninput = () => { entityAct.negative = neg.value; };
+  const negRow = curModel && curModel.takes_negative ? h("label", { class: "neg-row" }, "Negative prompt — what to avoid (optional)", neg) : null;
 
   // the prompt that will be sent: always shown, kept up to date while it is automatic
   const ORIGIN = { auto: ["Automatic", "built from the description, what changes and the references — updates as you type"],
@@ -407,7 +417,8 @@ function entityActions(e) {
   const go = h("button", { class: "primary", ...busyAttr("entity-gen"), onclick: () => once("entity-gen", async () => {
     const d = await call("/entity/generate", { path: state.path, id: e.id, action: entityAct.action, text: entityAct.text, place: entityAct.place, count: entityAct.count,
       prompt: entityAct.origin === "auto" ? null : promptBox.value, look: entityAct.look,
-      source: entityAct.action === "first" || entityAct.action === "place" ? null : entityAct.source, refs: entityAct.refs });
+      source: entityAct.action === "first" || entityAct.action === "place" ? null : entityAct.source, refs: entityAct.refs,
+      model: entityAct.model || null, negative: (curModel && curModel.takes_negative && entityAct.negative) || null });
     Object.assign(entityAct, { text: "", prompt: null, origin: "auto", look: "", ask: "", explain: "" }); setProject(d.project);
     toast(entityAct.action === "place" ? "Making start frames — they appear in Start images & frames"
       : entityAct.action === "sheet" ? "Making the character sheet — it appears under Looks (▦)" : `Making ${d.jobs.length} — they appear under Looks`);
@@ -425,8 +436,10 @@ function entityActions(e) {
     h("div", { class: "prompt-box" },
       h("div", { class: "row" }, h("b", {}, "The prompt that will be sent"), originChip, originHint, h("span", { class: "spacer" }), backAuto),
       promptBox, imagesLine),
-    h("div", { class: "row go-row" }, h("label", { class: "grow-0" }, "Results", count), go,
-      h("span", { class: "hint" }, entityAct.action === "place" ? "Start frames for scenes (Files › Start images & frames), with the character and the place as references." : `About 4–10 s per image; filed under ${e.name}'s looks.`)));
+    negRow,
+    h("div", { class: "row go-row" }, h("label", { class: "grow-0" }, "Image model", modelSel), h("label", { class: "grow-0" }, "Results", count), go,
+      h("span", { class: "hint" }, entityAct.action === "place" ? "Start frames for scenes (Files › Start images & frames), with the character and the place as references."
+        : `${curModel && curModel.id !== "flux2_klein_9b" ? "Slower than FLUX.2 Klein (25 steps)" : "About 4–10 s per image"}; filed under ${e.name}'s looks.`)));
 }
 
 // ------------------------------------------------------------------ the panel (one item, in detail)

@@ -595,7 +595,12 @@ async def list_tools(request):
         loop = asyncio.get_running_loop()
         found, problems = await loop.run_in_executor(None, tools.all_tools)
         avail = await loop.run_in_executor(None, lambda: tools.availability(found, _client().object_info))
-        return _ok({"tools": [{**t.describe(), **avail[t.id]} for t in found], "problems": problems})
+        status = (avail.get("image", {}).get("options") or {}).get("model") or {}
+        image_models = [{"id": mid, "title": m["title"], "note": m["note"], "steps": m["steps"], "cfg": m["cfg"],
+                         "negative": m.get("negative"), "takes_negative": m.get("negative") is not None,
+                         "ok": not status.get(mid), "missing": status.get(mid, [])} for mid, m in tools.IMAGE_MODELS.items()]
+        return _ok({"tools": [{**t.describe(), **avail[t.id]} for t in found], "problems": problems,
+                    "image_models": image_models})
     except (OSError, ProjectError) as exc:
         return _err(exc)
 
@@ -765,7 +770,8 @@ async def entity_action(request):
 async def entity_generate(request):
     """id, action first|look|angle|place|sheet, text, place (for place), count, seed, aspect, prompt (optional override),
     source (an image to start from instead of the main look), refs [{asset, use}] (more images to take an outfit,
-    a pose, the lighting … from; use is one of tools.REF_USES or free words)."""
+    a pose, the lighting … from; use is one of tools.REF_USES or free words), model (an image model id; empty = the
+    project's), negative (negative prompt for models that take one; empty = the project's / the model's)."""
     body = await _body(request)
     try:
         loop = asyncio.get_running_loop()
@@ -775,7 +781,7 @@ async def entity_generate(request):
                 project, _client(), body["id"], body["action"], body.get("text", ""), place_id=body.get("place"),
                 count=int(body.get("count") or 2), seed=body.get("seed"), aspect=body.get("aspect"),
                 prompt=body.get("prompt") or None, source=body.get("source") or None, refs=body.get("refs") or None,
-                look=body.get("look") or ""))
+                look=body.get("look") or "", model=body.get("model") or None, negative=body.get("negative") or None))
         return _ok({"jobs": [j["id"] for j in jobs], "project": _view(project)})
     except (KeyError, ProjectError, OSError, ValueError, RuntimeError) as exc:
         return _err(exc)
