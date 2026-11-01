@@ -29,7 +29,7 @@ While you work:
 | Path | What it does |
 |---|---|
 | `comfyui_clapper/__init__.py` | Registers the nodes and the routes when ComfyUI loads the pack; outside ComfyUI only `engine/` is used |
-| `comfyui_clapper/nodes.py` | The two graph nodes, *Clapper · Scene Conditioning* and *Clapper · Save Take* (the torch side) |
+| `comfyui_clapper/nodes.py` | The graph nodes (the torch side): *Clapper · Scene Conditioning*, *Clapper · Save Take*, the load / save helpers for library files and jobs, and *Clapper · Hide Faces* (greys out faces in outfit / accessory references) |
 | `comfyui_clapper/h3_temporal.py` | H3 frame-count and latent-grid helpers |
 | `comfyui_clapper/api.py` | HTTP routes under `/clapper/` (projects, scenes, takes, export, live, login middleware) |
 | `comfyui_clapper/assistant_api.py` | Assistant and GPU routes; runs one assistant turn at a time in a background thread |

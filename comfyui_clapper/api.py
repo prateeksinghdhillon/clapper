@@ -793,7 +793,7 @@ async def entity_preview(request):
     body = await _body(request)
     try:
         project = _open(body["path"], request)
-        inputs, _ = tools.entity_inputs(project, body["id"], body["action"], body.get("text", "") or "…",
+        inputs, _ = tools.entity_inputs(project, body["id"], body["action"], body.get("text", "") or ("" if body.get("refs") else "…"),
                                         place_id=body.get("place"), aspect=body.get("aspect"), source=body.get("source") or None,
                                         refs=body.get("refs") or None)
         return _ok({"prompt": inputs["prompt"], "images": inputs["images"], "aspect": inputs["aspect"]})

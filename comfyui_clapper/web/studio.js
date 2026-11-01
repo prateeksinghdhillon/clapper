@@ -226,11 +226,29 @@ function refsRow(e, changed) {
       const use = h("select", {}, ...known.map((k) => h("option", { value: k, selected: r.use === k }, "take " + REF_USE_LABEL[k])),
         h("option", { value: "_other", selected: !known.includes(r.use) }, "take… (type)"));
       const other = h("input", { placeholder: "e.g. the red scarf", value: known.includes(r.use) ? "" : r.use, hidden: known.includes(r.use) });
-      use.onchange = () => { if (use.value === "_other") { other.hidden = false; other.focus(); r.use = other.value || "the details"; } else { other.hidden = true; r.use = use.value; } changed(); };
+      // what exactly it lends, named ("red plaid shirt, denim overalls"): the image models follow named things
+      const what = h("input", { class: "ref-what", "data-ref": r.asset + "|" + r.use, value: r.what || "", hidden: r.use === "pose",
+        placeholder: r.whatBusy ? "✨ looking…" : "what exactly — named things are followed (✨ fills it in)" });
+      what.oninput = () => { r.what = what.value; r.whatAuto = false; changed(); };
+      const autoWhat = () => {   // the assistant names it for this use (when its model can see images); never over the user's words
+        if (r.use === "pose" || (r.what && !r.whatAuto)) return;
+        r.whatBusy = true; what.placeholder = "✨ looking…";
+        call("/assistant/ref_what", { path: state.path, asset: r.asset, use: r.use }).then((d) => {
+          if (!r.what || r.whatAuto) {   // the page may have been redrawn meanwhile: fill the field that is shown now
+            r.what = d.what; r.whatAuto = true;
+            document.querySelectorAll(".ref-what").forEach((el) => { if (el.dataset.ref === r.asset + "|" + r.use) el.value = d.what; });
+            changed();
+          }
+        }).catch(() => {}).finally(() => { r.whatBusy = false; what.placeholder = "what exactly — named things are followed (✨ fills it in)"; });
+      };
+      use.onchange = () => { if (use.value === "_other") { other.hidden = false; other.focus(); r.use = other.value || "the details"; } else { other.hidden = true; r.use = use.value; }
+        what.hidden = r.use === "pose"; if (r.whatAuto) r.what = ""; autoWhat(); changed(); draw(); };
       other.oninput = () => { r.use = other.value || "the details"; changed(); };
+      if (!r.what && !r.whatTried) { r.whatTried = true; autoWhat(); }
       const owner = entities()[a.entity]?.name;
+      const n = 2 + refs.slice(0, i).filter((x) => x.use !== "pose").length;   // a pose is followed as a skeleton, not sent as an image
       return h("div", { class: "ref-chip" }, h("span", { class: "ref-thumb", title: a.title }, tileThumb(a)),
-        h("div", { class: "ref-body" }, h("span", { class: "hint" }, `image ${i + 2}` + (owner ? ` · ${owner}` : "")), use, other),
+        h("div", { class: "ref-body" }, h("span", { class: "hint" }, (r.use === "pose" ? "pose (skeleton)" : `image ${n}`) + (owner ? ` · ${owner}` : "")), use, other, what),
         h("button", { class: "icon", title: "Remove", onclick: () => { refs.splice(i, 1); changed(); draw(); } }, "✕"));
     }),
     refs.length < max ? h("button", { class: "ghost", onclick: () => pickAssets({ kind: "image", title: "Choose reference images — another character's outfit, a pose, a lighting mood …", exclude: refs.map((r) => r.asset) },

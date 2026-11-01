@@ -686,3 +686,5 @@ button.big-prev { padding: 0; border: 0; width: 100%; cursor: zoom-in; }
 .tool-assist .assist-row input { width: 100%; }
 .assist-lines { display: grid; gap: 4px; margin: 4px 0 8px; padding: 8px; border: 1px solid var(--line, #ddd); border-radius: 8px; }
 .assist-lines .row { align-items: center; gap: 8px; }
+
+.ref-chip .ref-what { width: 100%; font-size: 12px; margin-top: 3px; }

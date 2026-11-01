@@ -486,7 +486,36 @@ class ClapperSaveVideo:
         return {"ui": {"text": [str(out)]}}
 
 
+class ClapperHideFaces:
+    """Greys out the faces (with hair) in an image, for references that should lend only clothes or objects: tested,
+    FLUX.2 Klein drew the reference's own face onto the character whenever it could see it."""
+
+    CATEGORY = "Clapper"
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "hide"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"image": ("IMAGE",), "bboxes": ("BOUNDING_BOX", {"forceInput": True})}}
+
+    def hide(self, image, bboxes):
+        out = image.clone()
+        frames = bboxes if bboxes and isinstance(bboxes[0], (list, tuple)) else [bboxes or []]
+        for i in range(out.shape[0]):
+            boxes = frames[i] if i < len(frames) else frames[-1]
+            h, w = out.shape[1], out.shape[2]
+            for b in boxes or []:
+                if not isinstance(b, dict):
+                    continue
+                x0, y0 = max(0, int(b.get("x", 0))), max(0, int(b.get("y", 0)))
+                x1, y1 = min(w, x0 + int(b.get("width", 0))), min(h, y0 + int(b.get("height", 0)))
+                if x1 > x0 and y1 > y0:
+                    out[i, y0:y1, x0:x1, :3] = 0.82   # the light grey of a plain studio background
+        return (out,)
+
+
 NODE_CLASS_MAPPINGS = {
+    "ClapperHideFaces": ClapperHideFaces,
     "ClapperSceneConditioning": ClapperSceneConditioning,
     "ClapperSaveTake": ClapperSaveTake,
     "ClapperLoadImage": ClapperLoadImage,
@@ -498,6 +527,7 @@ NODE_CLASS_MAPPINGS = {
     "ClapperSaveVideo": ClapperSaveVideo,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "ClapperHideFaces": "Clapper · Hide Faces",
     "ClapperSceneConditioning": "Clapper · Scene Conditioning",
     "ClapperSaveTake": "Clapper · Save Take",
     "ClapperLoadImage": "Clapper · Load Image (path)",

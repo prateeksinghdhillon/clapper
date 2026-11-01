@@ -102,11 +102,12 @@ def test_references_take_only_what_they_are_for(project, tmp_path):
     jacket = project.add_asset(tmp_path / "jacket.png", role="character", title="jacket")
     inputs, extra = tools.entity_inputs(project, project.aoi["id"], "look", "", refs=[{"asset": jacket["id"], "use": "outfit"}])
     assert inputs["images"] == [project.aoi["main"], jacket["id"]]
-    assert "From image 2 take the outfit and clothes only (not the face, hair or body). Keep image 1's face, hair and body." in inputs["prompt"]
+    assert "Dress Aoi from image 1 in exactly the clothing from image 2" in inputs["prompt"]
+    assert "Take nothing else from image 2 (not the face, hair, body or background)." in inputs["prompt"]
     assert extra["look"] == "outfit from jacket"
     # a place variation with a lighting reference; free words work too
     inputs, _ = tools.entity_inputs(project, project.stop["id"], "look", "at night", refs=[{"asset": jacket["id"]}, {"asset": project.coat["id"], "use": "the puddles"}])
-    assert "From image 2 take the lighting, time of day and weather only." in inputs["prompt"] and "From image 3 take only the puddles." in inputs["prompt"]
+    assert "Relight the picture with the lighting of image 2" in inputs["prompt"] and "From image 3 take only the puddles." in inputs["prompt"]
     # put in a place uses two images already: at most two references
     (tmp_path / "pose.png").write_bytes(PNG)
     pose = project.add_asset(tmp_path / "pose.png", role="character", title="pose")
@@ -192,3 +193,109 @@ def test_the_assistant_writes_a_description_from_plain_words(project, monkeypatc
 def test_echoed_rules_are_taken_out_of_answers():
     assert assistant._clean_prompt("Same layout. No rain, no puddles. Plain light grey background. 40-110 words.", "place") == "Same layout. No rain, no puddles."
     assert assistant._look_name("foggy dawn bus stop", "Bus stop") == "foggy dawn"
+
+
+def test_a_pose_reference_is_its_own_input_and_each_model_follows_it(project, tmp_path):
+    from test_tools import FakeComfy, nodes_of
+    (tmp_path / "pose.png").write_bytes(PNG)
+    pose = project.add_asset(tmp_path / "pose.png", role="character", title="pose")
+    inputs, extra = tools.entity_inputs(project, project.aoi["id"], "angle", "", refs=[{"asset": pose["id"], "use": "pose"}])
+    assert inputs["pose"] == pose["id"] and inputs["images"] == [project.aoi["main"]] and tools.POSE_LINE in inputs["prompt"]
+    assert "seen in the pose given below" in inputs["prompt"] and extra["look"] == "pose from pose"
+    with pytest.raises(ProjectError, match="one pose reference"):
+        tools.entity_inputs(project, project.aoi["id"], "angle", "", refs=[{"asset": pose["id"], "use": "pose"}, {"asset": project.coat["id"], "use": "pose"}])
+    c = FakeComfy()
+    # Qwen-Image-2.1, everything installed: Klein + RefControl poses it, Qwen redraws that picture (image 1)
+    tools.queue_entity(project, c, project.aoi["id"], "angle", "", count=1, seed=1, model="qwen_image_21_realism", refs=[{"asset": pose["id"], "use": "pose"}])
+    g = c.graphs[-1]
+    unets = [n["inputs"]["unet_name"] for n in nodes_of(g, "UNETLoader")]
+    assert unets == ["NoctQ_V4_int8_convrot.safetensors", "flux-2-klein-9b-fp8.safetensors"] and not nodes_of(g, "ZImageFunControlnet")
+    enc = nodes_of(g, "TextEncodeQwenImage21")[0]["inputs"]
+    assert enc["images.image_1"][0] == next(k for k, n in g.items() if n["class_type"] == "VAEDecode")   # Klein's picture
+    assert "images.image_2" in enc and enc["prompt"].startswith("<image1> already shows the finished pose") and "<image2> (Aoi" in enc["prompt"]
+    assert "pose, framing and composition of <image1>" in enc["prompt"] and tools.POSE_LINE not in enc["prompt"]
+
+    class OnlyControlNet(FakeComfy):   # no Klein / RefControl: Qwen follows the skeleton through its Fun ControlNet
+        def object_info(self, node):
+            have = {"CheckpointLoaderSimple": ("ckpt_name", tools.POSE_FILES["sdpose"]), "ModelPatchLoader": ("name", tools.POSE_FILES["qwen21"])}
+            if node in have:
+                return {"input": {"required": {have[node][0]: [[have[node][1]]]}}}
+            return {"input": {}} if node in ("SDPoseKeypointExtractor", "SDPoseDrawKeypoints", "ZImageFunControlnet") else {}
+    c2 = OnlyControlNet()
+    tools.queue_entity(project, c2, project.aoi["id"], "angle", "", count=1, seed=1, model="qwen_image_21_realism", refs=[{"asset": pose["id"], "use": "pose"}])
+    g = c2.graphs[-1]
+    assert nodes_of(g, "ZImageFunControlnet")[0]["inputs"]["strength"] == 1.4 and nodes_of(g, "SDPoseKeypointExtractor")
+    enc = nodes_of(g, "TextEncodeQwenImage21")[0]["inputs"]
+    assert "images.image_2" not in enc and "control pose" in enc["prompt"]
+    # FLUX.2 Klein: the skeleton is image 1 with the RefControl LoRA, the character image 2
+    tools.queue_entity(project, c, project.aoi["id"], "angle", "", count=1, seed=1, model="flux2_klein_9b", refs=[{"asset": pose["id"], "use": "pose"}])
+    g = c.graphs[-1]
+    loras = [n["inputs"]["lora_name"] for n in nodes_of(g, "LoraLoaderModelOnly")]
+    text = nodes_of(g, "CLIPTextEncode")[0]["inputs"]["text"]
+    assert loras == [tools.POSE_FILES["flux2"]] and len(nodes_of(g, "ReferenceLatent")) == 2
+    assert text.startswith("apply pose from image 1 with reference from image 2.") and "as image 2 (Aoi" in text and "image 1 (Aoi" not in text
+
+
+def test_without_pose_control_the_pose_image_is_a_reference(project, tmp_path):
+    from test_tools import FakeComfy, nodes_of
+
+    class NoPose(FakeComfy):
+        def object_info(self, node):
+            return {}
+    (tmp_path / "pose.png").write_bytes(PNG)
+    pose = project.add_asset(tmp_path / "pose.png", role="character", title="pose")
+    c = NoPose()
+    tools.queue_entity(project, c, project.aoi["id"], "angle", "", count=1, seed=1, model="flux2_klein_9b", refs=[{"asset": pose["id"], "use": "pose"}])
+    g = c.graphs[-1]
+    text = nodes_of(g, "CLIPTextEncode")[0]["inputs"]["text"]
+    assert not nodes_of(g, "SDPoseKeypointExtractor") and len(nodes_of(g, "ReferenceLatent")) == 2
+    assert "Match the exact pose from image 2" in text and not text.startswith("apply pose")
+
+
+def test_named_references_and_template_conflicts(project, tmp_path):
+    (tmp_path / "x.png").write_bytes(PNG)
+    x = project.add_asset(tmp_path / "x.png", role="character", title="x")
+    inputs, _ = tools.entity_inputs(project, project.aoi["id"], "look", "",
+                                    refs=[{"asset": x["id"], "use": "outfit", "what": "red plaid shirt, denim overalls."}])
+    assert "clothing from image 2 (red plaid shirt, denim overalls):" in inputs["prompt"]
+    assert "Image 2 shows a different person: do not draw that person. There is only one person in the picture. Keep Aoi's own face and hair." in inputs["prompt"]
+    # a style reference drops "art style" from what is kept; background / lighting drop the plain grey background
+    inputs, _ = tools.entity_inputs(project, project.aoi["id"], "look", "", refs=[{"asset": x["id"], "use": "style"}])
+    assert "and art style" not in inputs["prompt"] and "Keep the face, hair and body." in inputs["prompt"]
+    assert "only one person" not in inputs["prompt"]
+    inputs, _ = tools.entity_inputs(project, project.aoi["id"], "look", "", refs=[{"asset": x["id"], "use": "background"}])
+    assert "grey background" not in inputs["prompt"] and "setting of image 2" in inputs["prompt"]
+
+
+def test_describe_ref_use_names_only_that(project, monkeypatch):
+    seen = []
+
+    class Fake:
+        sees_images = True
+
+        def __init__(self, provider):
+            pass
+
+        def chat(self, messages, **kw):
+            seen.append(messages[0]["content"][1]["text"])
+            return {"content": '{"what": "red umbrella, round sunglasses."}'}
+    monkeypatch.setattr(assistant, "Client", Fake)
+    from PIL import Image
+    Image.new("RGB", (32, 32), "red").save(project.root / project.coat["file"], format="PNG")
+    assert assistant.describe_ref_use({"vision": True}, project, project.coat["id"], "accessory") == {"what": "red umbrella, round sunglasses"}
+    assert "NOT clothing" in seen[0] and "Never mention the person" in seen[0]
+    with pytest.raises(Exception, match="cannot see images"):
+        assistant.describe_ref_use({"vision": False}, project, project.coat["id"], "outfit")
+
+
+def test_outfit_and_accessory_references_have_their_faces_hidden_for_klein(project, tmp_path):
+    from test_tools import FakeComfy, nodes_of
+    (tmp_path / "x.png").write_bytes(PNG)
+    x = project.add_asset(tmp_path / "x.png", role="character", title="x")
+    c = FakeComfy()
+    job = tools.queue_entity(project, c, project.aoi["id"], "look", "", count=1, seed=1, model="flux2_klein_9b",
+                             refs=[{"asset": x["id"], "use": "accessory", "what": "red umbrella"}])[0]
+    g = c.graphs[-1]
+    assert job["inputs"]["hide_faces"] == [x["id"]] and len(nodes_of(g, "ClapperHideFaces")) == 1 and nodes_of(g, "SDPoseFaceBBoxes")
+    tools.queue_entity(project, c, project.aoi["id"], "look", "", count=1, seed=1, model="flux2_klein_9b", refs=[{"asset": x["id"], "use": "hair"}])
+    assert not nodes_of(c.graphs[-1], "ClapperHideFaces")   # a hairstyle needs the head

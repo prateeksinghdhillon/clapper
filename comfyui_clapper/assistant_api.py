@@ -530,6 +530,20 @@ async def tool_prompt(request):
         return _err(exc)
 
 
+@routes.post("/clapper/api/assistant/ref_what")
+async def ref_what(request):
+    """{path, asset, use}: the assistant names what this reference image lends for that use → {what}."""
+    body = await _body(request)
+    loop = asyncio.get_running_loop()
+    try:
+        project = _open(body["path"], request)
+        out = await loop.run_in_executor(None, _studio_help(lambda prov: assistant.describe_ref_use(
+            prov, project, body["asset"], body.get("use") or "outfit")))
+        return _ok(out)
+    except ERRORS as exc:
+        return _err(exc)
+
+
 @routes.post("/clapper/api/assistant/write_description")
 async def write_description(request):
     """{path, kind, words, name, asset?}: the user's own words → {name, description} for the image and video models."""

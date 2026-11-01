@@ -2092,6 +2092,7 @@ IMAGE_PROMPT_RULES = """Rules for the image model's prompt (it edits and combine
 - The images are numbered in the order given: image 1 is the character / place / object itself; references follow. Refer to them as "image 1", "image 2" ….
 - Say what changes and what stays: "The same character as image 1, now wearing …. Keep the face, hair and body."
 - When the look changes, do NOT repeat the old description (old clothes, weather, time of day): the model then keeps the old look (a new outfit came out with the old raincoat on top; a "sunny morning" stayed rainy). Name the character, then describe only the new state.
+- Name concretely what each reference lends, in a few words: "wearing the clothes from image 2: a red plaid flannel shirt, blue denim overalls and brown work boots", "holding the red umbrella from image 2". Tested: the image models follow named things; "the clothes from image 2" alone was often ignored, and the reference's whole person was pasted in.
 - To take clothes (or a pose, the lighting …) from a reference: "wearing the clothes from image 2 instead of their own", "in the pose of image 2", "with the light of image 2". Say what NOT to take from it ("not the face or hair").
 - When the weather, light or time of day changes, also say what is gone, because image 1 still shows it: "no rain, dry ground, no puddles", "no snow", "daylight, the street lamp off".
 - Concrete, visible words: garments with colours and materials, pose, camera angle, background. No feelings, no story, no "beautiful".
@@ -2127,7 +2128,9 @@ def write_image_prompt(provider: dict, project: Project, entity_id: str, request
     what = {"look": "a new look (outfit, hair, accessories) or a variation", "angle": "a new angle or pose",
             "place": f"the character in a place (image 2 is the place)", "sheet": "a turnaround sheet (front, three-quarter, side, back)",
             "first": "first designs from the description alone (no image)"}.get(action, action)
-    refs_text = "\n".join(f"- image {images.index(r['asset']) + 1 if r.get('asset') in images else '?'}: take {r.get('use') or 'what fits'}" for r in (refs or []))
+    refs_text = "\n".join((f"- image {images.index(r['asset']) + 1}: take {r.get('use') or 'what fits'}" if r.get('asset') in images
+                           else f"- a pose reference (followed as a pose skeleton, not sent as an image): {r.get('use')}")
+                          + (f" — {r['what']}" if r.get("what") else "") for r in (refs or []))
     task = (f"{IMAGE_PROMPT_RULES}\n\nThe user is making {what} for the {e['kind']} \"{e['name']}\".\n"
             f"Its description (what its MAIN look shows): {e.get('description') or '(none)'}\n"
             + (f"References the user added:\n{refs_text}\n" if refs_text else "")
@@ -2167,7 +2170,7 @@ TOOL_IMAGE_RULES = """Rules for the image model's prompt:
 - Describe one finished picture: the subject, what they do, where, the light, the camera angle and framing. Concrete, visible words: garments with colours and materials, objects, surfaces, weather, time of day. No feelings, no story, no "beautiful", no quality buzzwords.
 - The setting is what the user asks for (a café, a street, a room). Use a plain background only when the user asks for one or for a design sheet.
 - Never contradict yourself: what the picture shows must not also be ruled out ("rain on the window" and "no rain" cannot both be in it).
-- With images: they are numbered in the order given; refer to them as "image 1", "image 2" …. Say what to keep from each ("the same woman as image 1, keep her face and hair") and what changes. When a person keeps their identity but the clothes, light or weather change, describe only the new state.
+- With images: they are numbered in the order given; refer to them as "image 1", "image 2" …. Name concretely what each one lends ("the red plaid shirt and denim overalls from image 2"); the models follow named things. Say what to keep from each ("the same woman as image 1, keep her face and hair") and what changes. When a person keeps their identity but the clothes, light or weather change, describe only the new state.
 - No readable text in the picture unless the user asks for it; then quote it exactly.
 - 40-120 words. One description, not a list of options."""
 
@@ -2292,6 +2295,45 @@ def _spoken(text: str) -> str:
     if len(text) > 1 and text[0] == text[-1] and text[0] in "\"“”'":
         text = text[1:-1].strip()
     return re.sub(r"\s+([,.!?…])", r"\1", text)
+
+
+# What to name for each kind of reference (assistant.describe_ref_use): only that, never the person.
+_REF_WHAT = {
+    "outfit": "only the clothing and shoes: each garment with its colour, material and pattern (for example: cream cable-knit sweater, olive cargo trousers, black ankle boots)",
+    "hair": "only the hairstyle: length, colour, cut and styling (for example: short curly auburn bob with a side fringe)",
+    "accessory": ("only the accessories: objects that are NOT clothing or shoes — glasses, bags, umbrellas, hats, jewellery, watches, "
+                  "scarves, anything held — each with colour and material and how it is worn or held, as -ing phrases (for example: "
+                  "wearing a wide straw sun hat, holding a green canvas tote bag in the left hand, silver hoop earrings)"),
+    "colours": "only the main colours, as a palette (for example: dusty pink, navy, mustard)",
+    "lighting": "only the light: its colours, direction, contrast, time of day and weather (for example: warm low sunlight from the left, long shadows, golden hour)",
+    "background": "only the place and setting, without people (for example: a snowy pine forest at dawn with mist between the trees)",
+    "material": "only the material and surface: texture, sheen, colour (for example: rough dark brown leather with visible stitching)",
+    "style": "only the art style: medium, line work, shading and colouring (for example: flat cel-shaded anime, bold black outlines, two-tone shadows)",
+}
+
+
+def describe_ref_use(provider: dict, project: Project, asset_id: str, use: str) -> dict:
+    """Name what a reference image lends for one use (its outfit, hairstyle, accessories, lighting …) in a short phrase
+    that goes into the image prompt — tested: the image models follow named things, not "the clothing from image 2".
+    Returns {what}."""
+    a = project.asset(asset_id)
+    if a["kind"] != "image":
+        raise ProjectError(f"{a['title']} is not an image")
+    if not provider.get("vision"):
+        raise LLMError("the assistant's model cannot see images: type what to take yourself")
+    part = _image_part(project, a["file"])
+    if not part:
+        raise ProjectError("cannot read this image")
+    ask = _REF_WHAT.get(use, f"only {use}")
+    task = (f"Look at the image and name {ask}. Never mention the person, their face, body, age or gender. "
+            'A short comma-separated phrase, at most 25 words. Answer with only this JSON: {"what": "…"}')
+    client = Client(provider)
+    result = client.chat([{"role": "user", "content": [part, {"type": "text", "text": task}]}], max_tokens=400, thinking=False)
+    data = _json_answer(result["content"])
+    what = " ".join(str(data.get("what") or result["content"] or "").split()).strip(" .\"")
+    if not what or what.startswith("{"):
+        raise LLMError("the assistant could not name it — type what to take yourself")
+    return {"what": what[:200]}
 
 
 # Small models copy pieces of their instructions into the answer: take those out again.

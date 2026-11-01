@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **References are followed, per model** (tested in a matrix of every reference kind × every image model):
+  - **Pose references work**: the pose skeleton is read (SDPose) and followed — from the character itself, another character or a picture made by another model; the face, clothes and background of the pose picture are not taken. FLUX.2 Klein uses the RefControl pose LoRA; the Qwen-Image-2.1 models let Klein pose the character and redraw that picture in their own look (the Fun ControlNet at strength 1.4 when Klein is not installed). Before, every model ignored poses. The Image tool has **Pose from** and **Pose strength**.
+  - **What exactly** under each reference: the assistant looks at the image and names what to take ("red plaid flannel shirt, denim overalls"; accessories as they are worn or held); you can change it. Named references were followed by every model; unnamed ones were mostly ignored.
+  - Instructions phrased the way each model's guide does it, with the character's name and "image 2 shows a different person"; for FLUX.2 Klein, outfit and accessory references have their person's face greyed out (it drew that face onto the character before).
+  - Background, lighting and art-style references remove the plain grey background / kept art style the actions asked for (they were ignored before). A pose takes no image slot; the reference row shows "pose (skeleton)".
+  - Still weak: an art style taken from one picture (a tint, not the medium).
 - **✨ Ask the assistant in the Image and Speech tools** (Studio › New, and an item's *Recipe*):
   - **Image**: plain words (and the prompt so far) → the prompt for the chosen image model and, for the Qwen-Image-2.1 models, a negative prompt. It looks at the chosen images and characters. The negative prompt never rules out what the prompt asks for.
   - **Speech**: what is said and how it should feel, or a line to finish or rewrite → the spoken line with the emotion carried by the words and punctuation, since Qwen3-TTS voice clone has no emotion setting. First person; interjections, stammers, pauses ("…", "—"); no stage directions, tags or emojis (they would be read aloud). It also sets Expressiveness and names the feeling. A dialogue comes back line by line, with **Use this line** for each speaker.
