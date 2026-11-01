@@ -569,6 +569,7 @@ function makeMore(a, e) {
       h("p", { class: "hint" }, `${(o.tool_title || o.tool).replace(/ \(.*\)$/, "")} · seed ${o.seed}. Change anything and make a new version — the original stays.`),
       edited ? h("p", { class: "hint warn" }, "Shown with your changes (not made yet) — not what made this image. ",
         h("button", { class: "ghost small", onclick: () => { delete recipeEdits[a.id]; renderPanel(); } }, "Show the original")) : null,
+      tool ? toolAssist(tool, values, () => renderPanel(), "recipe:" + a.id) : null,
       ...(tool ? tool.fields.filter((f) => !f.advanced).map((f) => toolField(f, values)) : [h("p", { class: "hint" }, "Loading the tool…")]),
       h("div", { class: "row" }, h("label", { class: "grow-0" }, "Results", count),
         h("button", { class: "primary", ...busyAttr("again"), onclick: () => once("again", async () => {
@@ -769,6 +770,49 @@ function newEntityForm(kind) {
     modeSeg, designRow, pickBox, h("div", { class: "row" }, go));
 }
 
+// ✨ The assistant fills in the Image or Speech form from plain words (and what is already in the form).
+const toolAsk = {};   // tool id (or recipe key) → {ask, explain, lines}
+function toolAssist(tool, values, rerender, key = tool.id) {
+  if (tool.id !== "image" && tool.id !== "speech") return null;
+  const st = toolAsk[key] || (toolAsk[key] = { ask: "", explain: "", lines: [] });
+  const speech = tool.id === "speech";
+  const ask = h("input", { value: st.ask, placeholder: speech
+    ? "e.g. she finally admits she missed him — shy, a little teary · or: finish my line · or: make it angrier"
+    : "e.g. a cosy café at night, rain on the window, warm light · or: make my prompt more cinematic" });
+  ask.oninput = () => { st.ask = ask.value; };
+  const explain = h("p", { class: "hint assist-out" }, st.explain || "");
+  const busy = "tool-ask-" + key;
+  const btn = h("button", { ...busyAttr(busy), title: speech
+    ? "The assistant writes or finishes the line so the voice carries the feeling (words and punctuation; this voice model has no emotion setting)"
+    : "The assistant writes the prompt for the chosen image model, looking at the chosen images", onclick: () => once(busy, async () => {
+    const inputs = Object.fromEntries(tool.fields.map((f) => [f.key, values[f.key] ?? f.default ?? null]));
+    if (!ask.value.trim() && !(speech ? inputs.text : inputs.prompt)) throw new Error(speech ? "Say what should be said and how it should feel, or write a line first" : "Say in your own words what you want, or write a prompt first");
+    explain.textContent = speech ? "✨ The assistant is writing the line…" : "✨ The assistant is writing the prompt…";
+    try {
+      const r = await call("/assistant/tool_prompt", { path: state.path, tool: tool.id, request: ask.value, inputs });
+      if (speech) {
+        values.text = r.text; if (r.temperature) values.temperature = r.temperature;
+        st.lines = r.lines || [];
+        st.explain = "✨ " + (r.emotion ? `Feeling: ${r.emotion}. ` : "") + (r.explain || "Written by the assistant.") + (r.temperature ? ` Expressiveness set to ${r.temperature}.` : "");
+      } else {
+        values.prompt = r.prompt; if (r.negative) values.negative = r.negative;
+        st.lines = [];
+        st.explain = "✨ " + (r.explain || "Written by the assistant.") + ((inputs.images || []).length || (inputs.cast || []).length ? (r.images_seen ? "" : " (Its model cannot see images: it worked from the names.)") : "");
+      }
+      rerender();
+    } catch (err) { explain.textContent = ""; throw err; }
+  }) }, speech ? "✨ Write the line" : "✨ Write it");
+  ask.onkeydown = (ev) => { if (ev.key === "Enter") btn.click(); };
+  const lines = speech && st.lines.length ? h("div", { class: "assist-lines" }, h("span", { class: "hint" }, "A dialogue: the Speech tool speaks one voice per run — use each line with its speaker's voice:"),
+    ...st.lines.map((l) => h("div", { class: "row" }, h("span", { class: "grow" }, h("b", {}, (l.speaker || "?") + ": "), l.text),
+      h("button", { class: "ghost small", onclick: () => { values.text = l.text; rerender(); } }, "Use this line")))) : null;
+  return h("div", { class: "tool-assist" },
+    h("div", { class: "assist-row" }, h("label", { class: "grow" }, speech
+      ? "✨ Ask the assistant — what is said and how it should feel; it writes or finishes the line so the voice carries the emotion"
+      : "✨ Ask the assistant — in your own words; it writes the prompt (and negative prompt) for the chosen model", ask), btn),
+    explain, lines);
+}
+
 function newToolForm(toolId) {
   const tool = (toolState.list || []).find((t) => t.id === toolId);
   if (!tool) return h("p", { class: "hint" }, "Loading tools…");
@@ -796,6 +840,7 @@ function newToolForm(toolId) {
   }) }, "Create");
   return h("section", { class: "card new-form" }, h("h3", {}, tool.title),
     h("p", { class: "hint" }, tool.description, tool.ok ? "" : h("span", { class: "warn" }, ` Cannot run on this ComfyUI: missing ${tool.missing.join(", ")}.`)),
+    toolAssist(tool, values, () => renderStudio()),
     h("div", { class: "form-grid" }, ...tool.fields.filter((f) => !f.advanced).map((f) => toolField(f, values))),
     tool.fields.some((f) => f.advanced) ? h("details", { class: "adv" }, h("summary", {}, "More options"), h("div", { class: "form-grid" }, ...tool.fields.filter((f) => f.advanced).map((f) => toolField(f, values)), h("label", {}, "Seed", seed))) : null,
     under ? h("div", { class: "row" }, h("label", {}, "Save results under", under), h("label", { class: "grow" }, lookName)) : null,

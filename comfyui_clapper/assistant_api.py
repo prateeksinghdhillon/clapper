@@ -505,6 +505,31 @@ async def image_prompt(request):
         return _err(exc)
 
 
+@routes.post("/clapper/api/assistant/tool_prompt")
+async def tool_prompt(request):
+    """{path, tool: image|speech, request, inputs}: the assistant fills in a tool's form from plain words.
+    image → {prompt, negative?, explain, images_seen, model}; speech → {text, emotion, temperature, lines, explain}."""
+    body = await _body(request)
+    loop = asyncio.get_running_loop()
+    inputs = body.get("inputs") or {}
+    try:
+        project = _open(body["path"], request)
+        if body.get("tool") == "image":
+            fn = lambda prov: assistant.write_tool_image_prompt(  # noqa: E731
+                prov, project, body.get("request", ""), prompt=inputs.get("prompt") or "", model=inputs.get("model") or None,
+                images=inputs.get("images") or [], cast=inputs.get("cast") or [], negative=inputs.get("negative") or "")
+        elif body.get("tool") == "speech":
+            fn = lambda prov: assistant.write_speech_text(  # noqa: E731
+                prov, project, body.get("request", ""), text=inputs.get("text") or "", language=inputs.get("language") or "Auto",
+                voice=inputs.get("voice") or None, voice_text=inputs.get("voice_text") or "")
+        else:
+            raise ProjectError("the assistant helps with the image and speech tools")
+        out = await loop.run_in_executor(None, _studio_help(fn))
+        return _ok(out)
+    except ERRORS as exc:
+        return _err(exc)
+
+
 @routes.post("/clapper/api/assistant/write_description")
 async def write_description(request):
     """{path, kind, words, name, asset?}: the user's own words → {name, description} for the image and video models."""

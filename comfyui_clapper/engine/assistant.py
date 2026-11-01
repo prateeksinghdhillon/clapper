@@ -2148,6 +2148,152 @@ def write_image_prompt(provider: dict, project: Project, entity_id: str, request
             "images_seen": seen and client.sees_images}
 
 
+# What each image model needs in a prompt (keys: engine/tools.py IMAGE_MODELS).
+IMAGE_MODEL_HINTS = {
+    "flux2_klein_9b": "FLUX.2 Klein: concrete, compact visual description; it follows reference images closely. It takes no "
+                      "negative prompt, so say what must NOT appear inside the prompt itself (\"no text\", \"no rain\").",
+    "qwen_image_21_realism": "Qwen-Image-2.1, photoreal: write it as the caption of a finished photograph in full sentences "
+                             "(the kind of shot, the person with an adult age, what they do, where, the light, the framing), "
+                             "not a tag list. Start with \"A photo of …\" unless the user wants another style. It takes a "
+                             "negative prompt.",
+    "qwen_image_21_anime": "Qwen-Image-2.1, anime: start with \"An anime illustration of …\" and describe the scene in full "
+                           "sentences (characters, poses, camera angle, background, light, colours); it follows long, "
+                           "detailed prompts closely. It takes a negative prompt.",
+}
+
+
+# The Image tool's prompts: any picture, not only a character's look (IMAGE_PROMPT_RULES are for those).
+TOOL_IMAGE_RULES = """Rules for the image model's prompt:
+- Describe one finished picture: the subject, what they do, where, the light, the camera angle and framing. Concrete, visible words: garments with colours and materials, objects, surfaces, weather, time of day. No feelings, no story, no "beautiful", no quality buzzwords.
+- The setting is what the user asks for (a café, a street, a room). Use a plain background only when the user asks for one or for a design sheet.
+- Never contradict yourself: what the picture shows must not also be ruled out ("rain on the window" and "no rain" cannot both be in it).
+- With images: they are numbered in the order given; refer to them as "image 1", "image 2" …. Say what to keep from each ("the same woman as image 1, keep her face and hair") and what changes. When a person keeps their identity but the clothes, light or weather change, describe only the new state.
+- No readable text in the picture unless the user asks for it; then quote it exactly.
+- 40-120 words. One description, not a list of options."""
+
+
+def _negative_without(negative: str, prompt: str) -> str:
+    """A negative prompt without anything the prompt asks for ("rain" goes when the prompt has rain on the window)."""
+    low = prompt.lower()
+    items = [re.sub(r"^(?:no|without)\s+", "", t.strip(), flags=re.I) for t in negative.split(",")]
+    keep = [t for t in items if t and t.lower() not in low]
+    return ", ".join(dict.fromkeys(keep))
+
+
+def write_tool_image_prompt(provider: dict, project: Project, request: str, *, prompt: str = "", model: str | None = None,
+                            images: list | None = None, cast: list | None = None, negative: str = "") -> dict:
+    """The Image tool's ✨: the user's plain words (and the prompt so far, the chosen library images and characters) →
+    {prompt, negative, explain, images_seen} written for the chosen image model."""
+    from . import tools as studio_tools
+    from .director import project_settings
+
+    request, prompt = (request or "").strip(), (prompt or "").strip()
+    if not request and not prompt:
+        raise ProjectError("say in your own words what you want, or write a prompt to improve")
+    model_id = studio_tools.resolve_image_model({"model": model}, project_settings(project))
+    m = studio_tools.IMAGE_MODELS[model_id]
+    run = studio_tools.with_cast(project, {"images": list(images or []), "cast": list(cast or []), "prompt": ""})
+    ids = run.get("images") or []
+    parts, seen = [], False
+    if provider.get("vision"):
+        for n, aid in enumerate(ids, 1):
+            a = project.assets.get(aid)
+            part = _image_part(project, a["file"]) if a and a.get("kind") == "image" else None
+            if part:
+                owner = project.entities.get(a.get("entity") or "", {}).get("name")
+                parts += [{"type": "text", "text": f"Image {n}" + (f" ({owner})" if owner else "") + ":"}, part]
+                seen = True
+    who = run.get("prompt", "").strip()
+    takes_negative = m.get("negative") is not None
+    task = (f"{TOOL_IMAGE_RULES}\n\nThe image model: {IMAGE_MODEL_HINTS.get(model_id, m['title'])}\n"
+            + (f"The images sent with the prompt, in order: {len(ids)} (image 1 … image {len(ids)}). {who}\n" if ids
+               else "No image is sent: the prompt alone makes a new picture. Then the 40-110 word limit and \"image N\" rules do not apply to references; describe everything.\n")
+            + (f"The prompt so far (improve, complete or rewrite it as the user asks):\n{prompt}\n" if prompt else "")
+            + (f"The negative prompt so far: {negative}\n" if takes_negative and negative.strip() else "")
+            + f"\nThe user's words: \"{request or 'make this prompt better'}\"\n\n"
+            + ("Look at the images above before writing.\n" if seen else ("You cannot see the images; rely on the names and descriptions.\n" if ids else ""))
+            + 'Answer with only this JSON: {"prompt": "the complete prompt for the image model"'
+            + (', "negative": "a short comma-separated list of plain words for what to avoid (quality defects such as blurry, extra fingers, distorted face; unwanted styles; things that would spoil THIS picture) — never anything the prompt asks for nor the picture style itself (an anime picture never lists cartoon or flat style), and no \\"no\\" in front"' if takes_negative else "")
+            + ', "explain": "one short sentence for the user: what you did and anything to check"}')
+    client = Client(provider)
+    result = client.chat([{"role": "user", "content": [*parts, {"type": "text", "text": task}] if parts else task}], max_tokens=1500, thinking=False)
+    data = _json_answer(result["content"])
+    if not data.get("prompt"):
+        raise LLMError("the assistant did not write a prompt — try again, or say it differently")
+    out = {"prompt": _clean_prompt(str(data["prompt"]), "image"), "explain": " ".join(str(data.get("explain") or "").split())[:300],
+           "images_seen": seen and client.sees_images, "model": model_id}
+    if takes_negative and data.get("negative"):
+        out["negative"] = _negative_without(" ".join(str(data["negative"]).split()), out["prompt"])[:400]
+    return out
+
+
+# How to put feeling into a line for Qwen3-TTS voice clone (the Speech tool). Its voice-clone model has no emotion or
+# style input: the delivery comes from the words and punctuation, the voice sample's own delivery, and the temperature.
+SPEECH_TEXT_RULES = """Rules for a line spoken by a voice-clone text-to-speech model (Qwen3-TTS). It reads EVERY character aloud and has no emotion setting: the feeling must be carried by the words themselves.
+- Write the exact words the speaker says, in their own voice: first person ("I", "you"), spoken to the listener. The user usually describes the moment in the third person ("she admits she missed him"); turn that into what she says ("I missed you."), never a narration of it.
+- Write only what is spoken. No stage directions, no (brackets), no [tags], no *asterisks*, no emojis, no speaker names, no quotation marks around the whole line: the model would read them aloud or stumble.
+- Show the emotion through the words: interjections and sounds people really make ("Oh…", "Ah—", "Hey!", "Hmm.", "Ugh,", "Haha,"), word choice, repetition ("No. No, no, no."), unfinished sentences, a question where someone pleads or doubts.
+- Use punctuation as the delivery: "…" for a hesitant or trailing pause, "—" for a break or interruption, "," for a short breath, "." for a firm stop, "!" for force or joy, "?" for a rising question. Short sentences sound tense or angry; long flowing ones sound calm or warm.
+- Hesitation and nerves: stammer the first word ("I— I didn't mean it"), fillers ("um", "well…"). Excitement: quick short phrases with "!". Sadness: slower, with "…" and softer words. Anger: short, hard sentences, no fillers. Whispering or tenderness: gentle words, commas, "…".
+- Write numbers, units and abbreviations as they are spoken ("twenty-five", "doctor"). Keep names consistent.
+- Write the line in the language it should be spoken in. A few seconds of speech is about 2-3 words per second; keep it to what fits.
+- One speaker per line: the Speech tool speaks in one voice. For a dialogue, write one line per speaker and say so.
+- Do not overdo it: one or two emotional cues per sentence are enough; every word in capitals or "!!!" sounds unnatural."""
+
+
+def write_speech_text(provider: dict, project: Project, request: str, *, text: str = "", language: str = "Auto",
+                      voice: str | None = None, voice_text: str = "") -> dict:
+    """The Speech tool's ✨: the user's words (an idea, a draft line or a dialogue to finish) → {text, explain,
+    temperature, lines} — the spoken text written so the voice-clone model carries the emotion through words and
+    punctuation (see SPEECH_TEXT_RULES)."""
+    request, text = (request or "").strip(), (text or "").strip()
+    if not request and not text:
+        raise ProjectError("say what should be said and how it should feel, or write a line to improve")
+    speaker = ""
+    if voice:
+        a = project.assets.get(voice) or {}
+        owner = next((e for e in project.entities.values() if e.get("voice") == voice), None)
+        if owner:
+            speaker = f"The speaker is {owner['name']}" + (f": {owner['description']}" if owner.get("description") else "") + "."
+        sample = voice_text or a.get("transcript") or ""
+        if sample:
+            speaker += f" The voice sample says: \"{sample}\" (its delivery carries over into the new line)."
+    task = (f"{SPEECH_TEXT_RULES}\n\n" + (f"{speaker}\n" if speaker else "")
+            + "Language: " + (language if language and language != "Auto" else "the language of the user's line (or English)") + ".\n"
+            + (f"The line so far (finish, improve or rewrite it as the user asks; keep what they wrote unless asked to change it):\n{text}\n" if text else "")
+            + f"\nThe user's words: \"{request or 'make this line sound natural and give it the right feeling'}\"\n\n"
+            'Answer with only this JSON: {"text": "only the words to be spoken", "emotion": "the feeling in 1-3 words", '
+            '"temperature": a number 0.7-1.2 (higher = more expressive; about 1.0-1.1 for strong emotion, 0.8 for calm narration), '
+            '"lines": [only for a dialogue: {"speaker": "name", "text": "…"} per line, else []], '
+            '"explain": "one short sentence for the user: how the feeling is carried. The user does not read the line aloud (the voice model does): any tip is about the tool — a voice sample spoken in that mood, or the Expressiveness setting"}')
+    client = Client(provider)
+    result = client.chat([{"role": "user", "content": task}], max_tokens=1500, thinking=False)
+    data = _json_answer(result["content"])
+    lines = [{"speaker": " ".join(str(l.get("speaker") or "").split())[:40], "text": _spoken(str(l.get("text") or ""))}
+             for l in (data.get("lines") or []) if isinstance(l, dict) and l.get("text")]
+    # a dialogue: the form gets the first line (one voice per run); the lines come back separately
+    spoken = lines[0]["text"] if len(lines) > 1 else (_spoken(str(data.get("text") or "")) or (lines[0]["text"] if lines else ""))
+    if not spoken:
+        raise LLMError("the assistant did not write a line — try again, or say it differently")
+    try:
+        temp = min(1.3, max(0.5, float(data.get("temperature"))))
+    except (TypeError, ValueError):
+        temp = None
+    return {"text": spoken, "emotion": " ".join(str(data.get("emotion") or "").split())[:40], "temperature": temp,
+            "lines": lines if len(lines) > 1 else [], "explain": " ".join(str(data.get("explain") or "").split())[:300]}
+
+
+def _spoken(text: str) -> str:
+    """Only what is said: stage directions, tags, emojis and markup that the speech model would read aloud go."""
+    text = re.sub(r"\([^)]*\)|\[[^\]]*\]|\*[^*]*\*|<[^>]*>", " ", text)
+    text = re.sub(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", "", text)
+    text = re.sub(r"^\s*[A-Z][\w .'-]{0,30}:\s+", "", text)   # a leading "Name:" speaker label
+    text = " ".join(text.split()).strip()
+    if len(text) > 1 and text[0] == text[-1] and text[0] in "\"“”'":
+        text = text[1:-1].strip()
+    return re.sub(r"\s+([,.!?…])", r"\1", text)
+
+
 # Small models copy pieces of their instructions into the answer: take those out again.
 _ECHO = re.compile(r"\s*\(?\b\d+\s*[-–]\s*\d+ words\b\.?\)?\.?|\s*\bno (?:visible )?distinctive marks\b[^.]*\.?", re.I)
 

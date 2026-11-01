@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **✨ Ask the assistant in the Image and Speech tools** (Studio › New, and an item's *Recipe*):
+  - **Image**: plain words (and the prompt so far) → the prompt for the chosen image model and, for the Qwen-Image-2.1 models, a negative prompt. It looks at the chosen images and characters. The negative prompt never rules out what the prompt asks for.
+  - **Speech**: what is said and how it should feel, or a line to finish or rewrite → the spoken line with the emotion carried by the words and punctuation, since Qwen3-TTS voice clone has no emotion setting. First person; interjections, stammers, pauses ("…", "—"); no stage directions, tags or emojis (they would be read aloud). It also sets Expressiveness and names the feeling. A dialogue comes back line by line, with **Use this line** for each speaker.
 - **A choice of image models**:
   - Besides **FLUX.2 Klein 9B** (still the default, the fastest), the Image tool and the Studio can use **Qwen-Image-2.1 · Noct Q V4** (photoreal) and **Qwen-Image-2.1 · Noct Q Anime V1** (anime), int8 fine-tunes of Qwen-Image-2.1 that fit a 16 GB card. Both make new pictures and edit or combine up to 4 library images.
   - **Settings › Image model** sets the project's model for looks, sheets, places, start frames and the assistant's images; the Image tool's form and every character / place action box can choose another one for one run. Models that are not installed are marked and say which files are missing; the recipe records the model used.

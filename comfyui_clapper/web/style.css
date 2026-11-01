@@ -682,3 +682,7 @@ button.big-prev { padding: 0; border: 0; width: 100%; cursor: zoom-in; }
 .chip.origin-you { background: #fff3d6; color: #8a5a00; border-color: #f0d48a; }
 .act-row .look-name input { min-width: 160px; }
 .go-row { margin-top: 10px; gap: 10px; align-items: end; }
+.tool-assist { margin: 4px 0 10px; }
+.tool-assist .assist-row input { width: 100%; }
+.assist-lines { display: grid; gap: 4px; margin: 4px 0 8px; padding: 8px; border: 1px solid var(--line, #ddd); border-radius: 8px; }
+.assist-lines .row { align-items: center; gap: 8px; }

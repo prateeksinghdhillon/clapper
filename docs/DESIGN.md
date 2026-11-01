@@ -154,6 +154,8 @@ The next version's plan (library, image and speech tools, start modes, finishing
 | Create tools: image (FLUX.2 Klein: new, vary, combine), speech (Qwen3-TTS clone), batches, job list, run again; your own tools from a workflow + `tool.json` | done |
 | Image model choice: FLUX.2 Klein 9B · Qwen-Image-2.1 Noct Q V4 (photoreal) · Noct Q Anime V1, per project (Settings) and per run; negative prompt for the models that take one; per-model availability | done |
 | Image models: a side-by-side quality test of Klein and Qwen-Image-2.1 on character consistency (same character, new outfits and angles) | planned |
+| Assistant in the Image and Speech tools (prompt + negative for the chosen model; spoken lines with emotion carried by words and punctuation, dialogue line by line) | done |
+| Speech: a listening / speech-recognition check of how Qwen3-TTS voice clone renders the assistant's emotional punctuation | planned |
 | Character / place sheets (many angles from one image) | planned |
 | Video references | planned |
 | Overlays in export (exact logos, product photos, title cards with position, timing, fade) and music / sound tracks with ducking | done |
