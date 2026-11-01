@@ -78,3 +78,19 @@ def test_speech_dialogue_lines_and_bounds(project, monkeypatch):
 def test_negative_never_rules_out_what_the_prompt_asks_for():
     assert assistant._negative_without("no rain, blurry, plain light grey background, No text, blurry",
                                        "Lena in a café, rain streaking on the window, plain light grey background") == "blurry, text"
+
+
+def test_assistant_keeps_the_start_look_and_marks_the_pose(project, monkeypatch, tmp_path):
+    from comfyui_clapper.engine import tools
+    (tmp_path / "look.png").write_bytes(PNG)
+    (tmp_path / "pose.png").write_bytes(PNG)
+    look = project.add_asset(tmp_path / "look.png", role="character", title="red dress")
+    project.update_asset(look["id"], look="red dress")
+    project.data["assets"][look["id"]]["entity"] = project.aoi["id"]
+    pose = project.add_asset(tmp_path / "pose.png", role="character", title="pose")
+    seen = []
+    fake(monkeypatch, '{"change": "sitting", "name": "sitting", "prompt": "Aoi from image 1, sitting on a chair.", "explain": ""}', seen)
+    out = assistant.write_image_prompt({}, project, project.aoi["id"], "sitting like the pose", action="angle", source=look["id"],
+                                       refs=[{"asset": pose["id"], "use": "pose"}])
+    assert 'NOT its main look: it is its look "red dress"' in seen[0] and "do NOT write the clothes from the description" in seen[0]
+    assert "pose skeleton" in seen[0] and out["prompt"].endswith(tools.POSE_LINE)

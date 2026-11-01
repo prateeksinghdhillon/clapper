@@ -229,8 +229,8 @@ QWEN_POSE_TEXT = ("Full body, in exactly the body pose of the control pose: the 
 _IMAGE_REF = re.compile(r"\b[Ii]mage (\d{1,2})\b")
 
 
-QWEN_TWOSTAGE_TEXT = ("Keep exactly the pose, framing and composition of image 1. Keep the face, hair and outfit as in image 2 "
-                      "and the description.")
+QWEN_TWOSTAGE_TEXT = ("Keep exactly the pose, framing and composition of image 1. Keep the face, hair and outfit exactly as in "
+                      "image 2: the same garments, cut and colours.")   # not "and the description": it may describe another look
 
 
 def _style_prefix(model: dict, prompt: str) -> str:

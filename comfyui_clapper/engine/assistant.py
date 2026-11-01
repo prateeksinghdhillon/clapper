@@ -2131,7 +2131,18 @@ def write_image_prompt(provider: dict, project: Project, entity_id: str, request
     refs_text = "\n".join((f"- image {images.index(r['asset']) + 1}: take {r.get('use') or 'what fits'}" if r.get('asset') in images
                            else f"- a pose reference (followed as a pose skeleton, not sent as an image): {r.get('use')}")
                           + (f" — {r['what']}" if r.get("what") else "") for r in (refs or []))
-    task = (f"{IMAGE_PROMPT_RULES}\n\nThe user is making {what} for the {e['kind']} \"{e['name']}\".\n"
+    # Which look image 1 is: when it is not the main look, the description describes other clothes (tested: the
+    # assistant then dressed a character who started in another outfit in the description's clothes).
+    start = project.assets.get(source or e.get("main") or "") or {}
+    other_look = bool(source) and source != e.get("main") and action not in ("first", "place")
+    start_text = ((f"Image 1 is NOT its main look: it is its look \"{start.get('look') or start.get('title') or 'another look'}\". Keep the "
+                   "outfit image 1 shows (unless the user asks to change it) and do NOT write the clothes from the description "
+                   "below — they belong to the main look.\n") if other_look else "")
+    has_pose = any(str((r or {}).get("use")) == "pose" for r in refs or [])
+    pose_text = (("A pose reference is given: Clapper reads its pose skeleton and makes the model follow it (the pose image itself "
+                  "is not sent). Do not describe the pose picture's clothes or person. End the prompt with exactly this sentence: "
+                  f"\"{studio_tools.POSE_LINE}\"\n") if has_pose else "")
+    task = (f"{IMAGE_PROMPT_RULES}\n\nThe user is making {what} for the {e['kind']} \"{e['name']}\".\n" + start_text + pose_text +
             f"Its description (what its MAIN look shows): {e.get('description') or '(none)'}\n"
             + (f"References the user added:\n{refs_text}\n" if refs_text else "")
             + f"Clapper's automatic prompt for this (a starting point; improve it):\n{draft.get('prompt') or '(none)'}\n\n"
@@ -2146,8 +2157,11 @@ def write_image_prompt(provider: dict, project: Project, entity_id: str, request
     if not data.get("prompt"):
         raise LLMError("the assistant did not write a prompt — try again, or say it differently")
     change = re.sub(r"^(?:the same \w+ as image 1 \([^)]*\),?\s*)?(?:now\s+)?", "", " ".join(str(data.get("change") or "").split()), flags=re.I)
+    prompt = _clean_prompt(str(data["prompt"]), e["kind"])
+    if has_pose and studio_tools.POSE_LINE not in prompt:   # the graph replaces this line with each model's pose instruction
+        prompt = prompt.rstrip() + " " + studio_tools.POSE_LINE
     return {"change": change[:200], "name": _look_name(str(data.get("name") or ""), e["name"]),
-            "prompt": _clean_prompt(str(data["prompt"]), e["kind"]), "explain": " ".join(str(data.get("explain") or "").split())[:300],
+            "prompt": prompt, "explain": " ".join(str(data.get("explain") or "").split())[:300],
             "images_seen": seen and client.sees_images}
 
 
