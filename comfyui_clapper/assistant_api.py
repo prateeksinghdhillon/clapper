@@ -499,7 +499,8 @@ async def image_prompt(request):
         project = _open(body["path"], request)
         out = await loop.run_in_executor(None, _studio_help(lambda prov: assistant.write_image_prompt(
             prov, project, body["id"], body.get("request", ""), action=body.get("action") or "look",
-            refs=body.get("refs") or None, source=body.get("source") or None, place=body.get("place") or None)))
+            refs=body.get("refs") or None, source=body.get("source") or None, place=body.get("place") or None,
+            model=body.get("model") or None)))
         return _ok(out)
     except ERRORS as exc:
         return _err(exc)
@@ -517,7 +518,8 @@ async def tool_prompt(request):
         if body.get("tool") == "image":
             fn = lambda prov: assistant.write_tool_image_prompt(  # noqa: E731
                 prov, project, body.get("request", ""), prompt=inputs.get("prompt") or "", model=inputs.get("model") or None,
-                images=inputs.get("images") or [], cast=inputs.get("cast") or [], negative=inputs.get("negative") or "")
+                images=inputs.get("images") or [], cast=inputs.get("cast") or [], negative=inputs.get("negative") or "",
+                pose=inputs.get("pose") or None)
         elif body.get("tool") == "speech":
             fn = lambda prov: assistant.write_speech_text(  # noqa: E731
                 prov, project, body.get("request", ""), text=inputs.get("text") or "", language=inputs.get("language") or "Auto",

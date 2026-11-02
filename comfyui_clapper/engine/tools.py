@@ -152,6 +152,30 @@ POSE_DEFAULT_STRENGTH = {"qwen21": 1.4, "flux2": 1.0}   # tested: Qwen at 1.0 ke
 _IMAGE_NUM = re.compile(r"\b([Ii])mage (\d{1,2})\b")
 
 
+_ORDINALS = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5}
+_REF_SPELLINGS = [
+    (re.compile(r"<\s*image\s*(\d{1,2})\s*>", re.I), lambda m: f"image {m.group(1)}"),
+    (re.compile(r"\b(?:the\s+)?(first|second|third|fourth|fifth)\s+(?:image|picture|photo|reference(?: image)?)\b", re.I),
+     lambda m: f"image {_ORDINALS[m.group(1).lower()]}"),
+    (re.compile(r"\b(?:image|picture|photo|figure|img|pic)\s*(?:#|no\.?\s*)?(\d{1,2})\b", re.I), lambda m: f"image {m.group(1)}"),
+]
+
+
+def normalize_image_refs(prompt: str) -> str:
+    """Every way of naming a reference ("the first image", "Figure 2", "picture 1", "<image1>", "Image #3") becomes
+    "image N": the graphs renumber and re-tag exactly that spelling (Klein's pose skeleton goes first; Qwen reads
+    <imageN>), so any other spelling would silently point at the wrong picture."""
+    for pattern, repl in _REF_SPELLINGS:
+        prompt = pattern.sub(repl, prompt)
+    # a sentence that starts with a reference keeps its capital ("Image 2 shows …")
+    return re.sub(r"(^|[.!?]\s+)image (\d)", lambda m: f"{m.group(1)}Image {m.group(2)}", prompt)
+
+
+def image_numbers(prompt: str) -> list[int]:
+    """The image numbers a prompt mentions, after normalize_image_refs."""
+    return sorted({int(n) for n in re.findall(r"\bimage (\d{1,2})\b", normalize_image_refs(prompt), flags=re.I)})
+
+
 def _pose_map(g: "_Graph", path: str) -> list:
     """The pose skeleton (OpenPose colours on black) of the person in an image, drawn by SDPose."""
     ck = g.add("CheckpointLoaderSimple", ckpt_name=POSE_FILES["sdpose"])
@@ -180,7 +204,7 @@ def _klein_image(g: "_Graph", inputs: dict, ctx: dict) -> list:
     files = IMAGE_MODELS["flux2_klein_9b"]["files"]
     model = [g.add("UNETLoader", unet_name=files["unet"], weight_dtype="default"), 0]
     refs = [ctx["paths"][a] for a in inputs.get("images") or []]
-    prompt = inputs["prompt"]
+    prompt = normalize_image_refs(inputs["prompt"])
     pose = inputs.get("pose")
     pose_control = bool(pose) and "flux2" in ctx.get("pose_control", ("flux2", "qwen21"))
     strength = float(inputs.get("consistency", 0.0) or 0.0)
@@ -191,7 +215,8 @@ def _klein_image(g: "_Graph", inputs: dict, ctx: dict) -> list:
                        strength_model=float(inputs.get("pose_strength") or POSE_DEFAULT_STRENGTH["flux2"])), 0]
         # the skeleton becomes image 1: every other image moves up one
         prompt = _IMAGE_NUM.sub(lambda m: f"{m.group(1)}mage {int(m.group(2)) + 1}", prompt)
-        prompt = "apply pose from image 1 with reference from image 2. " + prompt.replace(
+        # RefControl's trigger names image 2 as the identity reference; with no picture of anyone, only the pose image
+        prompt = ("apply pose from image 1 with reference from image 2. " if refs else "apply pose from image 1. ") + prompt.replace(
             POSE_LINE, "The body pose exactly as the skeleton in image 1: the same arm positions, leg positions, body angle and head direction.")
     elif pose:
         refs = refs + [ctx["paths"][pose]]
@@ -256,7 +281,7 @@ def _build_qwen21(model_id: str) -> Callable[[dict, dict], dict]:
         clip = [g.add("CLIPLoader", clip_name=files["clip"], type="qwen_image", device="default"), 0]
         vae = [g.add("VAELoader", vae_name=files["vae"]), 0]
         refs = [ctx["paths"][a] for a in inputs.get("images") or []]
-        prompt, pose = inputs["prompt"], inputs.get("pose")
+        prompt, pose = normalize_image_refs(inputs["prompt"]), inputs.get("pose")
         control = ctx.get("pose_control", tuple(POSE_NEEDS))
         posed = None
         if pose and "qwen21_twostage" in control:
@@ -698,6 +723,21 @@ REF_LINES = {
     "style": ("Redraw the whole picture in the art style of image {n}: the same medium, line work, shading and colouring. "
               "Keep what image 1 shows (the subject, its design and pose)."),
 }
+# The same, for designs made from the description alone (no picture of the subject is sent): the references are then
+# image 1, 2 … themselves, so nothing may call image 1 the subject (it built "Dress Aoi from image 1 in the clothing
+# from image 1 … image 1 shows a different person").
+REF_LINES_DESIGN = {
+    "outfit": ("{Who} wears exactly the clothing from image {n}: the same garments, cut, colours, patterns and shoes. "
+               "Take nothing else from image {n} (not the face, hair, body or background)."),
+    "hair": "{Who} has exactly the hairstyle from image {n}: the same cut, length, colour and styling.",
+    "accessory": ("{Who} wears and holds the accessories from image {n}, the same way as in image {n}: from image {n} take "
+                  "only those objects, never the person who wears them."),
+    "colours": "Use the colour palette of image {n} for the clothes and the scene.",
+    "lighting": "Light the picture like image {n}: the same light colours, direction, contrast and time of day.",
+    "background": "{Who} is in the setting of image {n}.",
+    "material": "The clothes are made of the material of image {n}: the same texture, surface and sheen.",
+    "style": "Draw the whole picture in the art style of image {n}: the same medium, line work, shading and colouring.",
+}
 # A pose reference becomes its own input (inputs["pose"]): each model's graph applies it its own way (Qwen-Image-2.1:
 # a pose skeleton through its Fun ControlNet; FLUX.2 Klein: the skeleton as image 1 with the RefControl pose LoRA;
 # without those files, the pose image as a reference with BFL's pose wording). The prompt carries this marker line,
@@ -716,7 +756,12 @@ def _with_references(project: Project, kind: str, inputs: dict, refs: list[dict]
     out = dict(inputs)
     lines, labels = [], []
     person_refs: list[int] = []
-    who = (f"{name} from image 1" if name else "the person from image 1") if kind == "character" else "the subject of image 1"
+    has_subject = bool(images)   # designs send no picture of the subject: references start at image 1
+    table = REF_LINES if has_subject else REF_LINES_DESIGN
+    if has_subject:
+        who = (f"{name} from image 1" if name else "the person from image 1") if kind == "character" else "the subject of image 1"
+    else:
+        who = (name or "the character") if kind == "character" else (name or "the subject")
     for ref in refs:
         aid = ref.get("asset") if isinstance(ref, dict) else ref
         a = project.asset(aid)
@@ -734,13 +779,16 @@ def _with_references(project: Project, kind: str, inputs: dict, refs: list[dict]
         if aid not in images:
             images.append(aid)
         n = images.index(aid) + 1
-        line = REF_LINES[use].format(n=n, who=who, Who=who[0].upper() + who[1:]) if use in REF_LINES else f"From image {n} take only {use}."
+        line = table[use].format(n=n, who=who, Who=who[0].upper() + who[1:]) if use in table else f"From image {n} take only {use}."
         what = " ".join(str((ref.get("what") if isinstance(ref, dict) else "") or "").split()).strip(" .")
         if what and use == "accessory":   # tested: Qwen-Image-2.1 added all of them only when told how each is worn or held
-            line = (f"{who[0].upper() + who[1:]} is now {what} — the accessories from image {n}. Keep the face, hair and clothes "
-                    f"of image 1: from image {n} take only those objects, never the person who wears them.")
+            line = (f"{who[0].upper() + who[1:]} is now {what} — the accessories from image {n}. "
+                    + ("Keep the face, hair and clothes of image 1: " if has_subject else "")
+                    + f"from image {n} take only those objects, never the person who wears them.")
         elif what:   # tested: named things are followed ("the clothing from image 2: a red plaid shirt, denim overalls …")
-            line = line.replace(f"image {n}", f"image {n} ({what})", 1)
+            # name the reference where it is first called "image n" as a reference (never inside "X from image 1")
+            at = line.find(f"image {n}", line.find(who) + len(who) if who in line else 0)
+            line = line[:at] + f"image {n} ({what})" + line[at + len(f"image {n}"):] if at >= 0 else line
         lines.append(line)
         if use in ("outfit", "accessory", "hair") and n not in person_refs:
             person_refs.append(n)
@@ -755,9 +803,12 @@ def _with_references(project: Project, kind: str, inputs: dict, refs: list[dict]
         # tested: FLUX.2 Klein pasted the reference's person (face and all) into the picture until the prompt said so
         keep = ["face"] + (["hair"] if "hair" not in uses else []) + (["clothes"] if "outfit" not in uses else [])
         nums = " and ".join(f"image {n}" for n in person_refs)
-        owner = f"{name}'s" if name else "image 1's"
-        lines.append(f"{nums[0].upper() + nums[1:]} {'show' if len(person_refs) > 1 else 'shows'} a different person: do not draw "
-                     f"that person. There is only one person in the picture. Keep {owner} own {', '.join(keep[:-1]) + ' and ' + keep[-1] if len(keep) > 1 else keep[0]}.")
+        owner = f"{name}'s" if name else ("image 1's" if has_subject else "the character's")
+        keep_text = ', '.join(keep[:-1]) + ' and ' + keep[-1] if len(keep) > 1 else keep[0]
+        # the reference may show only the garment or object: say it conditionally
+        lines.append(f"If {nums} {'show' if len(person_refs) > 1 else 'shows'} a person, that is a different person: do not draw "
+                     f"them. There is only one person in the picture. "
+                     + (f"Keep {owner} own {keep_text}." if has_subject else f"{owner[0].upper() + owner[1:]} own {keep_text} are as described."))
     out.update(images=images, prompt=prompt.rstrip() + " " + " ".join(lines))
     return out, labels
 
@@ -782,10 +833,52 @@ def entity_inputs(project: Project, entity_id: str, action: str, text: str, *, p
     what names it ("red plaid flannel shirt, denim overalls") — the models follow named things far better."""
     inputs, extra = _entity_inputs(project, entity_id, action, text, place_id=place_id, aspect=aspect, source=source, refs=refs)
     ent = project.entity(entity_id)
+    if action == "sheet" and any(str((r or {}).get("use")) == "pose" for r in refs or []):
+        raise ProjectError("a character sheet has its own fixed poses (front, three-quarter, side, back): remove the pose reference")
     inputs, labels = _with_references(project, ent["kind"], inputs, refs, name=ent["name"] if ent["kind"] == "character" else "")
+    if inputs.get("pose") and action == "first":   # the design template's stance would fight the pose
+        inputs["prompt"] = inputs["prompt"].replace(", front view, standing relaxed", "")
     if labels and not (text or "").strip() and action in ("look", "angle", "sheet"):
         extra["look"] = _label(("sheet · " if action == "sheet" else "") + ", ".join(labels))
+    # which picture is image 1, 2 … — shown above the prompt and given to the assistant with each picture
+    roles: dict[str, str] = {}
+    imgs = inputs.get("images") or []
+    if action != "first" and imgs:
+        roles[imgs[0]] = f"the {ent['kind']} itself, as it looks now"
+    if action == "place" and len(imgs) > 1:
+        roles[imgs[1]] = f"the place {project.entity(place_id or '')['name']}"
+    for r in refs or []:
+        if isinstance(r, dict) and r.get("asset") in imgs and r["asset"] not in roles:
+            use = str(r.get("use") or REF_DEFAULT.get(ent["kind"], "outfit"))
+            roles[r["asset"]] = f"reference: take {REF_USES.get(use, use).split(' (')[0]}" + (f" — {r['what']}" if r.get("what") else "")
+    inputs["legend"] = image_legend(project, imgs, roles, pose=inputs.get("pose"))
     return inputs, extra
+
+
+def image_legend(project: Project, images: list[str], roles: dict[str, str] | None = None, pose: str | None = None) -> list[dict]:
+    """[{n, asset, label}] for the images of a generation, in the order the prompt numbers them (image 1, image 2 …),
+    and the pose reference without a number (only its skeleton is used). Shown to the user above the prompt and to the
+    assistant with each picture, so both mean the same picture by "image 2"."""
+    def name(aid: str) -> str:
+        a = project.assets.get(aid) or {}
+        owner = project.entities.get(a.get("entity") or "", {}).get("name")
+        return (owner + (f" ({a['look']})" if a.get("look") and a.get("look") not in ("default", "design") else "")) if owner else (a.get("title") or aid)
+    out = [{"n": n, "asset": aid, "label": f"{name(aid)} — {(roles or {})[aid]}" if (roles or {}).get(aid) else name(aid)}
+           for n, aid in enumerate(images, 1)]
+    if pose:
+        out.append({"n": None, "asset": pose, "label": f"{name(pose)} — pose only (its skeleton is followed; the picture is not sent)"})
+    return out
+
+
+def tool_legend(project: Project, inputs: dict) -> list[dict]:
+    """The Image tool's legend: the user's chosen images first, then each chosen character / place / prop's main look."""
+    run = with_cast(project, {**inputs, "prompt": inputs.get("prompt") or ""})
+    chosen = list(inputs.get("images") or [])
+    roles = {aid: "a picture you chose" for aid in chosen}
+    for eid in inputs.get("cast") or []:
+        e = project.entity(eid)
+        roles.setdefault(e["main"], f"{e['name']}'s main look")
+    return image_legend(project, run.get("images") or [], roles, pose=inputs.get("pose"))
 
 
 def _entity_inputs(project: Project, entity_id: str, action: str, text: str, *, place_id: str | None = None,
@@ -811,7 +904,8 @@ def _entity_inputs(project: Project, entity_id: str, action: str, text: str, *, 
     keeps_look = bool(refs) and not (text or "").strip() and ref_uses <= {"accessory", "background", "lighting", "style", "pose"}
     # tested: with accessories (or a new background, light, style or pose) and no other change, the description says who
     # to keep; without it FLUX.2 Klein redrew the person from the reference instead
-    if (action == "look" or outfit_ref or not own_picture) and not (keeps_look and own_picture):
+    # a design has no picture of the subject: the description is all the model gets, whatever the references
+    if action != "first" and (action == "look" or outfit_ref or not own_picture) and not (keeps_look and own_picture):
         who = e["name"] + (f", {source_look}" if source_look and not own_picture and source_look not in ("default", "design", "look") else "")
     text = (text or "").strip()
     from .director import video_aspect

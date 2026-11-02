@@ -166,10 +166,14 @@ def test_the_assistant_writes_a_generation_from_plain_words(project, monkeypatch
         Image.new("RGB", (32, 32), "red").save(project.root / project.assets[a]["file"], format="PNG")
     out = assistant.write_image_prompt({"vision": True}, project, project.aoi["id"], "a jacket like that one but red",
                                        refs=[{"asset": project.coat["id"], "use": "outfit"}])
+    assert out.pop("checks") == {"corrected": [], "remaining": [], "tips": []}
     assert out == {"change": "wearing a red wool jacket", "name": "red jacket", "explain": "Took the jacket shape from image 2 and made it red.",
-                   "prompt": "The same character as image 1 (Aoi), now wearing the jacket from image 2 in red wool. Keep the face.", "images_seen": True}
+                   "prompt": "The same character as image 1 (Aoi), now wearing the jacket from image 2 in red wool. Keep the face.", "images_seen": True,
+                   "model": "flux2_klein_9b", "unknown_images": []}
     texts = [p["text"] for p in seen["content"] if p["type"] == "text"]
-    assert texts[0] == "Image 1 (Aoi, default):" and texts[1] == "Image 2 (Aoi, winter coat):"   # it sees the images, numbered as sent
+    # it sees the images with the same numbered labels the user sees above the prompt
+    assert texts[0] == "Image 1 — Aoi — the character itself, as it looks now:" and texts[1].startswith("Image 2 — Aoi (winter coat) — reference: take the outfit")
+    assert "- image 2: Aoi (winter coat) — reference" in texts[-1] and "FLUX.2 Klein" in texts[-1]
     assert "do NOT repeat the old description" in texts[-1] and "a jacket like that one but red" in texts[-1]
     with pytest.raises(ProjectError, match="own words"):
         assistant.write_image_prompt({"vision": True}, project, project.aoi["id"], "  ")
@@ -258,7 +262,7 @@ def test_named_references_and_template_conflicts(project, tmp_path):
     inputs, _ = tools.entity_inputs(project, project.aoi["id"], "look", "",
                                     refs=[{"asset": x["id"], "use": "outfit", "what": "red plaid shirt, denim overalls."}])
     assert "clothing from image 2 (red plaid shirt, denim overalls):" in inputs["prompt"]
-    assert "Image 2 shows a different person: do not draw that person. There is only one person in the picture. Keep Aoi's own face and hair." in inputs["prompt"]
+    assert "If image 2 shows a person, that is a different person: do not draw them. There is only one person in the picture. Keep Aoi's own face and hair." in inputs["prompt"]
     # a style reference drops "art style" from what is kept; background / lighting drop the plain grey background
     inputs, _ = tools.entity_inputs(project, project.aoi["id"], "look", "", refs=[{"asset": x["id"], "use": "style"}])
     assert "and art style" not in inputs["prompt"] and "Keep the face, hair and body." in inputs["prompt"]
@@ -299,3 +303,36 @@ def test_outfit_and_accessory_references_have_their_faces_hidden_for_klein(proje
     assert job["inputs"]["hide_faces"] == [x["id"]] and len(nodes_of(g, "ClapperHideFaces")) == 1 and nodes_of(g, "SDPoseFaceBBoxes")
     tools.queue_entity(project, c, project.aoi["id"], "look", "", count=1, seed=1, model="flux2_klein_9b", refs=[{"asset": x["id"], "use": "hair"}])
     assert not nodes_of(c.graphs[-1], "ClapperHideFaces")   # a hairstyle needs the head
+
+
+def test_design_references_do_not_call_image_1_the_subject(project, tmp_path):
+    (tmp_path / "j.png").write_bytes(PNG)
+    j = project.add_asset(tmp_path / "j.png", role="other", title="jacket")
+    inputs, _ = tools.entity_inputs(project, project.aoi["id"], "first", "", refs=[{"asset": j["id"], "use": "outfit", "what": "red jacket"}])
+    p = inputs["prompt"]
+    assert inputs["images"] == [j["id"]] and "Aoi wears exactly the clothing from image 1 (red jacket)" in p
+    assert "from image 1 in" not in p and "Keep Aoi's own" not in p and "Aoi's own face and hair are as described." in p
+    assert inputs["legend"][0]["label"].endswith("reference: take the outfit and clothes only — red jacket")
+
+
+def test_pose_rules_for_designs_and_sheets(project, tmp_path):
+    from test_tools import FakeComfy, nodes_of
+    (tmp_path / "p.png").write_bytes(PNG)
+    pose = project.add_asset(tmp_path / "p.png", role="other", title="pose")
+    inputs, _ = tools.entity_inputs(project, project.aoi["id"], "first", "", refs=[{"asset": pose["id"], "use": "pose"}])
+    assert "standing relaxed" not in inputs["prompt"] and inputs["legend"][-1]["n"] is None and "pose only" in inputs["legend"][-1]["label"]
+    with pytest.raises(ProjectError, match="fixed poses"):
+        tools.entity_inputs(project, project.aoi["id"], "sheet", "", refs=[{"asset": pose["id"], "use": "pose"}])
+    c = FakeComfy()   # Klein with only a pose: no "reference from image 2" when there is no image 2
+    tools.queue_entity(project, c, project.aoi["id"], "first", "", count=1, seed=1, model="flux2_klein_9b", refs=[{"asset": pose["id"], "use": "pose"}])
+    assert nodes_of(c.graphs[-1], "CLIPTextEncode")[0]["inputs"]["text"].startswith("apply pose from image 1. Original")
+
+
+def test_image_references_are_normalised_and_counted():
+    assert tools.normalize_image_refs("the first image, Figure 2, <image3>, picture #4") == "Image 1, image 2, image 3, image 4"
+    assert tools.image_numbers("Keep the second image's coat and image 1's face") == [1, 2]
+
+
+def test_the_legend_names_every_picture(project, tmp_path):
+    lg = tools.tool_legend(project, {"images": [project.coat["id"]], "cast": [project.aoi["id"]]})
+    assert [x["n"] for x in lg] == [1, 2] and lg[0]["label"].endswith("a picture you chose") and "main look" in lg[1]["label"]

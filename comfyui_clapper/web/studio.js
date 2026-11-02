@@ -216,13 +216,15 @@ const REF_USE_LABEL = { outfit: "its outfit", pose: "its pose", hair: "its hairs
 const REF_DEFAULT_USE = { character: "outfit", place: "lighting", prop: "material", style: "style" };
 function refsRow(e, changed) {
   const refs = entityAct.refs;
-  const max = entityAct.action === "place" ? 2 : 3;   // the image model takes 4 in all
+  const max = entityAct.action === "place" ? 2 : entityAct.action === "first" ? 4 : 3;   // 4 pictures in all; a pose takes no slot
+  const slotsUsed = refs.filter((r) => r.use !== "pose").length;
+  const canAdd = slotsUsed < max || (!refs.some((r) => r.use === "pose") && entityAct.action !== "sheet" && refs.length < max + 1);
   const box = h("div", { class: "refs-row" });
   const draw = () => box.replaceChildren(...[   // (replaceChildren would print a null: only real nodes)
     h("span", { class: "hint grow-0" }, "References"),
     ...refs.map((r, i) => {
       const a = assets()[r.asset]; if (!a) return null;
-      const known = Object.keys(REF_USE_LABEL);
+      const known = Object.keys(REF_USE_LABEL).filter((k) => k !== "pose" || entityAct.action !== "sheet");   // a sheet has fixed poses
       const use = h("select", {}, ...known.map((k) => h("option", { value: k, selected: r.use === k }, "take " + REF_USE_LABEL[k])),
         h("option", { value: "_other", selected: !known.includes(r.use) }, "take… (type)"));
       const other = h("input", { placeholder: "e.g. the red scarf", value: known.includes(r.use) ? "" : r.use, hidden: known.includes(r.use) });
@@ -251,8 +253,9 @@ function refsRow(e, changed) {
         h("div", { class: "ref-body" }, h("span", { class: "hint" }, (r.use === "pose" ? "pose (skeleton)" : `image ${n}`) + (owner ? ` · ${owner}` : "")), use, other, what),
         h("button", { class: "icon", title: "Remove", onclick: () => { refs.splice(i, 1); changed(); draw(); } }, "✕"));
     }),
-    refs.length < max ? h("button", { class: "ghost", onclick: () => pickAssets({ kind: "image", title: "Choose reference images — another character's outfit, a pose, a lighting mood …", exclude: refs.map((r) => r.asset) },
-      (ids) => { for (const id of ids.slice(0, max - refs.length)) refs.push({ asset: id, use: REF_DEFAULT_USE[e.kind] || "outfit" }); changed(); draw(); }) }, "＋ Reference image") : null,
+    entityAct.action === "sheet" && refs.some((r) => r.use === "pose") ? h("span", { class: "hint warn" }, "A character sheet has its own fixed poses: change or remove the pose reference.") : null,
+    canAdd ? h("button", { class: "ghost", onclick: () => pickAssets({ kind: "image", title: "Choose reference images — another character's outfit, a pose, a lighting mood …", exclude: refs.map((r) => r.asset) },
+      (ids) => { for (const id of ids.slice(0, Math.max(1, max - slotsUsed))) refs.push({ asset: id, use: REF_DEFAULT_USE[e.kind] || "outfit" }); changed(); draw(); }) }, "＋ Reference image") : null,
     refs.length ? null : h("span", { class: "hint" }, e.kind === "character" ? "e.g. another character's jacket, or a pose to copy — for one of its own outfits, choose it in Start from (more reliable)" : e.kind === "place" ? "e.g. a photo with the light you want" : "optional"),
     refs.some((r) => r.use === "outfit" && assets()[r.asset]?.entity === e.id) ? h("span", { class: "hint warn" }, `This outfit is one of ${e.name}'s own looks: choosing it in “Start from” keeps it more reliably than a reference.`) : null].filter(Boolean));
   draw();
@@ -378,9 +381,12 @@ function entityActions(e) {
     if (!ask.value.trim()) throw new Error("Say in your own words what you want");
     explain.textContent = "✨ The assistant is looking at the images and writing…";
     try {
-      const r = await call("/assistant/image_prompt", { path: state.path, id: e.id, request: ask.value, action: entityAct.action, refs: entityAct.refs, source: entityAct.source, place: entityAct.place });
+      const r = await call("/assistant/image_prompt", { path: state.path, id: e.id, request: ask.value, action: entityAct.action, refs: entityAct.refs,
+        source: entityAct.source, place: entityAct.place, model: entityAct.model || null });
       Object.assign(entityAct, { text: r.change || entityAct.text, look: r.name || entityAct.look, prompt: r.prompt, origin: "assistant",
-        explain: "✨ " + (r.explain || "Written by the assistant.") + (r.images_seen ? "" : " (Its model cannot see images: it worked from the descriptions.)") });
+        explain: "✨ " + (r.explain || "Written by the assistant.") + (r.images_seen ? "" : " (Its model cannot see images: it worked from the descriptions.)")
+          + checksNote(r.checks) });
+      if (r.negative && !entityAct.negative) entityAct.negative = r.negative;
       renderStudio();
     } catch (err) { explain.textContent = ""; throw err; }
   }) }, "✨ Write it");
@@ -414,9 +420,12 @@ function entityActions(e) {
   promptBox.value = entityAct.prompt || "";
   const originChip = h("span", { class: "chip on origin-" + entityAct.origin }, ORIGIN[entityAct.origin][0]);
   const originHint = h("span", { class: "hint" }, ORIGIN[entityAct.origin][1]);
-  const imagesLine = h("p", { class: "hint" });
+  const imagesLine = h("div", { class: "legend-box" });   // which picture is image 1, 2 … (numbered thumbnails)
+  const warnLine = h("p", { class: "legend-warn" });
+  let lastLegend = [];
+  const checkNumbers = () => { warnLine.textContent = legendWarning(promptBox.value, lastLegend); };
   const backAuto = h("button", { class: "ghost small", hidden: entityAct.origin === "auto", onclick: () => { Object.assign(entityAct, { prompt: null, origin: "auto", explain: "" }); renderStudio(); } }, "Back to automatic");
-  promptBox.oninput = () => { entityAct.prompt = promptBox.value; if (entityAct.origin !== "you") { entityAct.origin = "you"; originChip.textContent = ORIGIN.you[0]; originChip.className = "chip on origin-you"; originHint.textContent = ORIGIN.you[1]; backAuto.hidden = false; } };
+  promptBox.oninput = () => { entityAct.prompt = promptBox.value; checkNumbers(); if (entityAct.origin !== "you") { entityAct.origin = "you"; originChip.textContent = ORIGIN.you[0]; originChip.className = "chip on origin-you"; originHint.textContent = ORIGIN.you[1]; backAuto.hidden = false; } };
   let previewTimer = null;
   const refreshPreview = () => {
     clearTimeout(previewTimer);
@@ -424,9 +433,10 @@ function entityActions(e) {
       try {
         const r = await call("/entity/preview", { path: state.path, id: e.id, action: entityAct.action, text: entityAct.text, place: entityAct.place, source: entityAct.source, refs: entityAct.refs });
         if (entityAct.origin === "auto") promptBox.value = r.prompt;
-        imagesLine.textContent = r.images.length ? "Images sent: " + r.images.map((id, i) => { const a = assets()[id] || {}; const owner = entities()[a.entity]?.name; return `image ${i + 1} = ${owner ? owner + (a.look ? ` (${a.look})` : "") : a.title || id}`; }).join(" · ")
-          : "No image is sent: the description and your words only.";
-      } catch (err) { imagesLine.textContent = "⚠ " + err.message; }
+        lastLegend = r.legend || [];
+        imagesLine.replaceChildren(legendStrip(lastLegend));
+        checkNumbers();
+      } catch (err) { imagesLine.replaceChildren(h("p", { class: "hint warn" }, "⚠ " + err.message)); }
     }, 350);
   };
   function changed() { refreshPreview(); }   // the automatic prompt (and the list of images sent) follow every change
@@ -453,7 +463,8 @@ function entityActions(e) {
     refsRow(e, () => changed()),
     h("div", { class: "prompt-box" },
       h("div", { class: "row" }, h("b", {}, "The prompt that will be sent"), originChip, originHint, h("span", { class: "spacer" }), backAuto),
-      promptBox, imagesLine),
+      h("span", { class: "hint" }, "Pictures sent with it — “image 1”, “image 2” … in the prompt mean these:"), imagesLine,
+      promptBox, warnLine),
     negRow,
     h("div", { class: "row go-row" }, h("label", { class: "grow-0" }, "Image model", modelSel), h("label", { class: "grow-0" }, "Results", count), go,
       h("span", { class: "hint" }, entityAct.action === "place" ? "Start frames for scenes (Files › Start images & frames), with the character and the place as references."
@@ -589,6 +600,7 @@ function makeMore(a, e) {
         h("button", { class: "ghost small", onclick: () => { delete recipeEdits[a.id]; renderPanel(); } }, "Show the original")) : null,
       tool ? toolAssist(tool, values, () => renderPanel(), "recipe:" + a.id) : null,
       ...(tool ? tool.fields.filter((f) => !f.advanced).map((f) => toolField(f, values)) : [h("p", { class: "hint" }, "Loading the tool…")]),
+      tool ? toolLegendBox(tool, values) : null,
       h("div", { class: "row" }, h("label", { class: "grow-0" }, "Results", count),
         h("button", { class: "primary", ...busyAttr("again"), onclick: () => once("again", async () => {
           const d = await call("/tool/run", { path: state.path, tool: o.tool, inputs: values, count: Number(count.value), role: a.role, title: a.title.replace(/ \d+$/, ""), version_of: a.id });
@@ -788,6 +800,45 @@ function newEntityForm(kind) {
     modeSeg, designRow, pickBox, h("div", { class: "row" }, go));
 }
 
+// What Clapper checked in the assistant's prompt (in code): corrections it asked for, anything left, and tips.
+function checksNote(c) {
+  if (!c) return "";
+  let out = "";
+  if (c.corrected && c.corrected.length) out += ` ✓ Checked: ${c.corrected.length} thing${c.corrected.length > 1 ? "s" : ""} corrected.`;
+  else out += " ✓ Checked.";
+  if (c.remaining && c.remaining.length) out += " ⚠ Still: " + c.remaining.join(" ");
+  if (c.tips && c.tips.length) out += " Tip: " + c.tips.join(" ");
+  return out;
+}
+
+// The Image tool's pictures, numbered as the prompt sees them (its own images first, then Who and where, and the pose).
+function toolLegendBox(tool, values) {
+  if (tool.id !== "image") return null;
+  const box = h("div", { class: "legend-box" });
+  const warn = h("p", { class: "legend-warn" });
+  let legend = [], timer = null;
+  const refresh = () => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      if (!box.isConnected) return;
+      try {
+        const d = await call("/tool/legend", { path: state.path, inputs: { images: values.images || [], cast: values.cast || [], pose: values.pose || null } });
+        legend = d.legend || [];
+        box.replaceChildren(legendStrip(legend));
+        warn.textContent = legendWarning(values.prompt, legend);
+      } catch (err) { box.replaceChildren(h("p", { class: "hint warn" }, "⚠ " + err.message)); }
+    }, 250);
+  };
+  const onChange = (ev) => {
+    if (!box.isConnected && legend.length) { document.removeEventListener("clapper-tool-change", onChange); return; }
+    if (["images", "cast", "pose"].includes(ev.detail)) refresh();
+    else if (ev.detail === "prompt") warn.textContent = legendWarning(values.prompt, legend);
+  };
+  document.addEventListener("clapper-tool-change", onChange);
+  refresh();
+  return h("div", { class: "tool-legend wide" }, h("span", { class: "hint" }, "Pictures sent with the prompt — “image 1”, “image 2” … in the prompt mean these:"), box, warn);
+}
+
 // ✨ The assistant fills in the Image or Speech form from plain words (and what is already in the form).
 const toolAsk = {};   // tool id (or recipe key) → {ask, explain, lines}
 function toolAssist(tool, values, rerender, key = tool.id) {
@@ -815,7 +866,7 @@ function toolAssist(tool, values, rerender, key = tool.id) {
       } else {
         values.prompt = r.prompt; if (r.negative) values.negative = r.negative;
         st.lines = [];
-        st.explain = "✨ " + (r.explain || "Written by the assistant.") + ((inputs.images || []).length || (inputs.cast || []).length ? (r.images_seen ? "" : " (Its model cannot see images: it worked from the names.)") : "");
+        st.explain = "✨ " + (r.explain || "Written by the assistant.") + ((inputs.images || []).length || (inputs.cast || []).length ? (r.images_seen ? "" : " (Its model cannot see images: it worked from the names.)") : "") + checksNote(r.checks);
       }
       rerender();
     } catch (err) { explain.textContent = ""; throw err; }
@@ -860,6 +911,7 @@ function newToolForm(toolId) {
     h("p", { class: "hint" }, tool.description, tool.ok ? "" : h("span", { class: "warn" }, ` Cannot run on this ComfyUI: missing ${tool.missing.join(", ")}.`)),
     toolAssist(tool, values, () => renderStudio()),
     h("div", { class: "form-grid" }, ...tool.fields.filter((f) => !f.advanced).map((f) => toolField(f, values))),
+    toolLegendBox(tool, values),
     tool.fields.some((f) => f.advanced) ? h("details", { class: "adv" }, h("summary", {}, "More options"), h("div", { class: "form-grid" }, ...tool.fields.filter((f) => f.advanced).map((f) => toolField(f, values)), h("label", {}, "Seed", seed))) : null,
     under ? h("div", { class: "row" }, h("label", {}, "Save results under", under), h("label", { class: "grow" }, lookName)) : null,
     h("div", { class: "row tool-run" }, h("label", {}, "Results", count), h("label", {}, "Save as", role), h("label", { class: "grow" }, "Title", title), go));

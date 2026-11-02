@@ -2089,19 +2089,48 @@ def describe_image(provider: dict, project: Project, asset_id: str, kind: str | 
 # How to write prompts for the image models (FLUX.2 Klein / Qwen-Image-2.1 with reference images), from what was tested in Clapper.
 # The Qwen-Image-2.1 graph turns "image 1" into its own <image1> tags, so one set of rules serves every model.
 IMAGE_PROMPT_RULES = """Rules for the image model's prompt (it edits and combines reference images):
-- The images are numbered in the order given: image 1 is the character / place / object itself; references follow. Refer to them as "image 1", "image 2" ….
+- The pictures sent with the prompt are listed with their numbers ("Image 1 — …", "Image 2 — …"). Refer to them exactly as "image 1", "image 2" …: never "the first image", "picture 1", "Figure 1" or "<image1>" (Clapper renumbers and re-tags only that spelling for each model). Never mention an image number that is not in the list. A pose reference has no number: it is not sent as a picture.
 - Say what changes and what stays: "The same character as image 1, now wearing …. Keep the face, hair and body."
 - When the look changes, do NOT repeat the old description (old clothes, weather, time of day): the model then keeps the old look (a new outfit came out with the old raincoat on top; a "sunny morning" stayed rainy). Name the character, then describe only the new state.
-- Name concretely what each reference lends, in a few words: "wearing the clothes from image 2: a red plaid flannel shirt, blue denim overalls and brown work boots", "holding the red umbrella from image 2". Tested: the image models follow named things; "the clothes from image 2" alone was often ignored, and the reference's whole person was pasted in.
-- To take clothes (or a pose, the lighting …) from a reference: "wearing the clothes from image 2 instead of their own", "in the pose of image 2", "with the light of image 2". Say what NOT to take from it ("not the face or hair").
+- The written description may be older than the pictures: for what the subject wears and looks like now, image 1 is the truth. Never copy clothes from the description that image 1 does not show, unless the user asks for them.
+- Name concretely what each reference lends, in a few words: "wearing the clothes from image 2: a red plaid flannel shirt, blue denim overalls and brown work boots", "holding the red umbrella from image 2". Tested: the image models follow named things; "the clothes from image 2" alone was often ignored, and the reference's whole person was pasted in. When a reference shows another person, say that person does not appear.
 - When the weather, light or time of day changes, also say what is gone, because image 1 still shows it: "no rain, dry ground, no puddles", "no snow", "daylight, the street lamp off".
 - Concrete, visible words: garments with colours and materials, pose, camera angle, background. No feelings, no story, no "beautiful".
-- Characters and props: full body (props: whole object), plain light grey background, no text. Places: the same layout and buildings, no people unless asked, no text.
+- Write the prompt fresh, as one fluent description in full sentences: do not paste the automatic prompt, the description or the user's words in verbatim, and never repeat a sentence.
 - 40-110 words. One image description, not a list of options."""
+
+# What each action makes, for the assistant (the background / framing rules differ per action).
+ACTION_RULES = {
+    "first": ("No picture of the subject is sent: write a complete new design from the description and the user's words. "
+              "Describe the subject fully from its description (face, hair, build, colours, clothes) — there is no picture of it "
+              "to keep, so never write \"keep the same face\". "
+              "Any pictures listed are references only (numbered from image 1) — they are NOT the subject and not a version of it. "
+              "Say what each one lends with its number, e.g. \"wearing the jacket from image 1: a silver bomber jacket\"; never write "
+              "\"a change from image 1\" or \"as image 1\". Characters: one character, full body, plain light grey background, no text. "
+              "Props: the whole object, plain light grey background. Places: the place itself, no people unless asked."),
+    "look": ("Image 1 is the subject as it looks now. Name it with its picture (\"Lena from image 1\", \"the same café as image 1\"), "
+             "then write the change and what stays. Characters: full body, plain light grey background (unless a reference gives a "
+             "background or light). Places: the same layout and buildings, a variation (time, weather, season, mood). Props: the whole object."),
+    "angle": ("Image 1 is the subject as it looks now. Name it with its picture (\"Lena from image 1\"). Keep its design and outfit; "
+              "describe the new camera angle or pose concretely (where the arms, legs and head are; where the camera is)."),
+    "place": ("Image 1 is the character, image 2 is the place: write \"the character from image 1 (Name)\" and \"the place from image 2\". "
+              "The result is a scene: the character inside that place, using the place's own surroundings — no plain or grey "
+              "background. Keep the character's design and the place's layout; describe exactly what the user says the character "
+              "does there, and the framing. If you rule out people, write \"no other people\"."),
+    "sheet": ("A turnaround reference sheet: the same subject from image 1 shown four times side by side (front, three-quarter, side, "
+              "back), full body, neutral standing pose, even light, plain light grey background, no text. Do not change the pose or add a scene."),
+}
+
+
+# Only when image 1 is being changed (a new look or variation) with Qwen-Image-2.1: tested, it edits conservatively.
+QWEN_EDIT_HINT = ("It edits image 1 conservatively (tested: a \"navy suit\" came out as the same raincoat in navy): lead with the "
+                  "operation and make the change strong — \"Replace the yellow raincoat and jeans with …\" for what is swapped, "
+                  "\"Add …\" for what is added, \"Turn the scene into …\" for a new time or weather — naming what goes only as what is replaced.")
 
 
 def write_image_prompt(provider: dict, project: Project, entity_id: str, request: str, *, action: str = "look",
-                       refs: list | None = None, source: str | None = None, place: str | None = None) -> dict:
+                       refs: list | None = None, source: str | None = None, place: str | None = None,
+                       model: str | None = None) -> dict:
     """From the user's plain words, the assistant writes the generation for an entity action: the short change, a
     name for the new look, and the final prompt — looking at the images that will be sent (image 1 and the
     references), when the model can see. Returns {change, name, prompt, explain, images_seen}."""
@@ -2115,19 +2144,24 @@ def write_image_prompt(provider: dict, project: Project, entity_id: str, request
         draft, _ = studio_tools.entity_inputs(project, entity_id, action, request, place_id=place, source=source, refs=refs)
     except ProjectError:
         draft = {"prompt": "", "images": []}
+    from .director import project_settings
     images = draft.get("images") or []
+    legend = draft.get("legend") or studio_tools.image_legend(project, images)
+    model_id = studio_tools.resolve_image_model({"model": model}, project_settings(project))
+    m = studio_tools.IMAGE_MODELS[model_id]
     parts, seen = [], False
-    if provider.get("vision"):
-        for n, aid in enumerate(images, 1):
-            a = project.assets.get(aid)
-            part = _image_part(project, a["file"]) if a else None
+    if provider.get("vision"):   # every picture with the same label the user sees above the prompt
+        for item in legend:
+            a = project.assets.get(item["asset"])
+            part = _image_part(project, a["file"]) if a and a.get("kind") == "image" else None
             if part:
-                owner = project.entities.get(a.get("entity") or "", {}).get("name")
-                parts += [{"type": "text", "text": f"Image {n}" + (f" ({owner}" + (f", {a['look']}" if a.get("look") else "") + ")" if owner else "") + ":"}, part]
+                tag = f"Image {item['n']}" if item["n"] else "Pose reference (not sent as a picture; only its pose is used)"
+                parts += [{"type": "text", "text": f"{tag} — {item['label']}:"}, part]
                 seen = True
+    legend_text = "\n".join(f"- {'image ' + str(i['n']) if i['n'] else 'pose reference (no number)'}: {i['label']}" for i in legend) or "- (no pictures are sent)"
     what = {"look": "a new look (outfit, hair, accessories) or a variation", "angle": "a new angle or pose",
-            "place": f"the character in a place (image 2 is the place)", "sheet": "a turnaround sheet (front, three-quarter, side, back)",
-            "first": "first designs from the description alone (no image)"}.get(action, action)
+            "place": "the character in a place", "sheet": "a turnaround sheet (front, three-quarter, side, back)",
+            "first": "first designs from the description alone"}.get(action, action)
     refs_text = "\n".join((f"- image {images.index(r['asset']) + 1}: take {r.get('use') or 'what fits'}" if r.get('asset') in images
                            else f"- a pose reference (followed as a pose skeleton, not sent as an image): {r.get('use')}")
                           + (f" — {r['what']}" if r.get("what") else "") for r in (refs or []))
@@ -2139,30 +2173,70 @@ def write_image_prompt(provider: dict, project: Project, entity_id: str, request
                    "outfit image 1 shows (unless the user asks to change it) and do NOT write the clothes from the description "
                    "below — they belong to the main look.\n") if other_look else "")
     has_pose = any(str((r or {}).get("use")) == "pose" for r in refs or [])
-    pose_text = (("A pose reference is given: Clapper reads its pose skeleton and makes the model follow it (the pose image itself "
-                  "is not sent). Do not describe the pose picture's clothes or person. End the prompt with exactly this sentence: "
+    pose_text = (("A pose reference is given: Clapper reads its pose skeleton and makes the model follow it (the pose picture itself "
+                  "is not sent). Do not describe the pose picture's clothes or person. Describe the pose only if the user's words do, and then "
+                  "only in general words (\"kneeling on one knee, one arm pointing ahead\") — no left / right details, which are easily "
+                  "mirrored. Otherwise write no stance at all (no \"standing\", \"sitting\") and no camera angle that would hide it "
+                  "(no view from behind): the skeleton gives it. "
+                  "End the prompt with exactly this sentence: "
                   f"\"{studio_tools.POSE_LINE}\"\n") if has_pose else "")
-    task = (f"{IMAGE_PROMPT_RULES}\n\nThe user is making {what} for the {e['kind']} \"{e['name']}\".\n" + start_text + pose_text +
-            f"Its description (what its MAIN look shows): {e.get('description') or '(none)'}\n"
+    takes_negative = m.get("negative") is not None
+    task = (f"{IMAGE_PROMPT_RULES}\n\nWhat this action makes: {ACTION_RULES.get(action, '')}\n"
+            f"The image model: {IMAGE_MODEL_HINTS.get(model_id, m['title'])}"
+            + (f" {QWEN_EDIT_HINT}" if model_id.startswith("qwen") and action == "look" and images else "") + "\n\n"
+            f"The user is making {what} for the {e['kind']} \"{e['name']}\".\n" + start_text + pose_text +
+            f"The pictures sent, by number:\n{legend_text}\n"
+            f"Its description (written for its MAIN look; may be older than the pictures): {e.get('description') or '(none)'}\n"
             + (f"References the user added:\n{refs_text}\n" if refs_text else "")
             + f"Clapper's automatic prompt for this (a starting point; improve it):\n{draft.get('prompt') or '(none)'}\n\n"
             f"The user's words: \"{request}\"\n\n"
-            + ("Look at the images above before writing.\n" if seen else "You cannot see the images; rely on the descriptions.\n")
+            + ("Look at the pictures above before writing.\n" if seen else ("You cannot see the pictures; rely on the list and the descriptions.\n" if legend else ""))
             + 'Answer with only this JSON: {"change": "the change in a few words, as it would complete \\"now …\\"", '
-              '"name": "a short name for the new look, 2-4 words, without the name of the character or place (e.g. red winter coat, foggy dawn)", "prompt": "the complete prompt for the image model", '
-              '"explain": "one short sentence for the user: what you did and anything to check"}')
+              '"name": "a short name for the new look, 2-4 words, without the name of the character or place (e.g. red winter coat, foggy dawn)", "prompt": "the complete prompt for the image model"'
+            + (', "negative": "a short comma-separated list of plain words to avoid for this picture (quality defects, unwanted objects or styles) — never anything the prompt asks for nor the picture style itself"' if takes_negative else "")
+            + ', "explain": "one short sentence for the user: what you did and anything to check"}')
     client = Client(provider)
-    result = client.chat([{"role": "user", "content": [*parts, {"type": "text", "text": task}] if parts else task}], max_tokens=1500, thinking=False)
+    messages = [{"role": "user", "content": [*parts, {"type": "text", "text": task}] if parts else task}]
+    result = client.chat(messages, max_tokens=1500, thinking=False)
     data = _json_answer(result["content"])
-    if not data.get("prompt"):
+    if not _real_prompt(data):   # small models now and then answer without the JSON, or echo its template: ask once more
+        messages += [{"role": "assistant", "content": result["content"] or "(empty)"},
+                     {"role": "user", "content": "Answer with only the JSON object described above, with \"prompt\" filled in with the "
+                                                 "actual prompt you write for this picture."}]
+        result = client.chat(messages, max_tokens=1500, thinking=False)
+        data = _json_answer(result["content"])
+    if not _real_prompt(data):
         raise LLMError("the assistant did not write a prompt — try again, or say it differently")
+    lint = dict(action=action, model_id=model_id, n_images=len(images), has_pose=has_pose, request=request, name=e["name"],
+                description=e.get("description") or "", start_look=(start.get("look") or start.get("title") or "") if other_look else "",
+                other_look=other_look, ref_words=" ".join(str((r or {}).get("what") or "") for r in refs or []))
+    problems, tips = lint_image_prompt(studio_tools.normalize_image_refs(str(data["prompt"])), **lint)
+    corrected = []
+    if problems:   # one correction round, telling it exactly what is wrong (checked in code, not trusted)
+        messages += [{"role": "assistant", "content": result["content"]},
+                     {"role": "user", "content": "Your prompt has these problems:\n- " + "\n- ".join(problems)
+                      + "\nRewrite it so that none of them remains, keeping everything else. Same JSON."}]
+        result = client.chat(messages, max_tokens=1500, thinking=False)
+        fixed = _json_answer(result["content"]) or {}
+        if _real_prompt(fixed):
+            data = {**data, **fixed}
+            left, _ = lint_image_prompt(studio_tools.normalize_image_refs(str(data["prompt"])), **lint)
+            corrected = [x for x in problems if x not in left]
+    data["prompt"] = _drop_missing_images(str(data["prompt"]), len(images))
     change = re.sub(r"^(?:the same \w+ as image 1 \([^)]*\),?\s*)?(?:now\s+)?", "", " ".join(str(data.get("change") or "").split()), flags=re.I)
-    prompt = _clean_prompt(str(data["prompt"]), e["kind"])
-    if has_pose and studio_tools.POSE_LINE not in prompt:   # the graph replaces this line with each model's pose instruction
-        prompt = prompt.rstrip() + " " + studio_tools.POSE_LINE
-    return {"change": change[:200], "name": _look_name(str(data.get("name") or ""), e["name"]),
-            "prompt": prompt, "explain": " ".join(str(data.get("explain") or "").split())[:300],
-            "images_seen": seen and client.sees_images}
+    prompt = studio_tools.normalize_image_refs(_clean_prompt(str(data["prompt"]), e["kind"]))
+    if action == "place":   # a scene in the place keeps the place's own surroundings
+        prompt = _clean_prompt(prompt, "place")
+    if has_pose:
+        prompt = _drop_limbs(_drop_stance(prompt.replace(studio_tools.POSE_LINE, ""), request), request).rstrip() + " " + studio_tools.POSE_LINE
+    out = {"change": change[:200], "name": _look_name(str(data.get("name") or ""), e["name"]),
+           "prompt": prompt, "explain": " ".join(str(data.get("explain") or "").split())[:300],
+           "images_seen": seen and client.sees_images, "model": model_id,
+           "unknown_images": [n for n in studio_tools.image_numbers(prompt) if n > len(images)],
+           "checks": {"corrected": corrected, "remaining": lint_image_prompt(prompt, **lint)[0], "tips": tips}}
+    if takes_negative and data.get("negative"):
+        out["negative"] = _negative_for(model_id, " ".join(str(data["negative"]).split()), prompt)
+    return out
 
 
 # What each image model needs in a prompt (keys: engine/tools.py IMAGE_MODELS).
@@ -2184,7 +2258,7 @@ TOOL_IMAGE_RULES = """Rules for the image model's prompt:
 - Describe one finished picture: the subject, what they do, where, the light, the camera angle and framing. Concrete, visible words: garments with colours and materials, objects, surfaces, weather, time of day. No feelings, no story, no "beautiful", no quality buzzwords.
 - The setting is what the user asks for (a café, a street, a room). Use a plain background only when the user asks for one or for a design sheet.
 - Never contradict yourself: what the picture shows must not also be ruled out ("rain on the window" and "no rain" cannot both be in it).
-- With images: they are numbered in the order given; refer to them as "image 1", "image 2" …. Name concretely what each one lends ("the red plaid shirt and denim overalls from image 2"); the models follow named things. Say what to keep from each ("the same woman as image 1, keep her face and hair") and what changes. When a person keeps their identity but the clothes, light or weather change, describe only the new state.
+- With images: they are listed with their numbers ("image 1 — …"). Refer to them exactly as "image 1", "image 2" … — never "the first image", "picture 1", "Figure 1" or "<image1>" — and never mention a number that is not in the list (a pose reference has no number; it is not sent as a picture). Name concretely what each one lends ("the red plaid shirt and denim overalls from image 2"); the models follow named things. Say what to keep from each ("the same woman as image 1, keep her face and hair") and what changes. When a person keeps their identity but the clothes, light or weather change, describe only the new state.
 - No readable text in the picture unless the user asks for it; then quote it exactly.
 - 40-120 words. One description, not a list of options."""
 
@@ -2198,7 +2272,7 @@ def _negative_without(negative: str, prompt: str) -> str:
 
 
 def write_tool_image_prompt(provider: dict, project: Project, request: str, *, prompt: str = "", model: str | None = None,
-                            images: list | None = None, cast: list | None = None, negative: str = "") -> dict:
+                            images: list | None = None, cast: list | None = None, negative: str = "", pose: str | None = None) -> dict:
     """The Image tool's ✨: the user's plain words (and the prompt so far, the chosen library images and characters) →
     {prompt, negative, explain, images_seen} written for the chosen image model."""
     from . import tools as studio_tools
@@ -2211,19 +2285,23 @@ def write_tool_image_prompt(provider: dict, project: Project, request: str, *, p
     m = studio_tools.IMAGE_MODELS[model_id]
     run = studio_tools.with_cast(project, {"images": list(images or []), "cast": list(cast or []), "prompt": ""})
     ids = run.get("images") or []
+    legend = studio_tools.tool_legend(project, {"images": list(images or []), "cast": list(cast or []), "pose": pose})
     parts, seen = [], False
-    if provider.get("vision"):
-        for n, aid in enumerate(ids, 1):
-            a = project.assets.get(aid)
+    if provider.get("vision"):   # the same numbered labels the user sees above the prompt
+        for item in legend:
+            a = project.assets.get(item["asset"])
             part = _image_part(project, a["file"]) if a and a.get("kind") == "image" else None
             if part:
-                owner = project.entities.get(a.get("entity") or "", {}).get("name")
-                parts += [{"type": "text", "text": f"Image {n}" + (f" ({owner})" if owner else "") + ":"}, part]
+                tag = f"Image {item['n']}" if item["n"] else "Pose reference (not sent as a picture; only its pose is used)"
+                parts += [{"type": "text", "text": f"{tag} — {item['label']}:"}, part]
                 seen = True
     who = run.get("prompt", "").strip()
     takes_negative = m.get("negative") is not None
     task = (f"{TOOL_IMAGE_RULES}\n\nThe image model: {IMAGE_MODEL_HINTS.get(model_id, m['title'])}\n"
-            + (f"The images sent with the prompt, in order: {len(ids)} (image 1 … image {len(ids)}). {who}\n" if ids
+            + ("A pose reference is given (no number; only its skeleton is used). Do not describe its person or clothes. Write no stance "
+               "or pose of your own (no \"standing\", \"sitting\") and no camera angle that would hide it (no view from behind) unless the "
+               "user's words ask for one — the skeleton gives the pose.\n" if pose else "")
+            + (f"The images sent with the prompt, by number:\n" + "\n".join(f"- image {i['n']}: {i['label']}" for i in legend if i["n"]) + f"\n{who}\n" if ids
                else "No image is sent: the prompt alone makes a new picture. Then the 40-110 word limit and \"image N\" rules do not apply to references; describe everything.\n")
             + (f"The prompt so far (improve, complete or rewrite it as the user asks):\n{prompt}\n" if prompt else "")
             + (f"The negative prompt so far: {negative}\n" if takes_negative and negative.strip() else "")
@@ -2233,14 +2311,39 @@ def write_tool_image_prompt(provider: dict, project: Project, request: str, *, p
             + (', "negative": "a short comma-separated list of plain words for what to avoid (quality defects such as blurry, extra fingers, distorted face; unwanted styles; things that would spoil THIS picture) — never anything the prompt asks for nor the picture style itself (an anime picture never lists cartoon or flat style), and no \\"no\\" in front"' if takes_negative else "")
             + ', "explain": "one short sentence for the user: what you did and anything to check"}')
     client = Client(provider)
-    result = client.chat([{"role": "user", "content": [*parts, {"type": "text", "text": task}] if parts else task}], max_tokens=1500, thinking=False)
+    messages = [{"role": "user", "content": [*parts, {"type": "text", "text": task}] if parts else task}]
+    result = client.chat(messages, max_tokens=1500, thinking=False)
     data = _json_answer(result["content"])
-    if not data.get("prompt"):
+    if not _real_prompt(data):   # small models now and then answer without the JSON, or echo its template: ask once more
+        messages += [{"role": "assistant", "content": result["content"] or "(empty)"},
+                     {"role": "user", "content": "Answer with only the JSON object described above, with \"prompt\" filled in with the "
+                                                 "actual prompt you write for this picture."}]
+        result = client.chat(messages, max_tokens=1500, thinking=False)
+        data = _json_answer(result["content"])
+    if not _real_prompt(data):
         raise LLMError("the assistant did not write a prompt — try again, or say it differently")
-    out = {"prompt": _clean_prompt(str(data["prompt"]), "image"), "explain": " ".join(str(data.get("explain") or "").split())[:300],
-           "images_seen": seen and client.sees_images, "model": model_id}
+    lint = dict(action="tool", model_id=model_id, n_images=len(ids), has_pose=bool(pose), request=request)
+    problems, tips = lint_image_prompt(studio_tools.normalize_image_refs(str(data["prompt"])), **lint)
+    corrected = []
+    if problems:   # one correction round, telling it exactly what is wrong (checked in code)
+        messages += [{"role": "assistant", "content": result["content"]},
+                     {"role": "user", "content": "Your prompt has these problems:\n- " + "\n- ".join(problems)
+                      + "\nRewrite it so that none of them remains, keeping everything else. Same JSON."}]
+        result = client.chat(messages, max_tokens=1500, thinking=False)
+        fixed = _json_answer(result["content"]) or {}
+        if _real_prompt(fixed):
+            data = {**data, **fixed}
+            left, _ = lint_image_prompt(studio_tools.normalize_image_refs(str(data["prompt"])), **lint)
+            corrected = [x for x in problems if x not in left]
+    text_out = _drop_missing_images(studio_tools.normalize_image_refs(_clean_prompt(str(data["prompt"]), "image")), len(ids))
+    if pose:
+        text_out = _drop_limbs(_drop_stance(text_out, request), request)
+    out = {"prompt": text_out, "explain": " ".join(str(data.get("explain") or "").split())[:300],
+           "images_seen": seen and client.sees_images, "model": model_id,
+           "unknown_images": [n for n in studio_tools.image_numbers(text_out) if n > len(ids)],
+           "checks": {"corrected": corrected, "remaining": lint_image_prompt(text_out, **lint)[0], "tips": tips}}
     if takes_negative and data.get("negative"):
-        out["negative"] = _negative_without(" ".join(str(data["negative"]).split()), out["prompt"])[:400]
+        out["negative"] = _negative_for(model_id, " ".join(str(data["negative"]).split()), out["prompt"])
     return out
 
 
@@ -2350,6 +2453,129 @@ def describe_ref_use(provider: dict, project: Project, asset_id: str, use: str) 
     return {"what": what[:200]}
 
 
+_PLACEHOLDER = re.compile(r"^\W*(the complete prompt|the prompt for the image model|…|\.\.\.)\W*", re.I)
+
+
+def _real_prompt(data: dict) -> bool:
+    """A prompt and not an echo of the JSON template ("the complete prompt for the image model")."""
+    text = " ".join(str((data or {}).get("prompt") or "").split())
+    return len(text) >= 25 and not _PLACEHOLDER.match(text)
+
+
+# A negative prompt must never name the model's own style (tested: "outlines, cartoon, flat style" for the anime model).
+_OWN_STYLE = {
+    "qwen_image_21_anime": ("anime", "cartoon", "outline", "line art", "lineart", "cel", "flat", "illustration", "drawing", "2d", "manga"),
+    "qwen_image_21_realism": ("photo", "realistic", "photoreal", "real skin"),
+}
+
+
+# what a prompt asks for implies more than its own words (tested: "night in the rain" with "puddles" in the negative)
+_IMPLIED = {"rain": ("puddle", "wet", "rain", "drizzle", "storm"), "night": ("dark", "night", "dim", "evening"),
+            "snow": ("snow", "white ground", "winter"), "sunset": ("orange", "warm light", "sunset", "golden"),
+            "fog": ("fog", "mist", "haze"), "mist": ("fog", "mist", "haze")}
+
+
+def _negative_for(model_id: str, negative: str, prompt: str) -> str:
+    items = [t for t in _negative_without(negative, prompt).split(", ") if t]
+    low = prompt.lower()
+    banned = list(_OWN_STYLE.get(model_id, ()))
+    for word, implied in _IMPLIED.items():
+        if word in low:
+            banned += implied
+    return ", ".join(t for t in items if not any(w in t.lower() for w in banned))[:400]
+
+
+_STANCE = r"(?:is |are )?(?:standing|stands|stand|sitting|sits|sit|kneeling|kneels|kneel|lying|lies|crouching|crouches|walking|walks|running|runs|jumping|jumps)"
+
+
+_LIMBS = r"(?:his |her |their |both )?(?:arms?|hands?|legs?|knees?)\s+(?:down|up|raised|lowered|crossed|folded|bent|apart|together|at (?:his|her|their) sides|on (?:his|her|their) hips)"
+
+
+def _drop_limbs(prompt: str, user_words: str) -> str:
+    """With a pose reference, arm and leg positions the user did not ask for go too (tested: "arms down" over an arms-up
+    skeleton made the model ignore the pose entirely)."""
+    if re.search(r"\b(arms?|hands?|legs?|knees?)\b", user_words or "", re.I):
+        return prompt
+    out = re.sub(rf"\s*,?\s*(?:with\s+)?{_LIMBS}\b", "", prompt, flags=re.I)
+    out = re.sub(r"\(\s*\)", "", out)
+    return re.sub(r"\s+([,.])", r"\1", re.sub(r"\s{2,}", " ", out)).strip()
+
+
+def _drop_stance(prompt: str, user_words: str) -> str:
+    """With a pose reference the skeleton gives the pose: a stance the user did not ask for is taken out of the prompt
+    (tested: the assistant wrote "Kai stands …" over a sitting pose, though told not to)."""
+    if re.search(rf"\b{_STANCE}\b", user_words or "", re.I):
+        return prompt
+    out = re.sub(rf"\s*\b{_STANCE}\b(?:\s+(?:alone|still|upright|straight|together))?", "", prompt, flags=re.I)
+    return re.sub(r"\s+([,.])", r"\1", re.sub(r"\s{2,}", " ", out)).strip()
+
+
+_GARMENTS = ("raincoat", "coat", "jacket", "parka", "blazer", "suit", "hoodie", "sweater", "cardigan", "shirt", "blouse", "t-shirt",
+             "top", "dress", "skirt", "jeans", "trousers", "pants", "shorts", "overalls", "apron", "uniform", "scarf", "hat", "cap",
+             "sneakers", "boots", "shoes", "sandals", "heels", "lingerie", "bra", "bikini", "swimsuit", "kimono", "robe", "vest", "gloves")
+_OPERATION = re.compile(r"^\W*(?:a photo of |an anime illustration of )?\W*(replace|change|turn|transform|swap|make|give|dress|put|remove|add|"
+                        r"recolou?r|relight|redraw|move)\b", re.I)
+_BIG_LIGHT = re.compile(r"\b(night|rain|rainy|snowing|snowy|storm|stormy|sunset|sunrise|dawn|dusk|fog|foggy|misty)\b", re.I)
+
+
+def lint_image_prompt(prompt: str, *, action: str, model_id: str, n_images: int, has_pose: bool, request: str, name: str = "",
+                      description: str = "", start_look: str = "", other_look: bool = False, ref_words: str = "") -> tuple[list[str], list[str]]:
+    """Checks a prompt the assistant wrote against what Clapper knows, in code — not by trusting the assistant.
+    Returns (problems, tips): problems go back to the assistant for one correction round, each saying exactly what is
+    wrong; tips are for the user. Every rule comes from a failure seen in testing."""
+    from . import tools as studio_tools
+    low, problems, tips = prompt.lower(), [], []
+    asked = (request + " " + ref_words + " " + start_look).lower()
+    bad = [n for n in studio_tools.image_numbers(prompt) if n > n_images]
+    if bad:
+        problems.append(("No picture is sent, so the prompt must not mention any image number — describe everything in words."
+                         if not n_images else f"Only image 1{f' to image {n_images}' if n_images > 1 else ''} {'are' if n_images > 1 else 'is'} sent, "
+                         f"but the prompt mentions image {', '.join(map(str, bad))}."))
+    if action == "first":
+        if re.search(r"\b(keep|same)\b[^.]{0,25}\b(face|hair|body)\b", low):
+            problems.append(f"There is no picture of {name or 'the subject'} yet: describe the face and hair in words from the description "
+                            "instead of writing \"keep the same face / hair\".")
+        hair = re.search(r"[^,.;]*\bhair\b[^,.;]*", description or "", re.I)
+        if hair and "hair" not in low:
+            problems.append(f"Describe {name or 'the subject'}'s hair as the description says: \"{hair.group(0).strip()}\".")
+    if other_look:
+        stray = [g for g in _GARMENTS if re.search(rf"\b{g}s?\b", (description or "").lower()) and re.search(rf"\b{g}s?\b", low)
+                 and not re.search(rf"\b{g}s?\b", asked)]
+        if stray:
+            problems.append(f"Image 1 wears its look \"{start_look}\", not the clothes of the description: take out "
+                            f"{', '.join(repr(g) for g in stray)} and describe what image 1 wears (or what the user asks for).")
+    if model_id.startswith("qwen") and action == "look" and n_images and not _OPERATION.search(prompt) \
+            and not re.search(r"\b(replace|turn (?:the|it|this)\b|add|change|swap|transform|remove|recolou?r)", low[:220]):
+        problems.append("This model edits image 1 conservatively: start the prompt with the operation and make the change strong — "
+                        "\"Replace the … with …\" only for what is swapped, \"Add …\" for what is added, \"Turn the scene into …\" for a "
+                        "new time or weather. Do not replace anything the user did not ask to change.")
+    if model_id.startswith("qwen") and action in ("look", "angle") and n_images and _BIG_LIGHT.search(request or ""):
+        tips.append("Qwen-Image-2.1 keeps image 1's light when editing; for a night, weather or time-of-day change FLUX.2 Klein worked much better in testing.")
+    if has_pose:
+        limbs = re.findall(r"\b(?:arms?|hands?|legs?|knees?)\s+(?:down|up|raised|lowered|crossed|folded|bent|apart|together|at (?:his|her|their) sides|on (?:his|her|their) hips)\b", low)
+        if limbs and not re.search(r"\b(arms?|hands?|legs?|knees?)\b", (request or "").lower()):
+            problems.append(f"Do not describe arms or legs ({', '.join(sorted(set(limbs)))}): the pose skeleton gives the pose.")
+        said = re.findall(rf"\b{_STANCE}\b", prompt, re.I)
+        if said and not re.search(rf"\b{_STANCE}\b", request or "", re.I):
+            problems.append(f"Write no stance of your own ({', '.join(sorted(set(w.lower() for w in said)))}): the pose skeleton gives the pose.")
+    if action == "place" and re.search(r"\b(plain|grey|gray|white|studio)\s+background\b", low):
+        problems.append("A scene in a place uses the place's own surroundings: no plain or grey background.")
+    if re.search(r"([^.]{25,}?)\.\s.*\1", prompt, flags=re.I | re.S):
+        problems.append("A sentence is repeated: write each thing once.")
+    if len(prompt.split()) > 170:
+        problems.append(f"The prompt is {len(prompt.split())} words: keep it under 120.")
+    return problems, tips
+
+
+def _drop_missing_images(prompt: str, count: int) -> str:
+    """Last line of defence: sentences that point at a picture that is not sent are left out (a missing "image 3"
+    would otherwise make the model guess, or — after Klein's renumbering — point at the pose skeleton)."""
+    from . import tools as studio_tools
+    sentences = re.split(r"(?<=[.!?])\s+", prompt.strip())
+    kept = [x for x in sentences if not any(n > count for n in studio_tools.image_numbers(x))]
+    return " ".join(kept) if kept else prompt
+
+
 # Small models copy pieces of their instructions into the answer: take those out again.
 _ECHO = re.compile(r"\s*\(?\b\d+\s*[-–]\s*\d+ words\b\.?\)?\.?|\s*\bno (?:visible )?distinctive marks\b[^.]*\.?", re.I)
 
@@ -2397,14 +2623,30 @@ def write_description(provider: dict, project: Project, kind: str, words: str, *
 
 
 def _json_answer(text: str) -> dict:
-    """The JSON object in a model's answer (models add prose or code fences around it)."""
+    """The JSON object in a model's answer (models add prose or code fences around it). Forgiving: raw line breaks in
+    strings are accepted, and when the JSON is broken or cut off the string fields are read one by one (tested: a small
+    local model's answer was now and then not valid JSON, and the whole prompt was lost)."""
     text = (text or "").strip()
     m = re.search(r"\{.*\}", text, re.S)
-    try:
-        data = json.loads(m.group(0)) if m else {}
-    except ValueError:
-        data = {}
-    return data if isinstance(data, dict) else {}
+    for candidate in ([m.group(0)] if m else []):
+        try:
+            data = json.loads(candidate, strict=False)
+            if isinstance(data, dict):
+                return data
+        except ValueError:
+            pass
+    data: dict = {}
+    for key, value in re.findall(r'"(\w+)"\s*:\s*"((?:[^"\\]|\\.)*)"', text, re.S):
+        try:
+            data[key] = json.loads(f'"{value}"', strict=False)
+        except ValueError:
+            data[key] = value
+    cut = re.search(r'"prompt"\s*:\s*"((?:[^"\\]|\\.)*)$', text, re.S)   # an answer cut off inside the prompt
+    if "prompt" not in data and cut and len(cut.group(1)) > 40:
+        data["prompt"] = cut.group(1).replace('\\"', '"')
+    for key, value in re.findall(r'"(\w+)"\s*:\s*(-?\d+(?:\.\d+)?)', text):
+        data.setdefault(key, float(value) if "." in value else int(value))
+    return data
 
 
 def describe_reference(provider: dict, project: Project, name: str) -> str:

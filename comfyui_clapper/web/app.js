@@ -1044,9 +1044,34 @@ async function loadTools(force) {
   return toolState.list;
 }
 
+// Which picture is image 1, 2 … : numbered thumbnails shown above every prompt (the assistant gets the same labels).
+function legendStrip(legend) {
+  const items = (legend || []).map((it) => {
+    const a = assets()[it.asset];
+    return h("div", { class: "legend-item" + (it.n ? "" : " pose"), title: it.label },
+      h("span", { class: "legend-badge" }, it.n ? `image ${it.n}` : "pose"),
+      a ? h("img", { src: media(a.file), loading: "lazy" }) : null,
+      h("span", { class: "legend-label" }, it.label));
+  });
+  return h("div", { class: "legend-strip" }, items.length ? items : [h("span", { class: "hint" }, "No picture is sent: the words only.")]);
+}
+// The image numbers a prompt mentions, in every spelling the graphs understand ("image 2", "<image2>", "the second image" …).
+function promptImageNumbers(text) {
+  const ord = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5 };
+  const out = new Set();
+  for (const m of String(text || "").matchAll(/<\s*image\s*(\d{1,2})\s*>|\b(?:image|picture|photo|figure|img|pic)\s*(?:#|no\.?\s*)?(\d{1,2})\b|\b(first|second|third|fourth|fifth)\s+(?:image|picture|photo)\b/gi))
+    out.add(Number(m[1] || m[2] || ord[(m[3] || "").toLowerCase()]));
+  return [...out].sort((a, b) => a - b);
+}
+function legendWarning(text, legend) {
+  const count = (legend || []).filter((it) => it.n).length;
+  const bad = promptImageNumbers(text).filter((n) => n > count);
+  return bad.length ? `⚠ The prompt mentions image ${bad.join(", ")}, but ${count ? `only image 1${count > 1 ? `–${count}` : ""} ${count > 1 ? "are" : "is"}` : "no picture is"} sent.` : "";
+}
+
 function toolField(f, values) {
   const v = values[f.key] ?? f.default ?? (f.type === "images" ? [] : "");
-  const set = (x) => { values[f.key] = x; };
+  const set = (x) => { values[f.key] = x; document.dispatchEvent(new CustomEvent("clapper-tool-change", { detail: f.key })); };
   let input;
   if (f.type === "longtext") { input = h("textarea", { rows: 4, placeholder: f.placeholder || "" }); input.value = v; input.oninput = () => set(input.value); }
   else if (f.type === "text") { input = h("input", { placeholder: f.placeholder || "", value: v }); input.oninput = () => set(input.value); }

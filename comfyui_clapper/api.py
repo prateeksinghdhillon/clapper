@@ -605,6 +605,17 @@ async def list_tools(request):
         return _err(exc)
 
 
+@routes.post("/clapper/api/tool/legend")
+async def tool_legend(request):
+    """path, inputs {images, cast, pose}: which picture is image 1, 2 … for the Image tool (and the pose picture)."""
+    body = await _body(request)
+    try:
+        project = _open(body["path"], request)
+        return _ok({"legend": tools.tool_legend(project, body.get("inputs") or {})})
+    except (KeyError, ProjectError, OSError) as exc:
+        return _err(exc)
+
+
 @routes.post("/clapper/api/tool/run")
 async def run_tool(request):
     """path, tool, inputs {…}, count (1–8), role, seed, title, entity + look (file the results under it) → one job per result."""
@@ -796,7 +807,8 @@ async def entity_preview(request):
         inputs, _ = tools.entity_inputs(project, body["id"], body["action"], body.get("text", "") or ("" if body.get("refs") else "…"),
                                         place_id=body.get("place"), aspect=body.get("aspect"), source=body.get("source") or None,
                                         refs=body.get("refs") or None)
-        return _ok({"prompt": inputs["prompt"], "images": inputs["images"], "aspect": inputs["aspect"]})
+        return _ok({"prompt": inputs["prompt"], "images": inputs["images"], "aspect": inputs["aspect"],
+                    "legend": inputs.get("legend") or [], "pose": inputs.get("pose")})
     except (KeyError, ProjectError, OSError) as exc:
         return _err(exc)
 
